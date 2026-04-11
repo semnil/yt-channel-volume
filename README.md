@@ -16,9 +16,9 @@ YouTube チャンネルごとに音量を記憶し、動画を開いた時に自
 
 ### 1. 拡張をインストール
 
-> Chrome Web Store への公開は審査中です。
+[Chrome Web Store](https://chromewebstore.google.com/detail/yt-channel-volume/hoagpdjnapnpdbmnemhcdfpdehgokaab) からインストール
 
-**開発版を使う場合**: `chrome://extensions` → デベロッパーモード ON → 「パッケージ化されていない拡張機能を読み込む」でこのリポジトリのフォルダを指定
+> **開発版を使う場合**: `chrome://extensions` → デベロッパーモード ON → 「パッケージ化されていない拡張機能を読み込む」でこのリポジトリのフォルダを指定
 
 ### 2. 使う
 
