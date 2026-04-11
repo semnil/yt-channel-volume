@@ -23,9 +23,11 @@ content.js (ISOLATED world content script, document_idle)
 │   └── gain = 10^(compensationDb / 20), clamped [0, 6], NaN/Inf → 1.0
 ├── Web Audio API: <video> → MediaElementSource → GainNode → destination (遅延接続)
 ├── Gain overlay: .ytp-volume-area にゲイン値を表示 (設定で ON/OFF)
-├── Channel detection: canonical link / owner link / meta tag → page-bridge channelId (UC 形式)
-├── SPA navigation: yt-navigate-finish + popstate + MutationObserver (watch ページのみ)
-├── Video ID tracking: SPA ナビ後の動画変更検出
+├── Channel detection: canonical / #owner a[href] / ytd-video-owner-renderer / meta tag → page-bridge channelId (UC 形式)
+├── Navigation: triggerApply (async mutex) で applyVideoVolume を直接実行 (デバウンスなし)
+│   ├── Triggers: yt-navigate-finish, popstate, visibilitychange, MutationObserver, 初回ロード
+│   ├── Observer: video 要素変更 + URL video ID 変更のみ検知 (null guard で初回発火を抑制)
+│   └── _applyRunning mutex で同時実行防止。forceDetect も triggerApply 経由
 ├── videoType: 'live' (配信/アーカイブ) or 'video' (動画/ショート) で別ゲイン管理
 └── Storage
     ├── autoLoudnessSettings: { targetLufs, displayUnit, showGainOverlay }
@@ -103,8 +105,9 @@ options.html / options.js (設定画面、別タブで表示)
 - **Channel ID formats**: `UC...` (canonical) が正規 ID。DOM 検出で `@handle` が得られても player response の `channelId` で UC に修正
 - **notifyPopup 重複抑制**: state key 比較で no-op 送信を防止
 - **NaN/Infinity ガード**: ゲイン計算結果が非有限値なら 1.0 にフォールバック
-- **遅延オーディオチェーン**: ゲインが 1.0 (パススルー) の場合は `createMediaElementSource` を呼ばない → Live Caption のちらつきを回避
-- **ゲインオーバーレイ**: `.ytp-volume-area` にゲイン値を表示。SPA ナビでの DOM 再構築にも対応
+- **遅延オーディオチェーン**: ゲインが 1.0 (パススルー) の場合は `createMediaElementSource` を呼ばない → Live Caption のちらつきを回避。`connectedVideo` (audio chain) と `_lastProcessedVideo` (検出済み video) を分離管理
+- **triggerApply 設計**: `setTimeout` デバウンスを廃止し、async mutex (`_applyRunning`) で同時実行を防止。`yt-navigate-finish` / `popstate` / `visibilitychange` / observer / 初回ロード の全トリガーから直接呼び出し。バックグラウンドタブの throttle やライブチャットの高頻度 DOM 更新の影響を受けない
+- **ゲインオーバーレイ**: `.ytp-volume-area` にゲイン値を表示。SPA ナビでの DOM 再構築にも対応 (`document.contains` で detach 検知)
 
 ## Commands
 
@@ -117,6 +120,7 @@ python gen_icons.py
 
 # Run tests
 node test.js
+node test-navigation.js
 
 # Package for Chrome Web Store
 python pack.py
@@ -127,12 +131,14 @@ python pack.py
 ## Development notes
 
 - Gain value 1.0 = 100% (passthrough). Range 0.0–6.0
-- `popup.js` sends `forceDetect` on open. `forceDetect` は video ID 変更を検出し、必要時のみ `applyVideoVolume` を再実行
+- `popup.js` sends `forceDetect` on open. `forceDetect` は video ID 変更を検出し、`triggerApply` 経由で `applyVideoVolume` を再実行 (`_applyRunning` を尊重)
 - `content.js` sends `stateChanged` broadcast (sender tab ID フィルタで popup が他タブの更新を無視)
 - AudioContext may be `suspended` until first user interaction (Chrome autoplay policy)
-- Channel detection order: `link[rel="canonical"]` → owner link → `meta[itemprop="channelId"]` → page-bridge `videoDetails.channelId` (UC 形式で上書き)
-- Display name: `#channel-name` DOM 要素から取得。ID は UC 形式で統一 (日本語ハンドル対応: `/@` 以降を `[^/?#]+` でマッチ)
-- SPA ナビ検知: `yt-navigate-finish` + `popstate` + MutationObserver (video 要素変更 + URL video ID 変更)
+- Channel detection order: `link[rel="canonical"]` → `#owner a[href]` → `ytd-video-owner-renderer a[href]` → `meta[itemprop="channelId"]` → page-bridge `videoDetails.channelId` (UC 形式で上書き)。watch-metadata-refresh レイアウトでは `ytd-video-owner-renderer` が直接見えないため `#owner` 経由を優先
+- Display name: `#owner #channel-name a` DOM 要素から取得。ID は UC 形式で統一 (日本語ハンドル対応: `/@` 以降を `[^/?#]+` でマッチ)
+- SPA ナビ検知: `yt-navigate-finish` + `popstate` + `visibilitychange` + MutationObserver (video 要素変更 + URL video ID 変更)
+- テスト: `node test.js` (utils 37件) + `node test-navigation.js` (navigation P01-P18 + bridge + guard + detectChannel + data integrity 65件)
+- テスト用 export: `__TEST_YTCV__` フラグで content.js 内部を `globalThis.__YTCV__` に露出。本番では無効
 - Storage keys: `autoLoudnessSettings` (target LUFS, display unit), `channelVolumes` (saved channel gains with URL)
 - Storage format: `channelVolumes.{id}` = `{ name, gainLive, gainVideo, url }` (旧: `{ name, gain, url }` — 自動マイグレーション)
 - slider `input` event = リアルタイムゲイン変更 (storage 書き込みなし)、`change` event = storage 保存
