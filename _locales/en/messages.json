@@ -53,6 +53,12 @@
   "delete": {
     "message": "Delete"
   },
+  "clearAll": {
+    "message": "Clear all"
+  },
+  "clearAllConfirm": {
+    "message": "Delete all saved channels?"
+  },
   "manualVolume": {
     "message": "Manual Volume"
   },

@@ -186,6 +186,21 @@ h1 {
   background: #2a2a4a;
 }
 
+.clear-all-btn {
+  font-size: 11px;
+  color: #888;
+  background: none;
+  border: 1px solid #2a2a4a;
+  border-radius: 4px;
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+.clear-all-btn:hover {
+  color: #ff6b9d;
+  border-color: #ff6b9d;
+}
+
 .empty-msg {
   color: #555;
   font-size: 13px;
@@ -272,7 +287,10 @@ h1 {
   </div>
 
   <div class="section">
-    <h2 data-i18n="savedChannels"></h2>
+    <div style="display:flex;align-items:center;justify-content:space-between;">
+      <h2 data-i18n="savedChannels" style="margin-bottom:0"></h2>
+      <button id="clearAllBtn" class="clear-all-btn" data-i18n="clearAll"></button>
+    </div>
     <div id="channelList"></div>
   </div>
 </div>

@@ -12,6 +12,7 @@
   const targetValueEl = document.getElementById('targetValue');
   const unitToggle = document.getElementById('unitToggle');
   const overlayToggle = document.getElementById('overlayToggle');
+  const clearAllBtn = document.getElementById('clearAllBtn');
   const channelListEl = document.getElementById('channelList');
 
   let displayUnit = '%';
@@ -73,7 +74,8 @@
 
     const tbody = document.createElement('tbody');
     for (const [id, entry] of entries) {
-      const { name, url } = entry;
+      const name = entry.name || id;
+      const url = entry.url;
       // Support old format (single gain) and new format (gainLive/gainVideo)
       const gainLive = entry.gainLive ?? entry.gain ?? null;
       const gainVideo = entry.gainVideo ?? entry.gain ?? null;
@@ -119,6 +121,12 @@
 
   overlayToggle.addEventListener('change', () => {
     saveSetting('showGainOverlay', overlayToggle.checked);
+  });
+
+  clearAllBtn.addEventListener('click', async () => {
+    if (!confirm(msg('clearAllConfirm'))) return;
+    await chrome.storage.local.set({ [CHANNEL_VOLUMES_KEY]: {} });
+    renderChannels();
   });
 
   unitToggle.addEventListener('click', (e) => {

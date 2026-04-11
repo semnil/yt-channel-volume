@@ -53,6 +53,12 @@
   "delete": {
     "message": "削除"
   },
+  "clearAll": {
+    "message": "全削除"
+  },
+  "clearAllConfirm": {
+    "message": "保存済みチャンネルをすべて削除しますか？"
+  },
   "manualVolume": {
     "message": "Manual Volume"
   },
