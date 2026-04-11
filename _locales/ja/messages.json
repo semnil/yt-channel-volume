@@ -1,0 +1,86 @@
+{
+  "extName": {
+    "message": "YT Channel Volume"
+  },
+  "extDescription": {
+    "message": "YouTube チャンネルごとに音量を記憶・自動適用。Content Loudness による最適音量の算出にも対応"
+  },
+  "channelNotDetected": {
+    "message": "チャンネル未検出"
+  },
+  "applyToChannel": {
+    "message": "チャンネルに適用"
+  },
+  "applyToChannelWithValue": {
+    "message": "$VALUE$ をチャンネルに適用",
+    "placeholders": {
+      "value": { "content": "$1" }
+    }
+  },
+  "hintNoLoudness": {
+    "message": "Loudness のある動画で使用"
+  },
+  "hintNoChannel": {
+    "message": "チャンネル未検出"
+  },
+  "openOnVideoPage": {
+    "message": "動画を再生中に使用してください"
+  },
+  "openOnYoutube": {
+    "message": "YouTube タブで開いてください"
+  },
+  "settings": {
+    "message": "Settings"
+  },
+  "targetLufs": {
+    "message": "Target LUFS"
+  },
+  "targetLufsDesc": {
+    "message": "Loudness から算出するゲインの基準値"
+  },
+  "displayUnit": {
+    "message": "表示単位"
+  },
+  "displayUnitDesc": {
+    "message": "ゲイン値の表示形式"
+  },
+  "savedChannels": {
+    "message": "Saved Channels"
+  },
+  "noSavedChannels": {
+    "message": "保存済みチャンネルなし"
+  },
+  "delete": {
+    "message": "削除"
+  },
+  "manualVolume": {
+    "message": "Manual Volume"
+  },
+  "labelLoudness": {
+    "message": "Loudness"
+  },
+  "labelSuggested": {
+    "message": "Suggested"
+  },
+  "labelCurrent": {
+    "message": "Current"
+  },
+  "colChannel": {
+    "message": "Channel"
+  },
+  "colVolume": {
+    "message": "Volume"
+  },
+  "showGainOverlay": {
+    "message": "ゲイン表示"
+  },
+  "showGainOverlayDesc": {
+    "message": "プレイヤーの音量バー横に適用中のゲインを表示"
+  },
+  "typeLive": {
+    "message": "Live"
+  },
+  "typeVideo": {
+    "message": "Video"
+  }
+}
