@@ -69,8 +69,8 @@
     if (!channelId || !isContextValid()) return;
     const data = await chrome.storage.local.get(CHANNEL_VOLUMES_KEY);
     const all = data[CHANNEL_VOLUMES_KEY] || {};
-    const entry = all[channelId] || { name };
-    entry.name = name;
+    const entry = all[channelId] || { name: name || channelId };
+    if (name) entry.name = name;
     if (url) entry.url = url;
     // Migrate old format
     if ('gain' in entry && !('gainLive' in entry) && !('gainVideo' in entry)) {
@@ -108,14 +108,16 @@
       currentVideoType = event.data.isLiveContent ? 'live' : 'video';
       currentIsLiveNow = !!event.data.isLiveNow;
     }
-    // Use channelId from player response to fix ID (always UC format)
+    // Only accept channelId if it came with valid data for current video
     const bridgeChId = event.data.channelId;
-    if (bridgeChId && bridgeChId.startsWith('UC') && currentChannel.id !== bridgeChId) {
+    const hasValidData = (db !== null && db !== undefined) || event.data.isLiveContent;
+    if (hasValidData && bridgeChId && bridgeChId.startsWith('UC') && currentChannel.id !== bridgeChId) {
       const oldId = currentChannel.id;
       currentChannel.id = bridgeChId;
-      if (!currentChannel.url || currentChannel.url.includes('/@')) {
-        currentChannel.url = 'https://www.youtube.com/channel/' + bridgeChId;
-      }
+      currentChannel.url = 'https://www.youtube.com/channel/' + bridgeChId;
+      // Re-detect display name (DOM may have updated since initial detectChannel)
+      const freshName = getChannelDisplayName();
+      if (freshName) currentChannel.name = freshName;
       // Migrate @handle entry to UC format in storage
       if (oldId && oldId.startsWith('@') && isContextValid()) {
         chrome.storage.local.get(CHANNEL_VOLUMES_KEY).then(data => {
@@ -211,6 +213,8 @@
     }
 
     const ownerLink = document.querySelector(
+      '#owner a[href*="/channel/"], ' +
+      '#owner a[href*="/@"], ' +
       'ytd-video-owner-renderer a[href*="/channel/"], ' +
       'ytd-video-owner-renderer a[href*="/@"]'
     );
@@ -315,13 +319,13 @@
 
   // ── Apply saved volume for current channel ─────────────────────────
 
-  let loudnessReady = Promise.resolve();
   let _lastVideoId = '';
 
   async function applyVideoVolume() {
     if (!isWatchPage()) return;
     const video = document.querySelector('video.html5-main-video, video');
     if (!video) return;
+    _lastProcessedVideo = video;
 
     _lastVideoId = new URL(location.href).searchParams.get('v') || '';
 
@@ -334,7 +338,6 @@
     currentVideoType = 'video';
     currentIsLiveNow = false;
 
-    // Try to load gain for 'video' first, then correct after videoType is known
     const initialGain = await loadChannelGain(ch.id, 'video');
     currentGain = initialGain ?? 1.0;
     setGain(currentGain);
@@ -343,14 +346,17 @@
     // Fetch loudness + videoType + channelId, then re-apply if changed
     const initialType = currentVideoType;
     const initialChId = ch.id;
-    loudnessReady = requestLoudnessWithRetry(10, 500).then(async () => {
+    requestLoudnessWithRetry(10, 500).then(async () => {
       const chIdChanged = currentChannel.id !== initialChId;
+      if (chIdChanged) {
+        // Re-detect display name since DOM has likely updated
+        const freshName = getChannelDisplayName();
+        if (freshName) currentChannel.name = freshName;
+      }
       if (currentVideoType !== initialType || chIdChanged) {
         const typeGain = await loadChannelGain(currentChannel.id, currentVideoType);
-        if (typeGain !== null) {
-          currentGain = typeGain;
-          setGain(currentGain);
-        }
+        currentGain = typeGain ?? 1.0;
+        setGain(currentGain);
       }
       notifyPopup();
     });
@@ -376,7 +382,7 @@
   function notifyPopup() {
     if (!isContextValid()) return;
     const state = getState();
-    const key = state.loudnessDb + '|' + state.gain + '|' + state.channel.id + '|' + state.videoType;
+    const key = state.loudnessDb + '|' + state.gain + '|' + state.channel.id + '|' + state.channel.name + '|' + state.videoType;
     if (key === _lastNotifiedState) return;
     _lastNotifiedState = key;
     chrome.runtime.sendMessage({ type: 'stateChanged', ...state }).catch(() => {});
@@ -388,41 +394,46 @@
     return location.pathname === '/watch';
   }
 
-  let applyTimer = null;
+  /** Track the video element we've processed (separate from connectedVideo which tracks audio chain) */
+  let _lastProcessedVideo = null;
+  let _applyRunning = false;
 
-  function scheduleApply() {
+  async function triggerApply() {
     if (!isContextValid()) { observer.disconnect(); return; }
     if (!isWatchPage()) return;
-    clearTimeout(applyTimer);
-    applyTimer = setTimeout(applyVideoVolume, 800);
+    if (_applyRunning) return;
+    _applyRunning = true;
+    try {
+      await applyVideoVolume();
+    } finally {
+      _applyRunning = false;
+    }
   }
 
-  document.addEventListener('yt-navigate-finish', scheduleApply);
-  window.addEventListener('popstate', scheduleApply);
-
-  const observer = new MutationObserver((mutations) => {
-    if (!isWatchPage()) return;
-    // Skip mutations inside caption/chat overlays to avoid flickering
-    for (const m of mutations) {
-      const t = m.target;
-      if (t.closest && t.closest('.ytp-caption-window-container, #chat-messages, .ytp-ad-overlay-container')) {
-        return;
-      }
+  document.addEventListener('yt-navigate-finish', triggerApply);
+  window.addEventListener('popstate', triggerApply);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && isWatchPage() && !_lastProcessedVideo) {
+      triggerApply();
     }
+  });
+
+  const observer = new MutationObserver(() => {
+    if (!isWatchPage()) return;
     const video = document.querySelector('video.html5-main-video, video');
-    if (video && video !== connectedVideo) {
-      scheduleApply();
+    if (video && _lastProcessedVideo && video !== _lastProcessedVideo) {
+      triggerApply();
       return;
     }
     const sm = location.search.match(/[?&]v=([^&]+)/);
     const vid = sm ? sm[1] : '';
     if (vid && vid !== _lastVideoId) {
-      scheduleApply();
+      triggerApply();
     }
   });
   observer.observe(document.documentElement, { childList: true, subtree: true });
 
-  if (isWatchPage()) scheduleApply();
+  if (isWatchPage()) triggerApply();
 
   // React to settings changes (e.g. overlay toggle from options page)
   if (isContextValid()) {
@@ -455,6 +466,9 @@
         sendResponse({ ok: false, reason: 'no loudness data' });
         return true;
       }
+      // Re-detect name at save time (DOM may have updated since initial detection)
+      const freshName = getChannelDisplayName();
+      if (freshName) currentChannel.name = freshName;
       const gain = calcGainFromLoudness(currentLoudnessDb);
       currentGain = gain;
       setGain(gain);
@@ -473,10 +487,12 @@
     }
 
     if (msg.type === 'setGain') {
-      const { channelId, name, gain } = msg;
+      const { channelId, gain } = msg;
+      const freshName = getChannelDisplayName();
+      if (freshName) currentChannel.name = freshName;
       currentGain = gain;
       setGain(gain);
-      saveChannelGain(channelId, name, gain, currentVideoType, currentChannel.url).then(() => {
+      saveChannelGain(channelId, currentChannel.name, gain, currentVideoType, currentChannel.url).then(() => {
         notifyPopup();
         sendResponse({ ok: true });
       });
@@ -506,18 +522,51 @@
     if (msg.type === 'forceDetect') {
       const urlVideoId = new URL(location.href).searchParams.get('v') || '';
       const stale = !currentChannel.id || (urlVideoId && urlVideoId !== _lastVideoId);
-      if (stale) {
-        applyVideoVolume().then(() => {
-          loudnessReady.then(() => {
-            sendResponse(getState());
-          });
-        });
-      } else {
-        loudnessReady.then(() => {
+      if (stale && !_applyRunning) {
+        triggerApply().then(() => {
           sendResponse(getState());
         });
+      } else {
+        sendResponse(getState());
       }
       return true;
     }
   });
+
+  // Test-only: expose internals for state transition testing
+  if (typeof globalThis.__TEST_YTCV__ !== 'undefined') {
+    globalThis.__YTCV__ = {
+      get state() {
+        return {
+          currentChannel, currentGain, currentLoudnessDb,
+          currentVideoType, currentIsLiveNow, showGainOverlay,
+          _lastVideoId, _lastProcessedVideo, _applyRunning, connectedVideo,
+          targetLufs, gainNode, audioCtx
+        };
+      },
+      applyVideoVolume,
+      triggerApply,
+      detectChannel,
+      getChannelDisplayName,
+      setGain,
+      getState,
+      isWatchPage,
+      calcGainFromLoudness,
+      loadChannelGain,
+      notifyPopup,
+      // Setters for test setup
+      _set(key, val) {
+        switch (key) {
+          case 'currentChannel': currentChannel = val; break;
+          case 'currentGain': currentGain = val; break;
+          case 'currentVideoType': currentVideoType = val; break;
+          case '_lastVideoId': _lastVideoId = val; break;
+          case '_lastProcessedVideo': _lastProcessedVideo = val; break;
+          case '_applyRunning': _applyRunning = val; break;
+          case 'targetLufs': targetLufs = val; break;
+          case 'currentLoudnessDb': currentLoudnessDb = val; break;
+        }
+      }
+    };
+  }
 })();

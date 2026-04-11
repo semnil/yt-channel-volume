@@ -173,7 +173,6 @@
       sendMsg({
         type: 'setGain',
         channelId: currentChannel.id,
-        name: currentChannel.name,
         gain: lastGain
       }).catch(() => {});
     }
@@ -192,7 +191,6 @@
         sendMsg({
           type: 'setGain',
           channelId: currentChannel.id,
-          name: currentChannel.name,
           gain
         }).catch(() => {});
       }

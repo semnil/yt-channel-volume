@@ -131,7 +131,8 @@
       result = extractFromPlayerResponse(resp);
     }
 
-    if (result.db === null) {
+    // Only fall back if no useful data was extracted at all
+    if (result.db === null && !result.channelId) {
       result = extractFromYtPlayer();
     }
 
