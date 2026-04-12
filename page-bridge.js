@@ -7,7 +7,8 @@
   const MSG_TYPE = '__yt_channel_volume__';
 
   function isWatchPage() {
-    return location.pathname === '/watch';
+    const p = location.pathname;
+    return p === '/watch' || p.startsWith('/live/');
   }
 
   function postResult(info, source) {
@@ -41,7 +42,11 @@
 
   function currentVideoId() {
     try {
-      return new URL(location.href).searchParams.get('v') || '';
+      const u = new URL(location.href);
+      const q = u.searchParams.get('v');
+      if (q) return q;
+      const m = u.pathname.match(/^\/live\/([^/?#]+)/);
+      return m ? m[1] : '';
     } catch (_) { return ''; }
   }
 
@@ -49,7 +54,11 @@
     try {
       const vid = data?.videoDetails?.videoId;
       if (!vid) return true;
-      return vid === currentVideoId();
+      const cur = currentVideoId();
+      // On /live/HANDLE form, pathname id may be a channel handle, not a videoId.
+      // Accept in that case to avoid false negatives.
+      if (!cur || cur.length !== 11) return true;
+      return vid === cur;
     } catch (_) { return true; }
   }
 

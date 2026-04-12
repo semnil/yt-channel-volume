@@ -327,7 +327,7 @@
     if (!video) return;
     _lastProcessedVideo = video;
 
-    _lastVideoId = new URL(location.href).searchParams.get('v') || '';
+    _lastVideoId = getUrlVideoId();
 
     const ch = detectChannel();
     currentChannel = ch;
@@ -391,7 +391,18 @@
   // ── Navigation handling (YouTube SPA) ──────────────────────────────
 
   function isWatchPage() {
-    return location.pathname === '/watch';
+    const p = location.pathname;
+    return p === '/watch' || p.startsWith('/live/');
+  }
+
+  function getUrlVideoId() {
+    try {
+      const u = new URL(location.href);
+      const q = u.searchParams.get('v');
+      if (q) return q;
+      const m = u.pathname.match(/^\/live\/([^/?#]+)/);
+      return m ? m[1] : '';
+    } catch (_) { return ''; }
   }
 
   /** Track the video element we've processed (separate from connectedVideo which tracks audio chain) */
@@ -425,8 +436,7 @@
       triggerApply();
       return;
     }
-    const sm = location.search.match(/[?&]v=([^&]+)/);
-    const vid = sm ? sm[1] : '';
+    const vid = getUrlVideoId();
     if (vid && vid !== _lastVideoId) {
       triggerApply();
     }
@@ -551,6 +561,7 @@
       setGain,
       getState,
       isWatchPage,
+      getUrlVideoId,
       calcGainFromLoudness,
       loadChannelGain,
       notifyPopup,

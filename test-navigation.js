@@ -99,6 +99,10 @@ globalThis.URL = class {
     const s = this._href.split('?')[1] || '';
     return { get(k) { const m = s.match(new RegExp('[?&]?' + k + '=([^&]*)')); return m ? m[1] : ''; } };
   }
+  get pathname() {
+    const after = this._href.replace(/^https?:\/\/[^/]+/, '');
+    return after.split('?')[0].split('#')[0];
+  }
 };
 
 // Chrome API mock
@@ -409,6 +413,13 @@ async function runTests() {
   assert(ytcv.isWatchPage() === false, '/ → false');
   setURL('/results', null);
   assert(ytcv.isWatchPage() === false, '/results → false');
+  mockLocation.pathname = '/live/abc12345678';
+  mockLocation.search = '';
+  mockLocation.href = 'https://www.youtube.com/live/abc12345678';
+  assert(ytcv.isWatchPage() === true, '/live/<id> → true');
+  assert(ytcv.getUrlVideoId() === 'abc12345678', '/live/<id> → videoId extracted');
+  setURL('/watch', 'abc123');
+  assert(ytcv.getUrlVideoId() === 'abc123', '/watch?v=<id> → videoId extracted');
 
   // ── calcGainFromLoudness ───────────────────────────────────────────
 
