@@ -51,11 +51,7 @@
     await chrome.storage.local.set({ [SETTINGS_KEY]: merged });
   }
 
-  async function loadChannelGain(channelId, videoType) {
-    if (!channelId || !isContextValid()) return null;
-    const data = await chrome.storage.local.get(CHANNEL_VOLUMES_KEY);
-    const all = data[CHANNEL_VOLUMES_KEY] || {};
-    const entry = all[channelId];
+  function extractGainForType(entry, videoType) {
     if (!entry) return null;
     // Migration: old format had single `gain` → treat as both
     if ('gain' in entry && !('gainLive' in entry) && !('gainVideo' in entry)) {
@@ -63,6 +59,13 @@
     }
     const key = videoType === 'live' ? 'gainLive' : 'gainVideo';
     return entry[key] ?? null;
+  }
+
+  async function loadChannelGain(channelId, videoType) {
+    if (!channelId || !isContextValid()) return null;
+    const data = await chrome.storage.local.get(CHANNEL_VOLUMES_KEY);
+    const all = data[CHANNEL_VOLUMES_KEY] || {};
+    return extractGainForType(all[channelId], videoType);
   }
 
   async function saveChannelGain(channelId, name, gain, videoType, url) {
