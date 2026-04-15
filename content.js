@@ -476,6 +476,15 @@
         showGainOverlay = !!s.showGainOverlay;
         updateGainOverlay();
       }
+      if (changes[CHANNEL_VOLUMES_KEY] && currentChannel.id) {
+        const all = changes[CHANNEL_VOLUMES_KEY].newValue || {};
+        const entry = all[currentChannel.id];
+        const gain = entry ? extractGainForType(entry, currentVideoType) : 1.0;
+        if (gain == null || gain === currentGain) return;
+        currentGain = gain;
+        setGain(gain);
+        notifyPopup();
+      }
     });
   }
 

@@ -122,7 +122,10 @@ globalThis.chrome = {
         return Promise.resolve();
       },
     },
-    onChanged: { addListener() {} },
+    onChanged: {
+      _listeners: [],
+      addListener(fn) { this._listeners.push(fn); },
+    },
   },
   i18n: { getMessage: () => '' },
   tabs: { sendMessage() { return Promise.resolve(); } },
@@ -180,6 +183,11 @@ function fireVisibilityChange() {
 // Helper to fire observer
 function fireObserver() {
   if (globalThis.__mutationObserverCb) globalThis.__mutationObserverCb();
+}
+
+// Helper to fire chrome.storage.onChanged
+function simulateStorageChange(changes) {
+  for (const fn of chrome.storage.onChanged._listeners) fn(changes, 'local');
 }
 
 // Helper to wait for async
@@ -541,6 +549,73 @@ async function runTests() {
   assert('UCbrand_new' in storageAfter2, 'UC entry created');
   assert(storageAfter2['UCbrand_new'].gainVideo === 0.6, 'gain migrated');
   assert(!('@new_handle' in storageAfter2), '@handle deleted after migration');
+
+  // ── Cross-tab sync via storage.onChanged ───────────────────────────
+
+  section('Sync: onChanged applies new gainVideo for current channel');
+  ytcv._set('currentChannel', { id: 'UCsync1', name: 'Sync Ch', url: '' });
+  ytcv._set('currentVideoType', 'video');
+  ytcv._set('currentGain', 1.0);
+  simulateStorageChange({
+    channelVolumes: { newValue: { 'UCsync1': { name: 'Sync Ch', gainVideo: 0.5, gainLive: 0.9 } } }
+  });
+  assert(ytcv.state.currentGain === 0.5, 'currentGain updated to new gainVideo');
+
+  section('Sync: onChanged applies gainLive when currentVideoType=live');
+  ytcv._set('currentChannel', { id: 'UCsync2', name: 'Sync Ch', url: '' });
+  ytcv._set('currentVideoType', 'live');
+  ytcv._set('currentGain', 1.0);
+  simulateStorageChange({
+    channelVolumes: { newValue: { 'UCsync2': { name: 'Sync Ch', gainVideo: 0.3, gainLive: 0.7 } } }
+  });
+  assert(ytcv.state.currentGain === 0.7, 'currentGain updated to new gainLive');
+
+  section('Sync: onChanged ignores unrelated channel');
+  ytcv._set('currentChannel', { id: 'UCsync3', name: 'Sync Ch', url: '' });
+  ytcv._set('currentVideoType', 'video');
+  ytcv._set('currentGain', 1.0);
+  simulateStorageChange({
+    channelVolumes: { newValue: { 'UCother': { name: 'Other', gainVideo: 0.2 } } }
+  });
+  assert(ytcv.state.currentGain === 1.0, 'gain unchanged for non-matching channel');
+
+  section('Sync: onChanged no-op when gain is unchanged');
+  ytcv._set('currentChannel', { id: 'UCsync4', name: 'Sync Ch', url: '' });
+  ytcv._set('currentVideoType', 'video');
+  ytcv._set('currentGain', 0.4);
+  const sentBefore = mockSentMessages.length;
+  simulateStorageChange({
+    channelVolumes: { newValue: { 'UCsync4': { name: 'Sync Ch', gainVideo: 0.4 } } }
+  });
+  assert(ytcv.state.currentGain === 0.4, 'gain unchanged (dedup)');
+  assert(mockSentMessages.length === sentBefore, 'no popup notify on dedup');
+
+  section('Sync: onChanged applies legacy {gain} format');
+  ytcv._set('currentChannel', { id: 'UClegacy', name: 'Legacy Ch', url: '' });
+  ytcv._set('currentVideoType', 'video');
+  ytcv._set('currentGain', 1.0);
+  simulateStorageChange({
+    channelVolumes: { newValue: { 'UClegacy': { name: 'Legacy Ch', gain: 0.6 } } }
+  });
+  assert(ytcv.state.currentGain === 0.6, 'legacy gain format applied');
+
+  section('Sync: onChanged resets to 1.0 when entry is deleted in another tab');
+  ytcv._set('currentChannel', { id: 'UCdel', name: 'Del Ch', url: '' });
+  ytcv._set('currentVideoType', 'video');
+  ytcv._set('currentGain', 0.5);
+  simulateStorageChange({
+    channelVolumes: { newValue: {} }
+  });
+  assert(ytcv.state.currentGain === 1.0, 'gain reset to 1.0 on remote delete');
+
+  section('Sync: onChanged ignores entry with null gain for current type');
+  ytcv._set('currentChannel', { id: 'UCsync5', name: 'Sync Ch', url: '' });
+  ytcv._set('currentVideoType', 'video');
+  ytcv._set('currentGain', 1.0);
+  simulateStorageChange({
+    channelVolumes: { newValue: { 'UCsync5': { name: 'Sync Ch', gainLive: 0.8 } } }
+  });
+  assert(ytcv.state.currentGain === 1.0, 'gain unchanged when gainVideo missing');
 
   // ── Summary ────────────────────────────────────────────────────────
 
