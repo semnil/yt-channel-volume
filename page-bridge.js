@@ -18,6 +18,7 @@
       isLiveContent: info.isLiveContent,
       isLiveNow: info.isLiveNow,
       channelId: info.channelId,
+      author: info.author,
       source
     }, '*');
   }
@@ -27,6 +28,7 @@
     let isLiveContent = false;
     let isLiveNow = false;
     let channelId = '';
+    let author = '';
     try {
       db = data?.playerConfig?.audioConfig?.loudnessDb;
       if (typeof db !== 'number') {
@@ -36,8 +38,9 @@
       isLiveContent = !!data?.videoDetails?.isLiveContent;
       isLiveNow = !!data?.videoDetails?.isLive;
       channelId = data?.videoDetails?.channelId || '';
+      author = data?.videoDetails?.author || '';
     } catch (_) {}
-    return { db, isLiveContent, isLiveNow, channelId };
+    return { db, isLiveContent, isLiveNow, channelId, author };
   }
 
   function currentVideoId() {
@@ -124,7 +127,7 @@
       }
     } catch (_) {}
 
-    return { db: null, isLiveContent: false, isLiveNow: false, channelId: '' };
+    return { db: null, isLiveContent: false, isLiveNow: false, channelId: '', author: '' };
   }
 
   // ── On-demand extraction (content script can request) ──────────────
@@ -133,7 +136,7 @@
     if (event.source !== window) return;
     if (event.data?.type !== '__yt_channel_volume_request__') return;
 
-    let result = { db: null, isLiveContent: false, isLiveNow: false, channelId: '' };
+    let result = { db: null, isLiveContent: false, isLiveNow: false, channelId: '', author: '' };
 
     const resp = _capturedResp || window.ytInitialPlayerResponse;
     if (resp && isCurrentVideo(resp)) {

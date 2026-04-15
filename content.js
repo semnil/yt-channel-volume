@@ -111,15 +111,34 @@
     // Only accept channelId if it came with valid data for current video
     const bridgeChId = event.data.channelId;
     const hasValidData = (db !== null && db !== undefined) || event.data.isLiveContent;
-    if (hasValidData && bridgeChId && bridgeChId.startsWith('UC') && currentChannel.id !== bridgeChId) {
+    if (hasValidData && bridgeChId && bridgeChId.startsWith('UC')) {
       const oldId = currentChannel.id;
-      currentChannel.id = bridgeChId;
-      currentChannel.url = 'https://www.youtube.com/channel/' + bridgeChId;
-      // Re-detect display name (DOM may have updated since initial detectChannel)
-      const freshName = getChannelDisplayName();
-      if (freshName) currentChannel.name = freshName;
+      const idChanged = oldId !== bridgeChId;
+      if (idChanged) {
+        currentChannel.id = bridgeChId;
+        currentChannel.url = 'https://www.youtube.com/channel/' + bridgeChId;
+      }
+      // Upgrade name if missing, still the raw ID fallback, or stale from prior channel
+      const nameIsStub = !currentChannel.name
+        || currentChannel.name === oldId
+        || currentChannel.name === bridgeChId;
+      const isHandleMigration = idChanged && oldId && oldId.startsWith('@');
+      if (idChanged && !isHandleMigration) {
+        // True channel navigation (UCa → UCb): previous name belongs to old channel.
+        // Prefer author (from this video's player response — guaranteed correct for new id).
+        currentChannel.name = event.data.author || getChannelDisplayName() || bridgeChId;
+      } else if (isHandleMigration) {
+        // @handle → UC: same channel. Refresh from DOM if available, else keep existing.
+        const freshName = getChannelDisplayName();
+        if (freshName) currentChannel.name = freshName;
+        else if (nameIsStub && event.data.author) currentChannel.name = event.data.author;
+      } else if (nameIsStub) {
+        const freshName = getChannelDisplayName();
+        if (freshName) currentChannel.name = freshName;
+        else if (event.data.author) currentChannel.name = event.data.author;
+      }
       // Migrate @handle entry to UC format in storage
-      if (oldId && oldId.startsWith('@') && isContextValid()) {
+      if (idChanged && oldId && oldId.startsWith('@') && isContextValid()) {
         chrome.storage.local.get(CHANNEL_VOLUMES_KEY).then(data => {
           const all = data[CHANNEL_VOLUMES_KEY] || {};
           if (all[oldId] && !all[bridgeChId]) {

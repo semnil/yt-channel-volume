@@ -12,7 +12,7 @@ page-bridge.js (MAIN world content script, document_start)
 ├── Fetch hook: /youtubei/v1/player レスポンスインターセプト (SPA ナビ対応)
 ├── extractFromYtPlayer: ytd-watch-flexy / movie_player から取得 (SPA ナビ対応)
 ├── isLiveContent: videoDetails.isLiveContent を抽出
-└── postMessage → content.js へ loudnessDb + isLiveContent を中継
+└── postMessage → content.js へ loudnessDb + isLiveContent + channelId + author を中継
 
 content.js (ISOLATED world content script, document_idle)
 ├── postMessage listener: page-bridge.js から loudnessDb 受信 (情報表示のみ)
@@ -24,6 +24,7 @@ content.js (ISOLATED world content script, document_idle)
 ├── Web Audio API: <video> → MediaElementSource → GainNode → destination (遅延接続)
 ├── Gain overlay: .ytp-volume-area にゲイン値を表示 (設定で ON/OFF)
 ├── Channel detection: canonical / #owner a[href] / ytd-video-owner-renderer / meta tag → page-bridge channelId (UC 形式)
+│   └── 表示名: DOM (#owner #channel-name a) → page-bridge author (videoDetails.author, SPA ナビ中の stale DOM フォールバック)
 ├── Navigation: triggerApply (async mutex) で applyVideoVolume を直接実行 (デバウンスなし)
 │   ├── Triggers: yt-navigate-finish, popstate, visibilitychange, MutationObserver, 初回ロード
 │   ├── Observer: video 要素変更 + URL video ID 変更のみ検知 (null guard で初回発火を抑制)
@@ -99,6 +100,7 @@ options.html / options.js (設定画面、別タブで表示)
 - **YouTube loudness normalization 考慮**: loudnessDb > 0 の場合、YouTube が -14 LUFS に減衰済み → effectiveLufs = -14。loudnessDb <= 0 の場合はそのまま
 - **Storage migration**: 旧形式 `{ gain }` → `{ gainLive, gainVideo }` への自動マイグレーション。`@handle` → `UC...` への ID マイグレーションも自動
 - **Channel ID 統一**: page-bridge.js が `videoDetails.channelId` (UC 形式) を返す。DOM 検出で `@handle` が得られた場合も UC 形式に自動修正
+- **チャンネル表示名の選択**: SPA ナビで UC→UC 遷移時は旧チャンネルの名前が stale になるため、`videoDetails.author` (現在の動画の player response 由来) を優先。`@handle`→UC マイグレーションでは同一チャンネルのため DOM 優先、取得失敗時は既存名を維持
 - **YouTube reference = -14 LUFS**: `contentLUFS = -14 + loudnessDb`
 - **Default target = -18 LUFS**: ユーザー設定可能 (-30 ~ -6 LUFS)
 - **createMediaElementSource**: called once per `<video>`. Cannot be called again — conflicts with other extensions
