@@ -396,9 +396,21 @@ async function runTests() {
 
   section('Bridge: isLiveContent sets videoType');
   ytcv._set('currentChannel', { id: 'UCtest', name: 'T', url: '' });
-  simulateBridgeMessage({ loudnessDb: -3.0, isLiveContent: true, isLiveNow: true, channelId: 'UCtest' });
-  assert(ytcv.state.currentVideoType === 'live', 'videoType set to live');
+  // True live stream: isLiveContent=true, no loudnessDb (unprocessed).
+  simulateBridgeMessage({ loudnessDb: null, isLiveContent: true, isLiveNow: true, channelId: 'UCtest' });
+  assert(ytcv.state.currentVideoType === 'live', 'live stream without loudness → live');
   assert(ytcv.state.currentIsLiveNow === true, 'isLiveNow set');
+
+  section('Bridge: premiere detected by loudnessDb presence');
+  ytcv._set('currentChannel', { id: 'UCpremiere', name: 'P', url: '' });
+  // Premiere currently airing: isLiveContent=true but has loudnessDb (pre-recorded).
+  simulateBridgeMessage({ loudnessDb: -3.0, isLiveContent: true, isLiveNow: true, channelId: 'UCpremiere' });
+  assert(ytcv.state.currentVideoType === 'video', 'premiere with loudness → video');
+
+  section('Bridge: regular video');
+  ytcv._set('currentChannel', { id: 'UCvideo', name: 'V', url: '' });
+  simulateBridgeMessage({ loudnessDb: -5.0, isLiveContent: false, isLiveNow: false, channelId: 'UCvideo' });
+  assert(ytcv.state.currentVideoType === 'video', 'regular video → video');
 
   // ── _applyRunning guard ────────────────────────────────────────────
 

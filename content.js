@@ -108,7 +108,10 @@
       currentLoudnessDb = db;
     }
     if (event.data.isLiveContent !== undefined) {
-      currentVideoType = event.data.isLiveContent ? 'live' : 'video';
+      // Premieres are pre-recorded: isLiveContent=true but loudnessDb is present.
+      // True live streams: isLiveContent=true and no loudnessDb during/before broadcast.
+      const hasLoudness = typeof event.data.loudnessDb === 'number';
+      currentVideoType = (event.data.isLiveContent && !hasLoudness) ? 'live' : 'video';
       currentIsLiveNow = !!event.data.isLiveNow;
     }
     // Only accept channelId if it came with valid data for current video

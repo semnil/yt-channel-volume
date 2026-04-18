@@ -97,7 +97,7 @@ options.html / options.js (設定画面、別タブで表示)
 - **3経路の loudnessDb 取得**: (1) `Object.defineProperty` で変数セット検知、(2) fetch hook (`/youtubei/v1/player`)、(3) YouTube player DOM 内部データ (`ytd-watch-flexy.__data` / `movie_player.getPlayerResponse`)
 - **videoId フィルタ**: fetch hook で他動画のプリフェッチ応答を除外
 - **watch ページ限定**: MutationObserver / scheduleApply / AudioContext 生成は `/watch` のみ
-- **チャンネル × 種別保存**: `gainLive` (配信/アーカイブ) と `gainVideo` (動画/ショート) を別管理。`isLiveContent` フラグで判定
+- **チャンネル × 種別保存**: `gainLive` (配信/アーカイブ) と `gainVideo` (動画/ショート/プレミア公開) を別管理。`isLiveContent && loudnessDb が null` で live 判定 (プレミア公開は事前録画で loudnessDb を持つため video 扱い)
 - **YouTube loudness normalization 考慮**: loudnessDb > 0 の場合、YouTube が -14 LUFS に減衰済み → effectiveLufs = -14。loudnessDb <= 0 の場合はそのまま
 - **Storage migration**: 旧形式 `{ gain }` → `{ gainLive, gainVideo }` への自動マイグレーション。`@handle` → `UC...` への ID マイグレーションも自動
 - **Channel ID 統一**: page-bridge.js が `videoDetails.channelId` (UC 形式) を返す。DOM 検出で `@handle` が得られた場合も UC 形式に自動修正
@@ -146,4 +146,4 @@ python pack.py
 - Storage keys: `autoLoudnessSettings` (target LUFS, display unit), `channelVolumes` (saved channel gains with URL)
 - Storage format: `channelVolumes.{id}` = `{ name, gainLive, gainVideo, url }` (旧: `{ name, gain, url }` — 自動マイグレーション)
 - slider `input` event = リアルタイムゲイン変更 (storage 書き込みなし)、`change` event = storage 保存
-- videoType 判定: page-bridge.js が `videoDetails.isLiveContent` を返す。初回ロード時はデフォルト 'video' で、loudness 取得後に正しい種別のゲインに切替
+- videoType 判定: page-bridge.js が `videoDetails.isLiveContent` と `loudnessDb` を返す。content.js で `isLiveContent && loudnessDb が null` なら 'live'、それ以外は 'video'。プレミア公開は事前録画で loudnessDb を持つため 'video' 扱い。初回ロード時はデフォルト 'video' で、loudness 取得後に正しい種別のゲインに切替
