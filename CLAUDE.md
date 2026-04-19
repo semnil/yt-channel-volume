@@ -23,12 +23,14 @@ content.js (ISOLATED world content script, document_idle)
 │   └── gain = 10^(compensationDb / 20), clamped [0, 6], NaN/Inf → 1.0
 ├── Web Audio API: <video> → MediaElementSource → GainNode → destination (遅延接続)
 ├── Gain overlay: .ytp-volume-area にゲイン値を表示 (設定で ON/OFF)
-├── Channel detection: canonical / #owner a[href] / ytd-video-owner-renderer / meta tag → page-bridge channelId (UC 形式)
-│   └── 表示名: DOM (#owner #channel-name a) → page-bridge author (videoDetails.author, SPA ナビ中の stale DOM フォールバック)
+├── Channel detection (UC 限定): canonical / #owner a[href*="/channel/"] / meta tag → page-bridge channelId (UC 形式)
+│   ├── @handle リンクは SPA 遷移中に stale になるため一切拒否。UC が DOM にない場合は bridge 待ち
+│   └── 表示名: page-bridge author (videoDetails.author, 権威ソース) → DOM (#owner #channel-name a, フォールバック)
 ├── Navigation: triggerApply (async mutex) で applyVideoVolume を直接実行 (デバウンスなし)
 │   ├── Triggers: yt-navigate-finish, popstate, visibilitychange, MutationObserver, 初回ロード
 │   ├── Observer: video 要素変更 + URL video ID 変更のみ検知 (null guard で初回発火を抑制)
-│   └── _applyRunning mutex で同時実行防止。forceDetect も triggerApply 経由
+│   ├── _applyRunning mutex で同時実行防止。forceDetect も triggerApply 経由
+│   └── videoId 変更時に currentChannel をクリアし、stale チャンネル情報の漏洩を防止
 ├── videoType: 'live' (配信/アーカイブ) or 'video' (動画/ショート) で別ゲイン管理
 ├── Cross-tab sync: chrome.storage.onChanged で channelVolumes 変更を受信し、現在チャンネル × videoType のゲインを即適用 (ポーリングなし、自タブ dedup は currentGain 比較)
 └── Storage
@@ -99,13 +101,13 @@ options.html / options.js (設定画面、別タブで表示)
 - **watch ページ限定**: MutationObserver / scheduleApply / AudioContext 生成は `/watch` のみ
 - **チャンネル × 種別保存**: `gainLive` (配信/アーカイブ) と `gainVideo` (動画/ショート/プレミア公開) を別管理。`isLiveContent && loudnessDb が null` で live 判定 (プレミア公開は事前録画で loudnessDb を持つため video 扱い)
 - **YouTube loudness normalization 考慮**: loudnessDb > 0 の場合、YouTube が -14 LUFS に減衰済み → effectiveLufs = -14。loudnessDb <= 0 の場合はそのまま
-- **Storage migration**: 旧形式 `{ gain }` → `{ gainLive, gainVideo }` への自動マイグレーション。`@handle` → `UC...` への ID マイグレーションも自動
-- **Channel ID 統一**: page-bridge.js が `videoDetails.channelId` (UC 形式) を返す。DOM 検出で `@handle` が得られた場合も UC 形式に自動修正
-- **チャンネル表示名の選択**: SPA ナビで UC→UC 遷移時は旧チャンネルの名前が stale になるため、`videoDetails.author` (現在の動画の player response 由来) を優先。`@handle`→UC マイグレーションでは同一チャンネルのため DOM 優先、取得失敗時は既存名を維持
+- **Storage migration**: 旧形式 `{ gain }` → `{ gainLive, gainVideo }` への自動マイグレーション。orphan `@handle` エントリは author 名一致による backfill で UC に統合 (id 形状ベースのマイグレーションは SPA 遷移で cross-channel corruption を引き起こすため廃止)
+- **Channel ID 統一**: `detectChannel()` は UC 形式のみ返す。DOM の `@handle` リンクは SPA 遷移中に stale (前チャンネルを指す) になるため identifier として拒否。page-bridge.js の `videoDetails.channelId` (UC 形式) がフォールバック
+- **チャンネル表示名の選択**: bridge の `videoDetails.author` を権威ソースとする (現在の動画の player response 由来で SPA 遷移後も正確)。DOM `getChannelDisplayName()` はフォールバックのみ (stale 可能性あり)
 - **YouTube reference = -14 LUFS**: `contentLUFS = -14 + loudnessDb`
 - **Default target = -18 LUFS**: ユーザー設定可能 (-30 ~ -6 LUFS)
 - **createMediaElementSource**: called once per `<video>`. Cannot be called again — conflicts with other extensions
-- **Channel ID formats**: `UC...` (canonical) が正規 ID。DOM 検出で `@handle` が得られても player response の `channelId` で UC に修正
+- **Channel ID formats**: `UC...` (canonical) が正規 ID。`detectChannel()` は `@handle` を拒否し UC のみ返す。DOM に UC がない場合は bridge の `videoDetails.channelId` を待つ
 - **notifyPopup 重複抑制**: state key 比較で no-op 送信を防止
 - **クロスタブ同期**: `chrome.storage.onChanged` で `channelVolumes` 変更を受信。`extractGainForType` で旧 `{gain}` 形式含めて解決し、`currentGain` 比較で自タブ書き込みの reentry を抑止。リモート削除時は 1.0 にリセット
 - **NaN/Infinity ガード**: ゲイン計算結果が非有限値なら 1.0 にフォールバック
@@ -138,8 +140,8 @@ python pack.py
 - `popup.js` sends `forceDetect` on open. `forceDetect` は video ID 変更を検出し、`triggerApply` 経由で `applyVideoVolume` を再実行 (`_applyRunning` を尊重)
 - `content.js` sends `stateChanged` broadcast (sender tab ID フィルタで popup が他タブの更新を無視)
 - AudioContext may be `suspended` until first user interaction (Chrome autoplay policy)
-- Channel detection order: `link[rel="canonical"]` → `#owner a[href]` → `ytd-video-owner-renderer a[href]` → `meta[itemprop="channelId"]` → page-bridge `videoDetails.channelId` (UC 形式で上書き)。watch-metadata-refresh レイアウトでは `ytd-video-owner-renderer` が直接見えないため `#owner` 経由を優先
-- Display name: `#owner #channel-name a` DOM 要素から取得。ID は UC 形式で統一 (日本語ハンドル対応: `/@` 以降を `[^/?#]+` でマッチ)
+- Channel detection order (UC 限定): `link[rel="canonical"][href*="/channel/"]` → `#owner a[href*="/channel/"]` / `ytd-video-owner-renderer a[href*="/channel/"]` → `meta[itemprop="channelId"]` → page-bridge `videoDetails.channelId`。`@handle` リンクは SPA 遷移中に stale になるため identifier として拒否
+- Display name: bridge `videoDetails.author` が権威ソース。DOM `#owner #channel-name a` はフォールバック
 - SPA ナビ検知: `yt-navigate-finish` + `popstate` + `visibilitychange` + MutationObserver (video 要素変更 + URL video ID 変更)
 - テスト: `node test.js` (utils) + `node test-navigation.js` (navigation P01-P18 + bridge + guard + detectChannel + data integrity + cross-tab sync)
 - テスト用 export: `__TEST_YTCV__` フラグで content.js 内部を `globalThis.__YTCV__` に露出。本番では無効
