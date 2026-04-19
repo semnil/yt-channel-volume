@@ -97,8 +97,8 @@
       currentTargetLufs = state.targetLufs;
     }
 
-    // LIVE badge: only shown for currently active live streams
-    if (state.isLiveNow) {
+    // LIVE badge: premieres have isLiveNow=true but videoType='video'
+    if (state.isLiveNow && state.videoType === 'live') {
       videoTypeBadge.textContent = msg('typeLive');
       videoTypeBadge.className = 'type-badge live';
       videoTypeBadge.style.display = '';

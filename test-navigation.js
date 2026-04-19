@@ -382,6 +382,102 @@ async function runTests() {
   await ytcv.triggerApply();
   assert(ytcv.state.currentGain === 0.5, 'saved gain applied even for muted tab');
 
+  // ── Live archive: /live/<id> applies gainLive after loudness ───────
+
+  section('Archive /live/<id>: gainLive applied after loudness resolves');
+  mockStorage['channelVolumes'] = { 'UCarch': { name: 'Ch Arch', gainLive: 2.0 } };
+  mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCarch' };
+  ytcv._set('_lastProcessedVideo', null);
+  ytcv._set('_lastVideoId', '');
+  ytcv._set('currentChannel', { id: '', name: '', url: '' });
+  ytcv._set('currentGain', 1.0);
+  ytcv._set('currentVideoType', 'video');
+  ytcv._set('currentLoudnessDb', null);
+  mockLocation.pathname = '/live/j0nen00qp2o';
+  mockLocation.search = '';
+  mockLocation.href = 'https://www.youtube.com/live/j0nen00qp2o';
+  await ytcv.triggerApply();
+  assert(ytcv.state.currentVideoType === 'video', 'initial videoType=video (before loudness)');
+  assert(ytcv.state.currentGain === 1.0, 'initial gain=1.0 (no gainVideo saved)');
+  simulateBridgeMessage({
+    loudnessDb: -5.0,
+    isLiveContent: true,
+    isLiveNow: false,
+    channelId: 'UCarch'
+  });
+  await tick();
+  await tick();
+  await tick();
+  assert(ytcv.state.currentVideoType === 'live', 'videoType updated to live after bridge message');
+  assert(ytcv.state.currentGain === 2.0, 'gainLive=2.0 applied after reload');
+
+  section('Backfill: orphan @handle entry adopted via author name match');
+  mockStorage['channelVolumes'] = {
+    '@orphan_handle': { name: 'Orphan Ch', gainLive: 2.5, gainVideo: 1.3, url: 'https://www.youtube.com/@orphan_handle' }
+  };
+  mockDOMElements['canonical'] = null;
+  mockDOMElements['ownerLink'] = null;
+  mockDOMElements['metaChannel'] = null;
+  ytcv._set('currentChannel', { id: '', name: '', url: '' });
+  simulateBridgeMessage({
+    loudnessDb: -5.0,
+    isLiveContent: true,
+    isLiveNow: false,
+    channelId: 'UCadopt',
+    author: 'Orphan Ch'
+  });
+  await tick();
+  await tick();
+  assert(mockStorage['channelVolumes']['UCadopt']?.gainLive === 2.5, 'gainLive migrated to UC');
+  assert(mockStorage['channelVolumes']['UCadopt']?.gainVideo === 1.3, 'gainVideo migrated to UC');
+  assert(!mockStorage['channelVolumes']['@orphan_handle'], '@handle entry removed');
+  assert(mockStorage['channelVolumes']['UCadopt']?.url === 'https://www.youtube.com/channel/UCadopt', 'url updated to UC form');
+
+  section('Backfill: UC entry already exists — do not clobber');
+  mockStorage['channelVolumes'] = {
+    '@old_handle2': { name: 'Same Name', gainLive: 2.5 },
+    'UCexists': { name: 'Same Name', gainLive: 0.8 }
+  };
+  ytcv._set('currentChannel', { id: '', name: '', url: '' });
+  simulateBridgeMessage({
+    loudnessDb: -5.0,
+    isLiveContent: true,
+    channelId: 'UCexists',
+    author: 'Same Name'
+  });
+  await tick();
+  await tick();
+  assert(mockStorage['channelVolumes']['UCexists']?.gainLive === 0.8, 'existing UC entry preserved');
+  assert(mockStorage['channelVolumes']['@old_handle2']?.gainLive === 2.5, '@handle entry not touched when UC exists');
+
+  section('Archive /live/<id>: channelId from bridge when DOM detection fails');
+  mockStorage['channelVolumes'] = { 'UCarch3': { name: 'Ch Arch3', gainLive: 1.7 } };
+  mockDOMElements['canonical'] = null;
+  mockDOMElements['ownerLink'] = null;
+  mockDOMElements['metaChannel'] = null;
+  ytcv._set('_lastProcessedVideo', null);
+  ytcv._set('_lastVideoId', '');
+  ytcv._set('currentChannel', { id: '', name: '', url: '' });
+  ytcv._set('currentGain', 1.0);
+  ytcv._set('currentVideoType', 'video');
+  ytcv._set('currentLoudnessDb', null);
+  mockLocation.pathname = '/live/abc99999999';
+  mockLocation.search = '';
+  mockLocation.href = 'https://www.youtube.com/live/abc99999999';
+  await ytcv.triggerApply();
+  assert(ytcv.state.currentChannel.id === '', 'initial channel id empty (DOM unavailable)');
+  simulateBridgeMessage({
+    loudnessDb: -4.0,
+    isLiveContent: true,
+    isLiveNow: false,
+    channelId: 'UCarch3'
+  });
+  await tick();
+  await tick();
+  await tick();
+  assert(ytcv.state.currentChannel.id === 'UCarch3', 'channelId adopted from bridge');
+  assert(ytcv.state.currentGain === 1.7, 'gainLive=1.7 applied via reload after bridge supplies channelId');
+
   // ── Bridge message: channelId correction ───────────────────────────
 
   section('Bridge: channelId @handle → UC correction');
@@ -401,11 +497,11 @@ async function runTests() {
   assert(ytcv.state.currentVideoType === 'live', 'live stream without loudness → live');
   assert(ytcv.state.currentIsLiveNow === true, 'isLiveNow set');
 
-  section('Bridge: premiere detected by loudnessDb presence');
+  section('Bridge: premiere has isLiveContent=false');
   ytcv._set('currentChannel', { id: 'UCpremiere', name: 'P', url: '' });
-  // Premiere currently airing: isLiveContent=true but has loudnessDb (pre-recorded).
-  simulateBridgeMessage({ loudnessDb: -3.0, isLiveContent: true, isLiveNow: true, channelId: 'UCpremiere' });
-  assert(ytcv.state.currentVideoType === 'video', 'premiere with loudness → video');
+  // Premiere: isLiveContent=false (verified via probe), isLiveNow=true during airing
+  simulateBridgeMessage({ loudnessDb: -3.0, isLiveContent: false, isLiveNow: true, channelId: 'UCpremiere' });
+  assert(ytcv.state.currentVideoType === 'video', 'premiere isLiveContent=false → video');
 
   section('Bridge: regular video');
   ytcv._set('currentChannel', { id: 'UCvideo', name: 'V', url: '' });

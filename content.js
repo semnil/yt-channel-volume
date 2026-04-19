@@ -108,15 +108,16 @@
       currentLoudnessDb = db;
     }
     if (event.data.isLiveContent !== undefined) {
-      // Premieres are pre-recorded: isLiveContent=true but loudnessDb is present.
-      // True live streams: isLiveContent=true and no loudnessDb during/before broadcast.
-      const hasLoudness = typeof event.data.loudnessDb === 'number';
-      currentVideoType = (event.data.isLiveContent && !hasLoudness) ? 'live' : 'video';
+      currentVideoType = event.data.isLiveContent ? 'live' : 'video';
       currentIsLiveNow = !!event.data.isLiveNow;
     }
-    // Only accept channelId if it came with valid data for current video
+    // Only accept channelId if it came with valid data for current video.
+    // isLiveContent is always boolean from page-bridge.js; undefined only
+    // signals malformed / spoofed messages. Premiere videos report
+    // isLiveContent=false with db=null, so relying on db alone loses their
+    // channelId and leaves saved gain unapplied.
     const bridgeChId = event.data.channelId;
-    const hasValidData = (db !== null && db !== undefined) || event.data.isLiveContent;
+    const hasValidData = (db !== null && db !== undefined) || event.data.isLiveContent !== undefined;
     if (hasValidData && bridgeChId && bridgeChId.startsWith('UC')) {
       const oldId = currentChannel.id;
       const idChanged = oldId !== bridgeChId;
@@ -153,6 +154,28 @@
             delete all[oldId];
             chrome.storage.local.set({ [CHANNEL_VOLUMES_KEY]: all });
           }
+        });
+      }
+      // Backfill: orphan @handle entries (saved before UC ever surfaced in
+      // this tab) never hit the idChanged path above. When we learn the UC
+      // id and have an author name, statically adopt any same-name @handle
+      // entry so the user's saved gain resurfaces.
+      if (bridgeChId.startsWith('UC') && event.data.author && isContextValid()) {
+        const authorName = event.data.author;
+        chrome.storage.local.get(CHANNEL_VOLUMES_KEY).then(data => {
+          const all = data[CHANNEL_VOLUMES_KEY] || {};
+          if (all[bridgeChId]) return;
+          const match = Object.entries(all).find(([k, v]) =>
+            k.startsWith('@') && v.name === authorName
+          );
+          if (!match) return;
+          const [oldKey, val] = match;
+          all[bridgeChId] = {
+            ...val,
+            url: 'https://www.youtube.com/channel/' + bridgeChId
+          };
+          delete all[oldKey];
+          chrome.storage.local.set({ [CHANNEL_VOLUMES_KEY]: all });
         });
       }
     }
