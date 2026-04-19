@@ -150,4 +150,36 @@
 
     postResult(result, 'request');
   });
+
+  // ── Diagnostic dump (MAIN-world visibility for popup-open) ─────────
+  // Content script cannot read `_capturedResp` / movie_player methods from
+  // ISOLATED world. When the popup opens, content.js posts this message to
+  // force page-bridge to log what it can actually see.
+
+  window.addEventListener('message', (event) => {
+    if (event.source !== window) return;
+    if (event.data?.type !== '__yt_channel_volume_diag__') return;
+    try {
+      const cap = _capturedResp;
+      const flexy = document.querySelector('ytd-watch-flexy');
+      const flexyPr = flexy?.__data?.playerResponse || flexy?.playerResponse;
+      const moviePlayer = document.getElementById('movie_player');
+      const mpPr = moviePlayer && typeof moviePlayer.getPlayerResponse === 'function'
+        ? moviePlayer.getPlayerResponse() : null;
+      const summarize = (pr) => pr?.videoDetails ? {
+        videoId: pr.videoDetails.videoId,
+        channelId: pr.videoDetails.channelId,
+        author: pr.videoDetails.author,
+        isLiveContent: !!pr.videoDetails.isLiveContent,
+        isLive: !!pr.videoDetails.isLive,
+        loudnessDb: pr.playerConfig?.audioConfig?.loudnessDb
+      } : null;
+      console.log('[YTCV][bridge-diag]', {
+        urlVideoId: currentVideoId(),
+        captured: summarize(cap),
+        flexy: summarize(flexyPr),
+        moviePlayer: summarize(mpPr)
+      });
+    } catch (_) { /* logging must never break flow */ }
+  });
 })();

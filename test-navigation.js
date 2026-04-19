@@ -557,13 +557,15 @@ async function runTests() {
   assert(chCanon.id === 'UCcanon123', 'canonical → UC ID');
   mockDOMElements['canonical'] = null;
 
-  section('detectChannel: #owner a[href*="/@"] (watch-metadata-refresh layout)');
+  section('detectChannel: @handle-only owner link returns empty (UC awaited from bridge)');
+  // Modern YouTube owner links often use /@handle form, but the @handle is
+  // unsafe as an identifier during SPA navigation (stale reads leak between
+  // channels). detectChannel refuses it; bridge supplies the authoritative UC.
   mockDOMElements['ownerLink'] = { href: 'https://www.youtube.com/@sleepfreaks' };
   mockDOMElements['channelName'] = { textContent: 'SLEEP FREAKS' };
   const chOwner = ytcv.detectChannel();
-  assert(chOwner.id === '@sleepfreaks', 'owner link @handle detected');
-  assert(chOwner.name === 'SLEEP FREAKS', 'display name from #channel-name');
-  assert(chOwner.url === 'https://www.youtube.com/@sleepfreaks', 'URL from handle');
+  assert(chOwner.id === '', '@handle owner link → empty id');
+  assert(chOwner.name === '', 'name empty when no UC available');
   mockDOMElements['ownerLink'] = null;
   mockDOMElements['channelName'] = null;
 
@@ -573,11 +575,10 @@ async function runTests() {
   assert(chOwnerUC.id === 'UCowner456', 'owner link UC ID detected');
   mockDOMElements['ownerLink'] = null;
 
-  section('detectChannel: Japanese handle');
+  section('detectChannel: Japanese handle also refused');
   mockDOMElements['ownerLink'] = { href: 'https://www.youtube.com/@%E3%82%86%E3%81%A3%E3%81%8F%E3%82%8A' };
   const chJp = ytcv.detectChannel();
-  assert(chJp.id === '@ゆっくり', 'Japanese handle decoded');
-  assert(chJp.url === 'https://www.youtube.com/@ゆっくり', 'Japanese handle URL');
+  assert(chJp.id === '', 'Japanese @handle owner link → empty id');
   mockDOMElements['ownerLink'] = null;
 
   section('detectChannel: meta tag fallback');
@@ -593,30 +594,32 @@ async function runTests() {
 
   // ── Data integrity: channelId overwrite must update name ────────────
 
-  section('Data: bridge channelId update refreshes name');
+  section('Data: @handle-only DOM yields empty currentChannel, bridge supplies UC+name');
   mockDOMElements['canonical'] = null;
   mockDOMElements['ownerLink'] = { href: 'https://www.youtube.com/@old_handle' };
   mockDOMElements['channelName'] = { textContent: 'Old Channel' };
   setURL('/watch', 'vid_data1');
   ytcv._set('_lastProcessedVideo', null);
   ytcv._set('_lastVideoId', '');
+  ytcv._set('currentChannel', { id: '', name: '', url: '' });
   await ytcv.triggerApply();
-  // State should have old channel info
-  assert(ytcv.state.currentChannel.id === '@old_handle', 'initial: @old_handle');
-  assert(ytcv.state.currentChannel.name === 'Old Channel', 'initial: Old Channel');
-  // Simulate bridge returning new channelId with updated DOM
-  mockDOMElements['channelName'] = { textContent: 'New Channel' };
-  simulateBridgeMessage({ loudnessDb: -5.0, isLiveContent: false, channelId: 'UCnew123' });
-  assert(ytcv.state.currentChannel.id === 'UCnew123', 'bridge updated id to UC');
-  assert(ytcv.state.currentChannel.name === 'New Channel', 'name refreshed from DOM');
-  assert(ytcv.state.currentChannel.url === 'https://www.youtube.com/channel/UCnew123', 'url updated to UC');
+  // DOM only provides @handle → detectChannel returns empty; wait for bridge.
+  assert(ytcv.state.currentChannel.id === '', 'initial: empty (@handle refused)');
+  assert(ytcv.state.currentChannel.name === '', 'initial: empty name');
+  // Bridge provides authoritative UC + author for the current video.
+  simulateBridgeMessage({ loudnessDb: -5.0, isLiveContent: false, channelId: 'UCnew123', author: 'New Channel' });
+  assert(ytcv.state.currentChannel.id === 'UCnew123', 'bridge provided UC id');
+  assert(ytcv.state.currentChannel.name === 'New Channel', 'name from author');
+  assert(ytcv.state.currentChannel.url === 'https://www.youtube.com/channel/UCnew123', 'url from UC');
 
-  section('Data: bridge channelId does not overwrite name with stale DOM');
-  ytcv._set('currentChannel', { id: '@stale', name: 'Stale Name', url: '' });
-  mockDOMElements['channelName'] = null; // DOM not yet updated
-  simulateBridgeMessage({ loudnessDb: -3.0, isLiveContent: false, channelId: 'UCfresh' });
+  section('Data: bridge author is authoritative over any stale in-memory name');
+  // Even if somehow we held an old name, a cross-channel bridge update must
+  // overwrite it with author (the player response for the current video).
+  ytcv._set('currentChannel', { id: 'UCprev', name: 'Prev Channel Name', url: '' });
+  mockDOMElements['channelName'] = null;
+  simulateBridgeMessage({ loudnessDb: -3.0, isLiveContent: false, channelId: 'UCfresh', author: 'Fresh Channel' });
   assert(ytcv.state.currentChannel.id === 'UCfresh', 'id updated');
-  assert(ytcv.state.currentChannel.name === 'Stale Name', 'name kept when DOM empty');
+  assert(ytcv.state.currentChannel.name === 'Fresh Channel', 'name replaced by author');
 
   // ── Data integrity: saveChannelGain preserves other fields ─────────
 
@@ -631,32 +634,35 @@ async function runTests() {
   assert(preserveEntry.gainLive === 0.8, 'gainLive preserved in storage');
   assert(preserveEntry.gainVideo === 1.0, 'gainVideo present in storage');
 
-  section('Data: @handle migration preserves data, does not overwrite existing UC entry');
+  section('Data: id-shape @handle migration is NOT performed (corruption prevention)');
+  // Legacy @handle → UC migration triggered purely by id-shape was the root
+  // cause of silent cross-channel storage corruption on SPA navigation. It has
+  // been removed. Only name-matched backfill migrates orphan @handle entries.
   mockStorage['channelVolumes'] = {
     '@migrate_handle': { name: 'Migrate Ch', gainVideo: 0.7 },
     'UCexisting': { name: 'Existing UC Ch', gainVideo: 0.3, gainLive: 0.4 }
   };
   ytcv._set('currentChannel', { id: '@migrate_handle', name: 'Migrate Ch', url: '' });
+  // No author in bridge message → backfill condition not met.
   simulateBridgeMessage({ loudnessDb: -2.0, isLiveContent: false, channelId: 'UCexisting' });
   await tick();
-  // UCexisting already exists → migration should NOT overwrite it
   const storageAfter = mockStorage['channelVolumes'];
   assert(storageAfter['UCexisting'].gainVideo === 0.3, 'existing UC entry not overwritten');
   assert(storageAfter['UCexisting'].gainLive === 0.4, 'existing UC gainLive preserved');
-  // @handle entry should still exist (not deleted because UC already existed)
-  assert('@migrate_handle' in storageAfter, '@handle kept when UC exists');
+  assert('@migrate_handle' in storageAfter, '@handle entry untouched (no automatic migration)');
 
-  section('Data: @handle migration moves data when UC does not exist');
+  section('Data: orphan @handle entry adopted via backfill when author matches');
   mockStorage['channelVolumes'] = {
     '@new_handle': { name: 'New Handle Ch', gainVideo: 0.6 }
   };
-  ytcv._set('currentChannel', { id: '@new_handle', name: 'New Handle Ch', url: '' });
-  simulateBridgeMessage({ loudnessDb: -1.0, isLiveContent: false, channelId: 'UCbrand_new' });
+  ytcv._set('currentChannel', { id: '', name: '', url: '' });
+  simulateBridgeMessage({ loudnessDb: -1.0, isLiveContent: false, channelId: 'UCbrand_new', author: 'New Handle Ch' });
+  await tick();
   await tick();
   const storageAfter2 = mockStorage['channelVolumes'];
-  assert('UCbrand_new' in storageAfter2, 'UC entry created');
-  assert(storageAfter2['UCbrand_new'].gainVideo === 0.6, 'gain migrated');
-  assert(!('@new_handle' in storageAfter2), '@handle deleted after migration');
+  assert('UCbrand_new' in storageAfter2, 'UC entry created via backfill');
+  assert(storageAfter2['UCbrand_new'].gainVideo === 0.6, 'gain migrated via backfill');
+  assert(!('@new_handle' in storageAfter2), '@handle deleted after backfill');
 
   // ── Cross-tab sync via storage.onChanged ───────────────────────────
 

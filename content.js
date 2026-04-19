@@ -124,43 +124,24 @@
       if (idChanged) {
         currentChannel.id = bridgeChId;
         currentChannel.url = 'https://www.youtube.com/channel/' + bridgeChId;
-      }
-      // Upgrade name if missing, still the raw ID fallback, or stale from prior channel
-      const nameIsStub = !currentChannel.name
-        || currentChannel.name === oldId
-        || currentChannel.name === bridgeChId;
-      const isHandleMigration = idChanged && oldId && oldId.startsWith('@');
-      if (idChanged && !isHandleMigration) {
-        // True channel navigation (UCa → UCb): previous name belongs to old channel.
-        // Prefer author (from this video's player response — guaranteed correct for new id).
+        // Bridge author comes from the current video's player response — it is
+        // authoritative for bridgeChId. Prefer it over DOM, which may lag the
+        // SPA navigation and still describe the previous channel.
         currentChannel.name = event.data.author || getChannelDisplayName() || bridgeChId;
-      } else if (isHandleMigration) {
-        // @handle → UC: same channel. Refresh from DOM if available, else keep existing.
-        const freshName = getChannelDisplayName();
-        if (freshName) currentChannel.name = freshName;
-        else if (nameIsStub && event.data.author) currentChannel.name = event.data.author;
-      } else if (nameIsStub) {
-        const freshName = getChannelDisplayName();
-        if (freshName) currentChannel.name = freshName;
-        else if (event.data.author) currentChannel.name = event.data.author;
+      } else {
+        const nameIsStub = !currentChannel.name || currentChannel.name === bridgeChId;
+        if (nameIsStub) {
+          currentChannel.name = event.data.author || getChannelDisplayName() || currentChannel.name;
+        }
       }
-      // Migrate @handle entry to UC format in storage
-      if (idChanged && oldId && oldId.startsWith('@') && isContextValid()) {
-        chrome.storage.local.get(CHANNEL_VOLUMES_KEY).then(data => {
-          const all = data[CHANNEL_VOLUMES_KEY] || {};
-          if (all[oldId] && !all[bridgeChId]) {
-            all[bridgeChId] = all[oldId];
-            all[bridgeChId].url = currentChannel.url;
-            delete all[oldId];
-            chrome.storage.local.set({ [CHANNEL_VOLUMES_KEY]: all });
-          }
-        });
-      }
-      // Backfill: orphan @handle entries (saved before UC ever surfaced in
-      // this tab) never hit the idChanged path above. When we learn the UC
-      // id and have an author name, statically adopt any same-name @handle
-      // entry so the user's saved gain resurfaces.
-      if (bridgeChId.startsWith('UC') && event.data.author && isContextValid()) {
+      // Backfill: orphan @handle entries in storage (saved before UC ever
+      // surfaced for the user) are adopted when name matches author. This is
+      // the only path that mutates storage automatically; it is safe because
+      // the name-match gate prevents cross-channel adoption. No longer trigger
+      // migration purely from id-shape (@handle startsWith), which conflated
+      // stale DOM reads with genuine legacy entries and caused silent data
+      // corruption on SPA navigation.
+      if (event.data.author && isContextValid()) {
         const authorName = event.data.author;
         chrome.storage.local.get(CHANNEL_VOLUMES_KEY).then(data => {
           const all = data[CHANNEL_VOLUMES_KEY] || {};
@@ -247,45 +228,50 @@
     return meta?.content || '';
   }
 
+  // Returns UC-format channel id only. The modern YouTube owner widget
+  // commonly renders `/@handle` links, but during SPA navigation those links
+  // update asynchronously and can still point to the previous channel. Using
+  // the @handle as an identifier conflates two different channels; we refuse
+  // it and wait for page-bridge to provide the authoritative UC from the new
+  // video's player response.
   function detectChannel() {
     const displayName = getChannelDisplayName();
-    let url = '';
 
     const canonical = document.querySelector('link[rel="canonical"][href*="/channel/"]');
     if (canonical) {
       const m = canonical.href.match(/\/channel\/(UC[A-Za-z0-9_-]+)/);
       if (m) {
-        url = 'https://www.youtube.com/channel/' + m[1];
-        return { id: m[1], name: displayName || m[1], url };
+        return {
+          id: m[1],
+          name: displayName || m[1],
+          url: 'https://www.youtube.com/channel/' + m[1]
+        };
       }
     }
 
     const ownerLink = document.querySelector(
       '#owner a[href*="/channel/"], ' +
-      '#owner a[href*="/@"], ' +
-      'ytd-video-owner-renderer a[href*="/channel/"], ' +
-      'ytd-video-owner-renderer a[href*="/@"]'
+      'ytd-video-owner-renderer a[href*="/channel/"]'
     );
     if (ownerLink) {
-      const href = ownerLink.href;
-      const mCh = href.match(/\/channel\/(UC[A-Za-z0-9_-]+)/);
+      const mCh = ownerLink.href.match(/\/channel\/(UC[A-Za-z0-9_-]+)/);
       if (mCh) {
-        url = 'https://www.youtube.com/channel/' + mCh[1];
-        return { id: mCh[1], name: displayName || mCh[1], url };
-      }
-      const mHandle = href.match(/\/@([^/?#]+)/);
-      if (mHandle) {
-        const handle = decodeURIComponent(mHandle[1]);
-        url = 'https://www.youtube.com/@' + handle;
-        return { id: '@' + handle, name: displayName || handle, url };
+        return {
+          id: mCh[1],
+          name: displayName || mCh[1],
+          url: 'https://www.youtube.com/channel/' + mCh[1]
+        };
       }
     }
 
     const metaChannel = document.querySelector('meta[itemprop="channelId"]');
     if (metaChannel) {
       const id = metaChannel.content;
-      url = 'https://www.youtube.com/channel/' + id;
-      return { id, name: displayName || id, url };
+      return {
+        id,
+        name: displayName || id,
+        url: 'https://www.youtube.com/channel/' + id
+      };
     }
 
     return { id: '', name: '', url: '' };
@@ -375,10 +361,19 @@
     if (!video) return;
     _lastProcessedVideo = video;
 
+    const prevVideoId = _lastVideoId;
     _lastVideoId = getUrlVideoId();
+    const videoIdChanged = prevVideoId && prevVideoId !== _lastVideoId;
+    // On cross-video navigation, clear prior channel so stale data from the
+    // previous video cannot leak into the new video's state. detectChannel()
+    // may return empty when DOM is mid-transition — bridge will provide UC
+    // shortly via requestLoudnessWithRetry.
+    if (videoIdChanged) {
+      currentChannel = { id: '', name: '', url: '' };
+    }
 
     const ch = detectChannel();
-    currentChannel = ch;
+    if (ch.id) currentChannel = ch;
 
     await loadSettings();
 
@@ -386,21 +381,16 @@
     currentVideoType = 'video';
     currentIsLiveNow = false;
 
-    const initialGain = await loadChannelGain(ch.id, 'video');
+    const initialGain = await loadChannelGain(currentChannel.id, 'video');
     currentGain = initialGain ?? 1.0;
     setGain(currentGain);
     notifyPopup();
 
     // Fetch loudness + videoType + channelId, then re-apply if changed
     const initialType = currentVideoType;
-    const initialChId = ch.id;
+    const initialChId = currentChannel.id;
     requestLoudnessWithRetry(10, 500).then(async () => {
       const chIdChanged = currentChannel.id !== initialChId;
-      if (chIdChanged) {
-        // Re-detect display name since DOM has likely updated
-        const freshName = getChannelDisplayName();
-        if (freshName) currentChannel.name = freshName;
-      }
       if (currentVideoType !== initialType || chIdChanged) {
         const typeGain = await loadChannelGain(currentChannel.id, currentVideoType);
         currentGain = typeGain ?? 1.0;
@@ -589,6 +579,39 @@
     if (msg.type === 'forceDetect') {
       const urlVideoId = new URL(location.href).searchParams.get('v') || '';
       const stale = !currentChannel.id || (urlVideoId && urlVideoId !== _lastVideoId);
+      // Diagnostic dump: captures every input used to judge channel / videoType
+      // so a mismatched popup display can be reproduced post-hoc. Fires only on
+      // popup open, so console noise is bounded.
+      try {
+        const canonical = document.querySelector('link[rel="canonical"]');
+        const ownerUc = document.querySelector('#owner a[href*="/channel/"], ytd-video-owner-renderer a[href*="/channel/"]');
+        const ownerHandle = document.querySelector('#owner a[href*="/@"], ytd-video-owner-renderer a[href*="/@"]');
+        const metaCh = document.querySelector('meta[itemprop="channelId"]');
+        const nameEl = document.querySelector('#owner #channel-name a, ytd-video-owner-renderer #channel-name a');
+        console.log('[YTCV][popup-open]', {
+          url: location.href,
+          pathname: location.pathname,
+          urlVideoId,
+          lastVideoId: _lastVideoId,
+          stale,
+          applyRunning: _applyRunning,
+          currentChannel: { ...currentChannel },
+          currentVideoType,
+          currentIsLiveNow,
+          currentLoudnessDb,
+          currentGain,
+          dom: {
+            canonicalHref: canonical?.href || null,
+            ownerChannelHref: ownerUc?.href || null,
+            ownerHandleHref: ownerHandle?.href || null,
+            metaChannelId: metaCh?.content || null,
+            channelNameText: nameEl?.textContent?.trim() || null
+          }
+        });
+      } catch (_) { /* logging must never break flow */ }
+      // Also request MAIN-world diagnostic from page-bridge (player response,
+      // movie_player state, flexy data — none visible from ISOLATED world).
+      try { window.postMessage({ type: '__yt_channel_volume_diag__' }, '*'); } catch (_) {}
       if (stale && !_applyRunning) {
         triggerApply().then(() => {
           sendResponse(getState());
