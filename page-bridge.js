@@ -146,6 +146,14 @@
     // Only fall back if no useful data was extracted at all
     if (result.db === null && !result.channelId) {
       result = extractFromYtPlayer();
+    } else {
+      // _capturedResp reflects page-load state; isLiveNow may have changed
+      // since then (e.g. waiting → live). movie_player holds the current
+      // state, so prefer its isLiveNow when available.
+      const live = extractFromYtPlayer();
+      if (live.isLiveNow && !result.isLiveNow) {
+        result.isLiveNow = true;
+      }
     }
 
     postResult(result, 'request');

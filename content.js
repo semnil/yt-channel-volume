@@ -420,7 +420,7 @@
   function notifyPopup() {
     if (!isContextValid()) return;
     const state = getState();
-    const key = state.loudnessDb + '|' + state.gain + '|' + state.channel.id + '|' + state.channel.name + '|' + state.videoType;
+    const key = state.loudnessDb + '|' + state.gain + '|' + state.channel.id + '|' + state.channel.name + '|' + state.videoType + '|' + state.isLiveNow;
     if (key === _lastNotifiedState) return;
     _lastNotifiedState = key;
     chrome.runtime.sendMessage({ type: 'stateChanged', ...state }).catch(() => {});
@@ -617,6 +617,7 @@
           sendResponse(getState());
         });
       } else {
+        requestLoudness();
         sendResponse(getState());
       }
       return true;

@@ -97,6 +97,7 @@ options.html / options.js (設定画面、別タブで表示)
 - **loudnessDb は情報表示のみ**: 自動適用しない。ユーザーが動画を選んで「チャンネルに適用」で保存
 - **MAIN world + ISOLATED world 分離**: YouTube の CSP が inline script を禁止するため、loudnessDb 抽出は `page-bridge.js` (MAIN world, `document_start`) で実行
 - **3経路の loudnessDb 取得**: (1) `Object.defineProperty` で変数セット検知、(2) fetch hook (`/youtubei/v1/player`)、(3) YouTube player DOM 内部データ (`ytd-watch-flexy.__data` / `movie_player.getPlayerResponse`)
+- **isLiveNow の補完**: `_capturedResp` の `isLiveNow` がページロード時点で固定されるため、request ハンドラで `movie_player.getPlayerResponse()` から最新の `isLiveNow` を補完する (待機→配信開始遷移に対応)。content.js の `forceDetect` (popup 開封時) で bridge に再問い合わせし、応答で `currentIsLiveNow` が更新された場合に `stateChanged` 経由で popup へ通知
 - **videoId フィルタ**: fetch hook で他動画のプリフェッチ応答を除外
 - **watch ページ限定**: MutationObserver / scheduleApply / AudioContext 生成は `/watch` のみ
 - **チャンネル × 種別保存**: `gainLive` (配信/アーカイブ) と `gainVideo` (動画/ショート/プレミア公開) を別管理。`isLiveContent && loudnessDb が null` で live 判定 (プレミア公開は事前録画で loudnessDb を持つため video 扱い)
@@ -108,7 +109,7 @@ options.html / options.js (設定画面、別タブで表示)
 - **Default target = -18 LUFS**: ユーザー設定可能 (-30 ~ -6 LUFS)
 - **createMediaElementSource**: called once per `<video>`. Cannot be called again — conflicts with other extensions
 - **Channel ID formats**: `UC...` (canonical) が正規 ID。`detectChannel()` は `@handle` を拒否し UC のみ返す。DOM に UC がない場合は bridge の `videoDetails.channelId` を待つ
-- **notifyPopup 重複抑制**: state key 比較で no-op 送信を防止
+- **notifyPopup 重複抑制**: state key 比較で no-op 送信を防止。key には `isLiveNow` を含み、待機→配信開始の遷移でも popup へ通知が発火する
 - **クロスタブ同期**: `chrome.storage.onChanged` で `channelVolumes` 変更を受信。`extractGainForType` で旧 `{gain}` 形式含めて解決し、`currentGain` 比較で自タブ書き込みの reentry を抑止。リモート削除時は 1.0 にリセット
 - **NaN/Infinity ガード**: ゲイン計算結果が非有限値なら 1.0 にフォールバック
 - **遅延オーディオチェーン**: ゲインが 1.0 (パススルー) の場合は `createMediaElementSource` を呼ばない → Live Caption のちらつきを回避。`connectedVideo` (audio chain) と `_lastProcessedVideo` (検出済み video) を分離管理

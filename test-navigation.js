@@ -731,6 +731,28 @@ async function runTests() {
   });
   assert(ytcv.state.currentGain === 1.0, 'gain unchanged when gainVideo missing');
 
+  // ── isLiveNow transition (waiting → live) ─────────────────────────
+
+  section('isLiveNow: bridge update from false to true triggers notifyPopup');
+  ytcv._set('currentChannel', { id: 'UCliveTransition', name: 'Live Ch', url: '' });
+  ytcv._set('currentVideoType', 'live');
+  simulateBridgeMessage({ loudnessDb: null, isLiveContent: true, isLiveNow: false, channelId: 'UCliveTransition', author: 'Live Ch' });
+  assert(ytcv.state.currentIsLiveNow === false, 'initially not live');
+  const stateBeforeLive = ytcv.getState();
+  simulateBridgeMessage({ loudnessDb: null, isLiveContent: true, isLiveNow: true, channelId: 'UCliveTransition', author: 'Live Ch' });
+  assert(ytcv.state.currentIsLiveNow === true, 'transitioned to live');
+  const stateAfterLive = ytcv.getState();
+  assert(stateAfterLive.isLiveNow === true, 'getState.isLiveNow is true after transition');
+  assert(stateAfterLive.videoType === 'live', 'videoType remains live');
+
+  section('isLiveNow: notifyPopup dedup key distinguishes isLiveNow change');
+  function buildNotifyKey(s) {
+    return s.loudnessDb + '|' + s.gain + '|' + s.channel.id + '|' + s.channel.name + '|' + s.videoType + '|' + s.isLiveNow;
+  }
+  const keyBefore = buildNotifyKey(stateBeforeLive);
+  const keyAfter = buildNotifyKey(stateAfterLive);
+  assert(keyBefore !== keyAfter, 'dedup key differs when isLiveNow changes');
+
   // ── Summary ────────────────────────────────────────────────────────
 
   console.log(`\n${passed} passed, ${failed} failed`);
