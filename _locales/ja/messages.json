@@ -29,6 +29,9 @@
   "openOnYoutube": {
     "message": "YouTube タブで開いてください"
   },
+  "reloadPageNeeded": {
+    "message": "拡張機能と接続できません。ページを再読み込みしてください (F5)"
+  },
   "settings": {
     "message": "Settings"
   },

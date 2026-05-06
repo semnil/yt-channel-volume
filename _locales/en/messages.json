@@ -29,6 +29,9 @@
   "openOnYoutube": {
     "message": "Open on a YouTube tab"
   },
+  "reloadPageNeeded": {
+    "message": "Can't reach the extension. Please reload this page (F5)."
+  },
   "settings": {
     "message": "Settings"
   },

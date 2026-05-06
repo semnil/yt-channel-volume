@@ -21,6 +21,7 @@
   const mainEl = document.getElementById('main');
   const notWatchEl = document.getElementById('notWatch');
   const notYtEl = document.getElementById('notYt');
+  const reloadNeededEl = document.getElementById('reloadNeeded');
 
   let currentChannel = { id: '', name: '' };
   let activeTabId = null;
@@ -233,8 +234,12 @@
         }
       }
     } catch (_) {
-      channelNameEl.textContent = msg('channelNotDetected');
-      channelNameEl.classList.add('empty');
+      // sendMessage rejects when content.js is unreachable. The most common
+      // cause is runtime context invalidation: when this or another extension
+      // is reloaded, existing tabs' content scripts lose their chrome.runtime
+      // connection. The page must be reloaded for content.js to be re-injected.
+      mainEl.style.display = 'none';
+      reloadNeededEl.style.display = '';
     }
   }
 

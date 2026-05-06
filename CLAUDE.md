@@ -115,6 +115,7 @@ options.html / options.js (設定画面、別タブで表示)
 - **遅延オーディオチェーン**: ゲインが 1.0 (パススルー) の場合は `createMediaElementSource` を呼ばない → Live Caption のちらつきを回避。`connectedVideo` (audio chain) と `_lastProcessedVideo` (検出済み video) を分離管理
 - **triggerApply 設計**: `setTimeout` デバウンスを廃止し、async mutex (`_applyRunning`) で同時実行を防止。`yt-navigate-finish` / `popstate` / `visibilitychange` / observer / 初回ロード の全トリガーから直接呼び出し。バックグラウンドタブの throttle やライブチャットの高頻度 DOM 更新の影響を受けない
 - **ゲインオーバーレイ**: `.ytp-volume-area` にゲイン値を表示。SPA ナビでの DOM 再構築にも対応 (`document.contains` で detach 検知)
+- **コンテキスト無効化の表示**: 拡張機能 (本体または別拡張) のリロードで content.js の `chrome.runtime` が無効化されると、popup からの `chrome.tabs.sendMessage` は `Receiving end does not exist` で reject される。Web Audio API と DOM オーバーレイは chrome.* に依存しないため、過去に適用したゲイン表示だけが残り続けて誤解を招く。popup の catch 節は「チャンネル未検出」ではなく `#reloadNeeded` (ja: 「拡張機能と接続できません。ページを再読み込みしてください (F5)」) を表示し、ユーザーに F5 を促す
 
 ## Commands
 
