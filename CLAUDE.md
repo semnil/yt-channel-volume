@@ -100,7 +100,7 @@ options.html / options.js (設定画面、別タブで表示)
 - **isLiveNow の補完**: `_capturedResp` の `isLiveNow` がページロード時点で固定されるため、request ハンドラで `movie_player.getPlayerResponse()` から最新の `isLiveNow` を補完する (待機→配信開始遷移に対応)。content.js の `forceDetect` (popup 開封時) で bridge に再問い合わせし、応答で `currentIsLiveNow` が更新された場合に `stateChanged` 経由で popup へ通知
 - **videoId フィルタ**: fetch hook で他動画のプリフェッチ応答を除外
 - **watch ページ限定**: MutationObserver / scheduleApply / AudioContext 生成は `/watch` のみ
-- **チャンネル × 種別保存**: `gainLive` (配信/アーカイブ) と `gainVideo` (動画/ショート/プレミア公開) を別管理。`isLiveContent && loudnessDb が null` で live 判定 (プレミア公開は事前録画で loudnessDb を持つため video 扱い)
+- **チャンネル × 種別保存**: `gainLive` (配信/アーカイブ) と `gainVideo` (動画/ショート/プレミア公開) を別管理。videoType は `videoDetails.isLiveContent` のみで判定し (`isLiveContent ? 'live' : 'video'`)、loudnessDb は判定に使わない。ライブ配信とそのアーカイブは `isLiveContent=true` で live、プレミア公開は `isLiveContent=false` のため video 扱い
 - **YouTube loudness normalization 考慮**: loudnessDb > 0 の場合、YouTube が -14 LUFS に減衰済み → effectiveLufs = -14。loudnessDb <= 0 の場合はそのまま
 - **Storage migration**: 旧形式 `{ gain }` → `{ gainLive, gainVideo }` への自動マイグレーション。orphan `@handle` エントリは author 名一致による backfill で UC に統合 (id 形状ベースのマイグレーションは SPA 遷移で cross-channel corruption を引き起こすため廃止)
 - **Channel ID 統一**: `detectChannel()` は UC 形式のみ返す。DOM の `@handle` リンクは SPA 遷移中に stale (前チャンネルを指す) になるため identifier として拒否。page-bridge.js の `videoDetails.channelId` (UC 形式) がフォールバック
@@ -150,4 +150,4 @@ python pack.py
 - Storage keys: `autoLoudnessSettings` (target LUFS, display unit), `channelVolumes` (saved channel gains with URL)
 - Storage format: `channelVolumes.{id}` = `{ name, gainLive, gainVideo, url }` (旧: `{ name, gain, url }` — 自動マイグレーション)
 - slider `input` event = リアルタイムゲイン変更 (storage 書き込みなし)、`change` event = storage 保存
-- videoType 判定: page-bridge.js が `videoDetails.isLiveContent` と `loudnessDb` を返す。content.js で `isLiveContent && loudnessDb が null` なら 'live'、それ以外は 'video'。プレミア公開は事前録画で loudnessDb を持つため 'video' 扱い。初回ロード時はデフォルト 'video' で、loudness 取得後に正しい種別のゲインに切替
+- videoType 判定: page-bridge.js が `videoDetails.isLiveContent` を返す。content.js で `isLiveContent` が `true` なら 'live'、`false` なら 'video' (loudnessDb は判定に使わない)。プレミア公開は `isLiveContent=false` のため 'video' 扱い。初回ロード時はデフォルト 'video' で、bridge から isLiveContent を受信後に正しい種別のゲインに切替
