@@ -61,6 +61,28 @@ assert(formatAutoFallback(0.7, '%') === 'Auto (70%)', 'saved 0.7 fallback → Au
 assert(formatAutoFallback(null, '%') === 'Auto (100%)', 'missing fallback → Auto (100%)');
 assert(formatAutoFallback(0.5, 'dB', '自動') === '自動 (-6.0 dB)', 'fallback respects display unit and label');
 
+section('preserveSavedAutoApplyState');
+const channelsBeforeDefaultChange = {
+  missing: { name: 'Missing', gainVideo: 0.5, gainLive: 0.7 },
+  explicit: { name: 'Explicit', gainVideo: 0.6, autoApplyLoudnessVideo: true },
+  legacy: { name: 'Legacy', gainVideo: 0.8, autoApplyLoudness: true }
+};
+const preservedChannels = preserveSavedAutoApplyState(
+  channelsBeforeDefaultChange,
+  'video'
+);
+assert(preservedChannels.missing.autoApplyLoudnessVideo === false,
+  'missing per-channel value is frozen as OFF');
+assert(preservedChannels.missing.gainVideo === 0.5 && preservedChannels.missing.gainLive === 0.7,
+  'saved gains remain unchanged');
+assert(preservedChannels.explicit.autoApplyLoudnessVideo === true,
+  'explicit per-channel value remains unchanged');
+assert(preservedChannels.legacy.autoApplyLoudness === true &&
+  !('autoApplyLoudnessVideo' in preservedChannels.legacy),
+  'legacy explicit value remains unchanged');
+assert(!('autoApplyLoudnessVideo' in channelsBeforeDefaultChange.missing),
+  'input channel data is not mutated');
+
 // ── calcGain ─────────────────────────────────────────────────────────
 
 section('calcGain — YouTube normalization');

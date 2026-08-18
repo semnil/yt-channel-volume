@@ -48,7 +48,7 @@
     "message": "Auto-apply LUFS for all channels"
   },
   "allChannelsAutoApplyDesc": {
-    "message": "Default for channels without an individual setting"
+    "message": "Initial value for new channels; existing per-channel settings are preserved"
   },
   "autoApplyLoudness": {
     "message": "Auto-apply LUFS"

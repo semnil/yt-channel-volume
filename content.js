@@ -120,6 +120,10 @@
   function resolveAutoApplyForType(entry, videoType) {
     const override = extractAutoApplyOverride(entry, videoType);
     if (override !== null) return override;
+    // An existing Saved Channels entry predates (or deliberately lacks) an
+    // Auto flag, so retain its manual state. Defaults initialize only channels
+    // that do not have any saved entry yet.
+    if (entry) return false;
     return videoType === 'live'
       ? defaultAutoApplyLoudnessLive
       : defaultAutoApplyLoudnessVideo;
@@ -424,6 +428,7 @@
 
     setCurrentAutoApplyFromEntry(entry);
     setCurrentAutoFallbacksFromEntry(fallbackEntry);
+    const autoApplyOverride = extractAutoApplyOverride(entry, requestedVideoType);
     const autoEnabled = isCurrentAutoApplyEnabled(requestedVideoType);
     const hasLoudness = currentLoudnessDb !== null;
     const gain = autoEnabled && hasLoudness
@@ -438,6 +443,19 @@
     commitGain(gain);
     if (autoEnabled && hasLoudness) {
       await saveAutoFallbackGain(requestedChannelId, gain, requestedVideoType);
+    }
+    // Record an inherited initial value once the channel is encountered. Do
+    // not create entries for untouched channels while the default is OFF, but
+    // do freeze existing Saved Channels so later default changes cannot alter
+    // their effective per-channel setting.
+    if (autoApplyOverride === null && requestedChannelId && (entry || autoEnabled)) {
+      await saveChannelAutoApply(
+        requestedChannelId,
+        currentChannel.name,
+        autoEnabled,
+        requestedVideoType,
+        currentChannel.url
+      );
     }
   }
 

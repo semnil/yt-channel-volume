@@ -48,7 +48,7 @@
     "message": "全チャンネルの LUFS 自動適用"
   },
   "allChannelsAutoApplyDesc": {
-    "message": "個別設定がないチャンネルの初期値"
+    "message": "未保存チャンネルの初回再生時の値（既存の個別設定は維持）"
   },
   "autoApplyLoudness": {
     "message": "LUFS 自動適用"

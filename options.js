@@ -53,6 +53,26 @@
     await chrome.storage.local.set({ [SETTINGS_KEY]: s });
   }
 
+  async function saveDefaultAutoApply(videoType, enabled) {
+    const data = await chrome.storage.local.get([SETTINGS_KEY, CHANNEL_VOLUMES_KEY]);
+    const settings = { ...(data[SETTINGS_KEY] || {}) };
+    const settingKey = videoType === 'live'
+      ? 'autoApplyLoudnessLiveDefault'
+      : 'autoApplyLoudnessVideoDefault';
+    // The all-channel switch is an initializer, not a live override. Freeze
+    // every existing channel without an Auto choice as OFF before changing
+    // the default, while leaving gains and explicit choices intact.
+    const preservedChannels = preserveSavedAutoApplyState(
+      data[CHANNEL_VOLUMES_KEY] || {},
+      videoType
+    );
+    settings[settingKey] = !!enabled;
+    await chrome.storage.local.set({
+      [SETTINGS_KEY]: settings,
+      [CHANNEL_VOLUMES_KEY]: preservedChannels
+    });
+  }
+
   function updateUnitButtons() {
     unitToggle.querySelectorAll('button').forEach(btn => {
       btn.classList.toggle('active', btn.dataset.unit === displayUnit);
@@ -65,7 +85,9 @@
       : 'autoApplyLoudnessVideo';
     if (key in entry) return !!entry[key];
     if ('autoApplyLoudness' in entry) return !!entry.autoApplyLoudness;
-    return videoType === 'live' ? defaultAutoApplyLive : defaultAutoApplyVideo;
+    // Saved Channels show only their recorded per-channel state. The global
+    // value initializes newly encountered channels; it is not a live override.
+    return false;
   }
 
   // ── Channel list ───────────────────────────────────────────────────
@@ -155,16 +177,34 @@
     saveSetting('targetLufs', targetLufs);
   });
 
-  defaultAutoVideoToggle.addEventListener('change', () => {
-    defaultAutoApplyVideo = defaultAutoVideoToggle.checked;
-    saveSetting('autoApplyLoudnessVideoDefault', defaultAutoApplyVideo);
-    renderChannels();
+  defaultAutoVideoToggle.addEventListener('change', async () => {
+    const previous = defaultAutoApplyVideo;
+    const enabled = defaultAutoVideoToggle.checked;
+    defaultAutoVideoToggle.disabled = true;
+    try {
+      await saveDefaultAutoApply('video', enabled);
+      defaultAutoApplyVideo = enabled;
+      await renderChannels();
+    } catch (_) {
+      defaultAutoVideoToggle.checked = previous;
+    } finally {
+      defaultAutoVideoToggle.disabled = false;
+    }
   });
 
-  defaultAutoLiveToggle.addEventListener('change', () => {
-    defaultAutoApplyLive = defaultAutoLiveToggle.checked;
-    saveSetting('autoApplyLoudnessLiveDefault', defaultAutoApplyLive);
-    renderChannels();
+  defaultAutoLiveToggle.addEventListener('change', async () => {
+    const previous = defaultAutoApplyLive;
+    const enabled = defaultAutoLiveToggle.checked;
+    defaultAutoLiveToggle.disabled = true;
+    try {
+      await saveDefaultAutoApply('live', enabled);
+      defaultAutoApplyLive = enabled;
+      await renderChannels();
+    } catch (_) {
+      defaultAutoLiveToggle.checked = previous;
+    } finally {
+      defaultAutoLiveToggle.disabled = false;
+    }
   });
 
   overlayToggle.addEventListener('change', () => {

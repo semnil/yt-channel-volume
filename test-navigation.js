@@ -948,23 +948,36 @@ async function runTests() {
   assert(mockStorage['channelVolumes']['UCautoOnly'].autoApplyLoudnessVideo === false,
     'explicit disabled state retained for all-channel default override');
 
-  section('Auto LUFS defaults: unconfigured channels inherit without storage writes');
+  section('Auto LUFS defaults: saved settings remain stable and new channels initialize once');
   mockStorage['channelVolumes'] = {
     'UCdefaultAuto': { name: 'Default Auto', gainVideo: 0.45, gainLive: 0.8 }
   };
-  const defaultEntryBefore = JSON.stringify(mockStorage['channelVolumes']['UCdefaultAuto']);
   ytcv._set('currentChannel', { id: 'UCdefaultAuto', name: 'Default Auto', url: '' });
   ytcv._set('currentVideoType', 'video');
   ytcv._set('currentLoudnessDb', -6);
   ytcv._set('defaultAutoApplyLoudnessVideo', true);
   ytcv._set('defaultAutoApplyLoudnessLive', false);
   await ytcv.applyPreferredGain();
-  assert(ytcv.state.currentAutoApplyLoudnessVideo === true, 'video inherits all-channel ON');
+  assert(ytcv.state.currentAutoApplyLoudnessVideo === false,
+    'existing Saved Channels entry remains manual when all-channel default changes');
   assert(ytcv.state.currentAutoApplyLoudnessLive === false, 'live keeps independent all-channel OFF');
-  assert(Math.abs(ytcv.state.currentGain - expectedAutoGain) < 0.001, 'inherited video auto applies calculated gain');
-  assert(JSON.stringify(mockStorage['channelVolumes']['UCdefaultAuto']) === defaultEntryBefore,
-    'inherited default does not rewrite existing Saved Channels entry');
+  assert(ytcv.state.currentGain === 0.45, 'existing saved video gain remains applied');
+  assert(mockStorage['channelVolumes']['UCdefaultAuto'].autoApplyLoudnessVideo === false,
+    'existing channel records its preserved manual state');
+  assert(mockStorage['channelVolumes']['UCdefaultAuto'].gainVideo === 0.45 &&
+    mockStorage['channelVolumes']['UCdefaultAuto'].gainLive === 0.8,
+    'preserving Auto state does not alter Saved Channels gains');
 
+  ytcv._set('currentChannel', { id: 'UCnewDefaultAuto', name: 'New Default Auto', url: '' });
+  await ytcv.applyPreferredGain();
+  assert(ytcv.state.currentAutoApplyLoudnessVideo === true,
+    'new channel inherits all-channel ON on first playback');
+  assert(Math.abs(ytcv.state.currentGain - expectedAutoGain) < 0.001,
+    'new channel applies inherited automatic gain');
+  assert(mockStorage['channelVolumes']['UCnewDefaultAuto'].autoApplyLoudnessVideo === true,
+    'new channel records inherited ON as its own setting');
+
+  ytcv._set('currentChannel', { id: 'UCdefaultAuto', name: 'Default Auto', url: '' });
   await ytcv.saveChannelAutoApply('UCdefaultAuto', 'Default Auto', false, 'video', '');
   await ytcv.applyPreferredGain();
   const explicitOffEntry = mockStorage['channelVolumes']['UCdefaultAuto'];
