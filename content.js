@@ -42,6 +42,10 @@
   let currentVideoTypeDetected = false;
   let currentIsLiveNow = false;
   let showGainOverlay = false;
+  // Invalidates asynchronous preference reads when a newer storage change has
+  // already been applied. Without this, an older read can undo a cross-tab
+  // fallback update after storage.onChanged commits it.
+  let storageRevision = 0;
 
   // ── Storage helpers ────────────────────────────────────────────────
 
@@ -405,6 +409,7 @@
     const requestedVideoId = getUrlVideoId();
     const requestedChannelId = currentChannel.id;
     const requestedVideoType = currentVideoType;
+    const requestedStorageRevision = storageRevision;
     const [entry, fallbackEntry] = await Promise.all([
       loadChannelEntry(requestedChannelId),
       loadAutoFallbackEntry(requestedChannelId)
@@ -414,7 +419,8 @@
     // navigation, bridge metadata, or a settings change.
     if (requestedVideoId !== getUrlVideoId() ||
         requestedChannelId !== currentChannel.id ||
-        requestedVideoType !== currentVideoType) return;
+        requestedVideoType !== currentVideoType ||
+        requestedStorageRevision !== storageRevision) return;
 
     setCurrentAutoApplyFromEntry(entry);
     setCurrentAutoFallbacksFromEntry(fallbackEntry);
@@ -742,6 +748,10 @@
   if (isContextValid()) {
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area !== 'local') return;
+      if (changes[SETTINGS_KEY] || changes[CHANNEL_VOLUMES_KEY] ||
+          changes[AUTO_FALLBACKS_KEY]) {
+        storageRevision++;
+      }
       if (changes[SETTINGS_KEY]) {
         const s = changes[SETTINGS_KEY].newValue || {};
         targetLufs = s.targetLufs ?? DEFAULT_TARGET_LUFS;
@@ -771,9 +781,11 @@
           } else {
             const requestedChannelId = currentChannel.id;
             const requestedVideoType = currentVideoType;
+            const requestedStorageRevision = storageRevision;
             loadChannelGain(requestedChannelId, requestedVideoType).then(savedGain => {
               if (requestedChannelId !== currentChannel.id ||
                   requestedVideoType !== currentVideoType ||
+                  requestedStorageRevision !== storageRevision ||
                   !isCurrentAutoApplyEnabled() || currentLoudnessDb !== null) return;
               commitGain(savedGain ?? 1.0);
             });

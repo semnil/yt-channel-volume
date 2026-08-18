@@ -723,6 +723,40 @@ async function runTests() {
     Math.abs(mockSentMessages.at(-1).gain - expectedAutoGain) < 0.001,
     'synchronized fallback publishes matching popup state');
 
+  section('Auto LUFS: stale preference read cannot undo cross-tab fallback');
+  ytcv._set('currentLoudnessDb', null);
+  ytcv._set('currentAutoApplyLoudnessLive', true);
+  ytcv._set('currentAutoFallbackLive', 0.4);
+  ytcv._set('currentGain', 0.4);
+  const originalStorageGet = chrome.storage.local.get;
+  let resolveStaleFallbackRead;
+  chrome.storage.local.get = key => {
+    if (key === 'autoLoudnessFallbacks') {
+      return new Promise(resolve => { resolveStaleFallbackRead = resolve; });
+    }
+    return originalStorageGet(key);
+  };
+  const staleApply = ytcv.applyPreferredGain();
+  const newerFallbackGain = 0.8;
+  mockStorage['autoLoudnessFallbacks'] = {
+    'UCsharedLive': { gainLive: newerFallbackGain }
+  };
+  simulateStorageChange({
+    autoLoudnessFallbacks: {
+      oldValue: { 'UCsharedLive': { gainLive: 0.4 } },
+      newValue: mockStorage['autoLoudnessFallbacks']
+    }
+  });
+  resolveStaleFallbackRead({
+    autoLoudnessFallbacks: { 'UCsharedLive': { gainLive: 0.4 } }
+  });
+  await staleApply;
+  chrome.storage.local.get = originalStorageGet;
+  assert(ytcv.state.currentGain === newerFallbackGain,
+    'older async preference load does not overwrite cross-tab fallback');
+  assert(ytcv.state.gainNode.gain.value === newerFallbackGain,
+    'newest cross-tab fallback remains applied to GainNode');
+
   section('Auto LUFS: manual fallback replaces learned fallback');
   const manualFallbackResponse = await simulateRuntimeMessage({
     type: 'setGain',
