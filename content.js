@@ -48,6 +48,10 @@
   // already been applied. Without this, an older read can undo a cross-tab
   // fallback update after storage.onChanged commits it.
   let storageRevision = 0;
+  // Track fallback reads independently so a hidden Video/Live update neither
+  // cancels the current type's apply nor gets overwritten by its stale result.
+  let autoFallbackRevisionVideo = 0;
+  let autoFallbackRevisionLive = 0;
 
   // ── Storage helpers ────────────────────────────────────────────────
 
@@ -425,6 +429,8 @@
     const requestedChannelId = currentChannel.id;
     const requestedVideoType = currentVideoType;
     const requestedStorageRevision = storageRevision;
+    const requestedFallbackRevisionVideo = autoFallbackRevisionVideo;
+    const requestedFallbackRevisionLive = autoFallbackRevisionLive;
     const [entry, fallbackEntry] = await Promise.all([
       loadChannelEntry(requestedChannelId),
       loadAutoFallbackEntry(requestedChannelId)
@@ -438,7 +444,12 @@
         requestedStorageRevision !== storageRevision) return;
 
     setCurrentAutoApplyFromEntry(entry);
-    setCurrentAutoFallbacksFromEntry(fallbackEntry);
+    if (requestedFallbackRevisionVideo === autoFallbackRevisionVideo) {
+      currentAutoFallbackVideo = extractAutoFallbackForType(fallbackEntry, 'video');
+    }
+    if (requestedFallbackRevisionLive === autoFallbackRevisionLive) {
+      currentAutoFallbackLive = extractAutoFallbackForType(fallbackEntry, 'live');
+    }
     const autoEnabled = isCurrentAutoApplyEnabled(requestedVideoType);
     const hasLoudness = currentLoudnessDb !== null;
     const gain = autoEnabled && hasLoudness
@@ -796,8 +807,17 @@
       const currentFallbackChanged = !!(
         legacyFallbackChange || fallbackVideoChange || fallbackLiveChange
       );
+      const currentTypeFallbackChange = currentVideoType === 'live'
+        ? fallbackLiveChange
+        : fallbackVideoChange;
+      if (legacyFallbackChange || fallbackVideoChange) {
+        autoFallbackRevisionVideo++;
+      }
+      if (legacyFallbackChange || fallbackLiveChange) {
+        autoFallbackRevisionLive++;
+      }
       if (changes[SETTINGS_KEY] || changes[CHANNEL_VOLUMES_KEY] ||
-          currentFallbackChanged) {
+          legacyFallbackChange || currentTypeFallbackChange) {
         storageRevision++;
       }
       if (changes[SETTINGS_KEY]) {
@@ -845,11 +865,8 @@
               fallbackLiveChange.newValue
             );
           }
-          const currentTypeChanged = currentVideoType === 'live'
-            ? !!fallbackLiveChange
-            : !!fallbackVideoChange;
           if (!changes[CHANNEL_VOLUMES_KEY] &&
-              (legacyFallbackChange || currentTypeChanged)) {
+              (legacyFallbackChange || currentTypeFallbackChange)) {
             applyCurrentFallbackAfterStorageChange();
           }
         }

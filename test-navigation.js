@@ -772,7 +772,63 @@ async function runTests() {
   assert(ytcv.state.gainNode.gain.value === newerFallbackGain,
     'newest cross-tab fallback remains applied to GainNode');
 
+  section('Auto LUFS: hidden-type fallback update does not cancel current apply');
+  const hiddenTypeChannelId = 'UChiddenType';
+  const hiddenVideoFallbackKey = ytcv.autoFallbackStorageKey(hiddenTypeChannelId, 'video');
+  const hiddenLiveFallbackKey = ytcv.autoFallbackStorageKey(hiddenTypeChannelId, 'live');
+  mockStorage['channelVolumes'] = {
+    [hiddenTypeChannelId]: {
+      name: 'Hidden Type',
+      gainLive: 0.65,
+      autoApplyLoudnessLive: true
+    }
+  };
+  ytcv._set('currentChannel', { id: hiddenTypeChannelId, name: 'Hidden Type', url: '' });
+  ytcv._set('currentVideoType', 'live');
+  ytcv._set('currentLoudnessDb', null);
+  ytcv._set('currentAutoApplyLoudnessLive', true);
+  ytcv._set('currentAutoFallbackVideo', 0.2);
+  ytcv._set('currentAutoFallbackLive', null);
+  ytcv._set('currentGain', 1.0);
+  const storageGetBeforeHiddenType = chrome.storage.local.get;
+  let resolveHiddenTypeFallbackRead;
+  chrome.storage.local.get = key => {
+    if (Array.isArray(key) && key.includes(hiddenLiveFallbackKey)) {
+      return new Promise(resolve => { resolveHiddenTypeFallbackRead = resolve; });
+    }
+    return storageGetBeforeHiddenType(key);
+  };
+  const hiddenTypeApply = ytcv.applyPreferredGain();
+  mockStorage[hiddenVideoFallbackKey] = 0.5;
+  simulateStorageChange({
+    [hiddenVideoFallbackKey]: { oldValue: 0.2, newValue: 0.5 }
+  });
+  resolveHiddenTypeFallbackRead({ [hiddenVideoFallbackKey]: 0.2 });
+  await hiddenTypeApply;
+  chrome.storage.local.get = storageGetBeforeHiddenType;
+  assert(ytcv.state.currentGain === 0.65,
+    'hidden Video fallback update does not cancel pending Live gain apply');
+  assert(ytcv.state.gainNode.gain.value === 0.65,
+    'pending Live gain still reaches GainNode');
+  assert(ytcv.state.currentAutoFallbackVideo === 0.5,
+    'stale Live preference read does not roll back hidden Video fallback');
+
   section('Auto LUFS: manual fallback replaces learned fallback');
+  mockStorage['channelVolumes'] = {
+    'UCsharedLive': {
+      name: 'Shared Live Channel',
+      gainLive: 0.4,
+      autoApplyLoudnessLive: true
+    }
+  };
+  ytcv._set('currentChannel', {
+    id: 'UCsharedLive',
+    name: 'Shared Live Channel',
+    url: 'https://www.youtube.com/channel/UCsharedLive'
+  });
+  ytcv._set('currentVideoType', 'live');
+  ytcv._set('currentLoudnessDb', null);
+  ytcv._set('currentAutoApplyLoudnessLive', true);
   const manualFallbackResponse = await simulateRuntimeMessage({
     type: 'setGain',
     channelId: 'UCsharedLive',
