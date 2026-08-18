@@ -63,8 +63,8 @@ content.js (ISOLATED world, document_idle)
 
 ```bash
 # テスト実行
-node test.js              # utils 41件
-node test-navigation.js   # navigation + data integrity + auto LUFS 127件
+node test.js
+node test-navigation.js
 
 # アイコン再生成
 python gen_icons.py
