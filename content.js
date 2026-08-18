@@ -791,7 +791,7 @@
     }
 
     if (msg.type === 'forceDetect') {
-      const urlVideoId = new URL(location.href).searchParams.get('v') || '';
+      const urlVideoId = getUrlVideoId();
       const stale = !currentChannel.id || (urlVideoId && urlVideoId !== _lastVideoId);
       // Diagnostic dump: captures every input used to judge channel / videoType
       // so a mismatched popup display can be reproduced post-hoc. Fires only on
@@ -828,11 +828,10 @@
       try { window.postMessage({ type: '__yt_channel_volume_diag__' }, '*'); } catch (_) {}
 
       async function sendDetectedState() {
-        if (!currentVideoTypeDetected) {
-          await requestLoudnessWithRetry(4, 250);
-        } else {
-          requestLoudness();
-        }
+        // Always wait for the current video's bridge response. When videoType
+        // was already known, the previous implementation sent the request but
+        // returned the old fallback state before the archive LUFS arrived.
+        await requestLoudnessWithRetry(4, 250);
         // A bridge response can change the channel and start an asynchronous
         // preference load. Resolve it before the popup becomes visible.
         await applyPreferredGain();

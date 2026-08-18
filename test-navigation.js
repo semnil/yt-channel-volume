@@ -20,6 +20,7 @@ let mockEventListeners = {};
 let mockRuntimeMessageListeners = [];
 let mockSentMessages = [];
 let mockPostMessages = [];
+let mockPostMessageHandler = null;
 
 function resetMocks() {
   mockLocation = { pathname: '/watch', search: '?v=abc123', href: 'https://www.youtube.com/watch?v=abc123' };
@@ -30,6 +31,7 @@ function resetMocks() {
   mockRuntimeMessageListeners = [];
   mockSentMessages = [];
   mockPostMessages = [];
+  mockPostMessageHandler = null;
 }
 
 function setURL(path, videoId) {
@@ -87,7 +89,10 @@ globalThis.window = {
     mockEventListeners[type] = mockEventListeners[type] || [];
     mockEventListeners[type].push(fn);
   },
-  postMessage(data) { mockPostMessages.push(data); },
+  postMessage(data) {
+    mockPostMessages.push(data);
+    if (mockPostMessageHandler) mockPostMessageHandler(data);
+  },
 };
 
 globalThis.location = new Proxy({}, {
@@ -740,6 +745,51 @@ async function runTests() {
     'calculated archive gain remains applied to audio node');
   mockDOMElements['canonical'] = null;
   mockDOMElements['channelName'] = null;
+
+  section('Popup: forceDetect waits for adjusted archive gain');
+  const popupArchiveVideoId = 'EEEEEEEEEEE';
+  mockStorage['channelVolumes'] = {
+    'UCpopupArchive': {
+      name: 'Popup Archive',
+      gainLive: 0.4,
+      autoApplyLoudnessLive: true
+    }
+  };
+  setURL('/live/' + popupArchiveVideoId, null);
+  ytcv._set('_lastVideoId', popupArchiveVideoId);
+  ytcv._set('currentChannel', {
+    id: 'UCpopupArchive',
+    name: 'Popup Archive',
+    url: 'https://www.youtube.com/channel/UCpopupArchive'
+  });
+  ytcv._set('currentChannelVideoId', popupArchiveVideoId);
+  ytcv._set('currentVideoType', 'live');
+  ytcv._set('currentVideoTypeDetected', true);
+  ytcv._set('currentLoudnessDb', null);
+  ytcv._set('currentLoudnessVideoId', popupArchiveVideoId);
+  ytcv._set('currentAutoApplyLoudnessLive', true);
+  ytcv._set('currentGain', 0.4);
+  ytcv._set('targetLufs', -18);
+  ytcv.setGain(0.4);
+  mockPostMessageHandler = (data) => {
+    if (data.type !== '__yt_channel_volume_request__') return;
+    setTimeout(() => simulateBridgeMessage({
+      videoId: popupArchiveVideoId,
+      loudnessDb: -6,
+      isLiveContent: true,
+      isLiveNow: false,
+      channelId: 'UCpopupArchive',
+      author: 'Popup Archive'
+    }), 0);
+  };
+  const popupState = await simulateRuntimeMessage({ type: 'forceDetect' });
+  mockPostMessageHandler = null;
+  assert(popupState?.contentLufs === -20,
+    'popup response contains archive LUFS instead of stale fallback state');
+  assert(Math.abs(popupState?.gain - expectedAutoGain) < 0.001,
+    'popup response contains adjusted archive gain');
+  assert(Math.abs(ytcv.state.gainNode.gain.value - expectedAutoGain) < 0.001,
+    'popup refresh leaves adjusted gain applied to audio node');
 
   section('Auto LUFS: saving flag preserves per-type gains');
   mockStorage['channelVolumes'] = {
