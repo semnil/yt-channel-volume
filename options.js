@@ -71,8 +71,9 @@
   // ── Channel list ───────────────────────────────────────────────────
 
   async function renderChannels() {
-    const data = await chrome.storage.local.get(CHANNEL_VOLUMES_KEY);
+    const data = await chrome.storage.local.get([CHANNEL_VOLUMES_KEY, AUTO_FALLBACKS_KEY]);
     const all = data[CHANNEL_VOLUMES_KEY] || {};
+    const allFallbacks = data[AUTO_FALLBACKS_KEY] || {};
     const entries = Object.entries(all);
 
     if (entries.length === 0) {
@@ -98,13 +99,16 @@
       // Support old format (single gain) and new format (gainLive/gainVideo)
       const gainLive = entry.gainLive ?? entry.gain ?? null;
       const gainVideo = entry.gainVideo ?? entry.gain ?? null;
+      const fallbackEntry = allFallbacks[id] || {};
+      const fallbackLive = fallbackEntry.gainLive ?? gainLive;
+      const fallbackVideo = fallbackEntry.gainVideo ?? gainVideo;
       const autoVideo = resolveAutoApply(entry, 'video');
       const autoLive = resolveAutoApply(entry, 'live');
       const videoText = autoVideo
-        ? formatAutoFallback(gainVideo, displayUnit, msg('labelAuto'))
+        ? formatAutoFallback(fallbackVideo, displayUnit, msg('labelAuto'))
         : (gainVideo !== null ? fmtGain(gainVideo) : '—');
       const liveText = autoLive
-        ? formatAutoFallback(gainLive, displayUnit, msg('labelAuto'))
+        ? formatAutoFallback(fallbackLive, displayUnit, msg('labelAuto'))
         : (gainLive !== null ? fmtGain(gainLive) : '—');
       const tr = document.createElement('tr');
       const nameHtml = url
@@ -126,10 +130,15 @@
     channelListEl.querySelectorAll('.ch-del').forEach(btn => {
       btn.addEventListener('click', async () => {
         const id = btn.dataset.id;
-        const d = await chrome.storage.local.get(CHANNEL_VOLUMES_KEY);
+        const d = await chrome.storage.local.get([CHANNEL_VOLUMES_KEY, AUTO_FALLBACKS_KEY]);
         const obj = d[CHANNEL_VOLUMES_KEY] || {};
+        const fallbacks = d[AUTO_FALLBACKS_KEY] || {};
         delete obj[id];
-        await chrome.storage.local.set({ [CHANNEL_VOLUMES_KEY]: obj });
+        delete fallbacks[id];
+        await chrome.storage.local.set({
+          [CHANNEL_VOLUMES_KEY]: obj,
+          [AUTO_FALLBACKS_KEY]: fallbacks
+        });
         renderChannels();
       });
     });
@@ -164,7 +173,10 @@
 
   clearAllBtn.addEventListener('click', async () => {
     if (!confirm(msg('clearAllConfirm'))) return;
-    await chrome.storage.local.set({ [CHANNEL_VOLUMES_KEY]: {} });
+    await chrome.storage.local.set({
+      [CHANNEL_VOLUMES_KEY]: {},
+      [AUTO_FALLBACKS_KEY]: {}
+    });
     renderChannels();
   });
 
@@ -182,7 +194,7 @@
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local') return;
-    if (changes[CHANNEL_VOLUMES_KEY]) {
+    if (changes[CHANNEL_VOLUMES_KEY] || changes[AUTO_FALLBACKS_KEY]) {
       renderChannels();
     }
     if (changes[SETTINGS_KEY]) {

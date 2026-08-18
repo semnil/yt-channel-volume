@@ -2,6 +2,7 @@
 
 const SETTINGS_KEY = 'autoLoudnessSettings';
 const CHANNEL_VOLUMES_KEY = 'channelVolumes';
+const AUTO_FALLBACKS_KEY = 'autoLoudnessFallbacks';
 const YT_REFERENCE_LUFS = -14;
 const DEFAULT_TARGET_LUFS = -18;
 const DEFAULT_AUTO_APPLY_LOUDNESS = false;

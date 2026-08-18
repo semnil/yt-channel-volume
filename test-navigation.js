@@ -127,6 +127,11 @@ globalThis.chrome = {
   storage: {
     local: {
       get(key) {
+        if (Array.isArray(key)) {
+          return Promise.resolve(Object.fromEntries(
+            key.map(k => [k, mockStorage[k] || {}])
+          ));
+        }
         return Promise.resolve({ [key]: mockStorage[key] || {} });
       },
       set(obj) {
@@ -655,6 +660,80 @@ async function runTests() {
   ytcv._set('currentLoudnessDb', -6);
   await ytcv.applyPreferredGain();
   assert(Math.abs(ytcv.state.currentGain - expectedAutoGain) < 0.001, 'live auto applies calculated gain when LUFS is available');
+
+  section('Auto LUFS: archive gain becomes same-channel live fallback');
+  const comparedArchiveVideoId = 'TALF7KCHMvg';
+  const comparedLiveVideoId = 'vZtGYgfW2uQ';
+  mockStorage['channelVolumes'] = {
+    'UCsharedLive': {
+      name: 'Shared Live Channel',
+      gainLive: 0.4,
+      autoApplyLoudnessLive: true
+    }
+  };
+  mockStorage['autoLoudnessFallbacks'] = {};
+  setURL('/watch', comparedArchiveVideoId);
+  ytcv._set('currentChannel', {
+    id: 'UCsharedLive',
+    name: 'Shared Live Channel',
+    url: 'https://www.youtube.com/channel/UCsharedLive'
+  });
+  ytcv._set('currentChannelVideoId', comparedArchiveVideoId);
+  ytcv._set('currentVideoType', 'live');
+  ytcv._set('currentLoudnessDb', -6);
+  ytcv._set('currentLoudnessVideoId', comparedArchiveVideoId);
+  ytcv._set('currentAutoApplyLoudnessLive', true);
+  ytcv._set('targetLufs', -18);
+  await ytcv.applyPreferredGain();
+  assert(Math.abs(ytcv.state.currentGain - expectedAutoGain) < 0.001,
+    'archive applies calculated live gain');
+  assert(Math.abs(mockStorage['autoLoudnessFallbacks']['UCsharedLive'].gainLive - expectedAutoGain) < 0.001,
+    'archive persists calculated gain as learned live fallback');
+  assert(mockStorage['channelVolumes']['UCsharedLive'].gainLive === 0.4,
+    'learning fallback does not overwrite existing Saved Channels gain');
+
+  setURL('/watch', comparedLiveVideoId);
+  ytcv._set('currentChannelVideoId', comparedLiveVideoId);
+  ytcv._set('currentLoudnessDb', null);
+  ytcv._set('currentLoudnessVideoId', comparedLiveVideoId);
+  ytcv._set('currentGain', 0.4);
+  await ytcv.applyPreferredGain();
+  assert(Math.abs(ytcv.state.currentGain - expectedAutoGain) < 0.001,
+    'same-channel live without LUFS loads learned archive fallback');
+
+  section('Auto LUFS: learned fallback synchronizes to open live tab');
+  ytcv._set('currentLoudnessDb', null);
+  ytcv._set('currentAutoApplyLoudnessLive', true);
+  ytcv._set('currentAutoFallbackLive', null);
+  ytcv._set('currentGain', 0.4);
+  ytcv.notifyPopup();
+  const messagesBeforeFallbackSync = mockSentMessages.length;
+  simulateStorageChange({
+    autoLoudnessFallbacks: {
+      oldValue: {},
+      newValue: { 'UCsharedLive': { gainLive: expectedAutoGain } }
+    }
+  });
+  assert(Math.abs(ytcv.state.currentGain - expectedAutoGain) < 0.001,
+    'open live tab immediately applies archive fallback from storage');
+  assert(Math.abs(ytcv.state.gainNode.gain.value - expectedAutoGain) < 0.001,
+    'synchronized fallback reaches live tab GainNode');
+  assert(mockSentMessages.length === messagesBeforeFallbackSync + 1 &&
+    Math.abs(mockSentMessages.at(-1).gain - expectedAutoGain) < 0.001,
+    'synchronized fallback publishes matching popup state');
+
+  section('Auto LUFS: manual fallback replaces learned fallback');
+  const manualFallbackResponse = await simulateRuntimeMessage({
+    type: 'setGain',
+    channelId: 'UCsharedLive',
+    gain: 0.6
+  });
+  assert(manualFallbackResponse?.ok === true, 'manual fallback save succeeds');
+  assert(!mockStorage['autoLoudnessFallbacks']['UCsharedLive'],
+    'manual live gain clears learned live fallback');
+  await ytcv.applyPreferredGain();
+  assert(ytcv.state.currentGain === 0.6,
+    'live without LUFS uses manual fallback after explicit save');
 
   section('Auto LUFS: early bridge for next video clears stale loudness');
   const oldVideoId = 'AAAAAAAAAAA';
