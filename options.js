@@ -53,26 +53,6 @@
     await chrome.storage.local.set({ [SETTINGS_KEY]: s });
   }
 
-  async function saveDefaultAutoApply(videoType, enabled) {
-    const data = await chrome.storage.local.get([SETTINGS_KEY, CHANNEL_VOLUMES_KEY]);
-    const settings = { ...(data[SETTINGS_KEY] || {}) };
-    const settingKey = videoType === 'live'
-      ? 'autoApplyLoudnessLiveDefault'
-      : 'autoApplyLoudnessVideoDefault';
-    // The all-channel switch is an initializer, not a live override. Freeze
-    // every existing channel without an Auto choice as OFF before changing
-    // the default, while leaving gains and explicit choices intact.
-    const preservedChannels = preserveSavedAutoApplyState(
-      data[CHANNEL_VOLUMES_KEY] || {},
-      videoType
-    );
-    settings[settingKey] = !!enabled;
-    await chrome.storage.local.set({
-      [SETTINGS_KEY]: settings,
-      [CHANNEL_VOLUMES_KEY]: preservedChannels
-    });
-  }
-
   function updateUnitButtons() {
     unitToggle.querySelectorAll('button').forEach(btn => {
       btn.classList.toggle('active', btn.dataset.unit === displayUnit);
@@ -85,23 +65,29 @@
       : 'autoApplyLoudnessVideo';
     if (key in entry) return !!entry[key];
     if ('autoApplyLoudness' in entry) return !!entry.autoApplyLoudness;
-    // Saved Channels show only their recorded per-channel state. The global
-    // value initializes newly encountered channels; it is not a live override.
-    return false;
+    return videoType === 'live' ? defaultAutoApplyLive : defaultAutoApplyVideo;
   }
 
   // ── Channel list ───────────────────────────────────────────────────
 
   async function renderChannels() {
-    const data = await chrome.storage.local.get([CHANNEL_VOLUMES_KEY, AUTO_FALLBACKS_KEY]);
+    const data = await chrome.storage.local.get(CHANNEL_VOLUMES_KEY);
     const all = data[CHANNEL_VOLUMES_KEY] || {};
-    const allFallbacks = data[AUTO_FALLBACKS_KEY] || {};
     const entries = Object.entries(all);
 
     if (entries.length === 0) {
       channelListEl.innerHTML = '<div class="empty-msg">' + esc(msg('noSavedChannels')) + '</div>';
       return;
     }
+
+    const fallbackKeys = entries.flatMap(([id]) => [
+      autoFallbackStorageKey(id, 'video'),
+      autoFallbackStorageKey(id, 'live')
+    ]);
+    const fallbackData = await chrome.storage.local.get([
+      AUTO_FALLBACKS_KEY,
+      ...fallbackKeys
+    ]);
 
     entries.sort((a, b) => a[1].name.localeCompare(b[1].name));
 
@@ -121,9 +107,8 @@
       // Support old format (single gain) and new format (gainLive/gainVideo)
       const gainLive = entry.gainLive ?? entry.gain ?? null;
       const gainVideo = entry.gainVideo ?? entry.gain ?? null;
-      const fallbackEntry = allFallbacks[id] || {};
-      const fallbackLive = fallbackEntry.gainLive ?? gainLive;
-      const fallbackVideo = fallbackEntry.gainVideo ?? gainVideo;
+      const fallbackLive = getStoredAutoFallbackGain(fallbackData, id, 'live') ?? gainLive;
+      const fallbackVideo = getStoredAutoFallbackGain(fallbackData, id, 'video') ?? gainVideo;
       const autoVideo = resolveAutoApply(entry, 'video');
       const autoLive = resolveAutoApply(entry, 'live');
       const videoText = autoVideo
@@ -152,14 +137,13 @@
     channelListEl.querySelectorAll('.ch-del').forEach(btn => {
       btn.addEventListener('click', async () => {
         const id = btn.dataset.id;
-        const d = await chrome.storage.local.get([CHANNEL_VOLUMES_KEY, AUTO_FALLBACKS_KEY]);
+        const d = await chrome.storage.local.get(CHANNEL_VOLUMES_KEY);
         const obj = d[CHANNEL_VOLUMES_KEY] || {};
-        const fallbacks = d[AUTO_FALLBACKS_KEY] || {};
         delete obj[id];
-        delete fallbacks[id];
         await chrome.storage.local.set({
           [CHANNEL_VOLUMES_KEY]: obj,
-          [AUTO_FALLBACKS_KEY]: fallbacks
+          [autoFallbackStorageKey(id, 'video')]: null,
+          [autoFallbackStorageKey(id, 'live')]: null
         });
         renderChannels();
       });
@@ -182,7 +166,7 @@
     const enabled = defaultAutoVideoToggle.checked;
     defaultAutoVideoToggle.disabled = true;
     try {
-      await saveDefaultAutoApply('video', enabled);
+      await saveSetting('autoApplyLoudnessVideoDefault', enabled);
       defaultAutoApplyVideo = enabled;
       await renderChannels();
     } catch (_) {
@@ -197,7 +181,7 @@
     const enabled = defaultAutoLiveToggle.checked;
     defaultAutoLiveToggle.disabled = true;
     try {
-      await saveDefaultAutoApply('live', enabled);
+      await saveSetting('autoApplyLoudnessLiveDefault', enabled);
       defaultAutoApplyLive = enabled;
       await renderChannels();
     } catch (_) {
@@ -213,6 +197,11 @@
 
   clearAllBtn.addEventListener('click', async () => {
     if (!confirm(msg('clearAllConfirm'))) return;
+    const stored = await chrome.storage.local.get(null);
+    const fallbackKeys = Object.keys(stored).filter(key =>
+      key.startsWith(AUTO_FALLBACK_KEY_PREFIX)
+    );
+    if (fallbackKeys.length) await chrome.storage.local.remove(fallbackKeys);
     await chrome.storage.local.set({
       [CHANNEL_VOLUMES_KEY]: {},
       [AUTO_FALLBACKS_KEY]: {}
@@ -234,7 +223,10 @@
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local') return;
-    if (changes[CHANNEL_VOLUMES_KEY] || changes[AUTO_FALLBACKS_KEY]) {
+    const fallbackChanged = Object.keys(changes).some(key =>
+      key === AUTO_FALLBACKS_KEY || key.startsWith(AUTO_FALLBACK_KEY_PREFIX)
+    );
+    if (changes[CHANNEL_VOLUMES_KEY] || fallbackChanged) {
       renderChannels();
     }
     if (changes[SETTINGS_KEY]) {

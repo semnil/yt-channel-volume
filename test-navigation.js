@@ -22,6 +22,10 @@ let mockSentMessages = [];
 let mockPostMessages = [];
 let mockPostMessageHandler = null;
 
+function cloneStorageValue(value) {
+  return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+}
+
 function resetMocks() {
   mockLocation = { pathname: '/watch', search: '?v=abc123', href: 'https://www.youtube.com/watch?v=abc123' };
   mockStorage = {};
@@ -129,13 +133,25 @@ globalThis.chrome = {
       get(key) {
         if (Array.isArray(key)) {
           return Promise.resolve(Object.fromEntries(
-            key.map(k => [k, mockStorage[k] || {}])
+            key.filter(k => Object.prototype.hasOwnProperty.call(mockStorage, k))
+              .map(k => [k, cloneStorageValue(mockStorage[k])])
           ));
         }
-        return Promise.resolve({ [key]: mockStorage[key] || {} });
+        if (key === null) return Promise.resolve(cloneStorageValue(mockStorage));
+        return Promise.resolve(
+          Object.prototype.hasOwnProperty.call(mockStorage, key)
+            ? { [key]: cloneStorageValue(mockStorage[key]) }
+            : {}
+        );
       },
       set(obj) {
-        Object.assign(mockStorage, obj);
+        for (const [key, value] of Object.entries(obj)) {
+          mockStorage[key] = cloneStorageValue(value);
+        }
+        return Promise.resolve();
+      },
+      remove(keys) {
+        for (const key of Array.isArray(keys) ? keys : [keys]) delete mockStorage[key];
         return Promise.resolve();
       },
     },
@@ -685,10 +701,11 @@ async function runTests() {
   ytcv._set('currentLoudnessVideoId', comparedArchiveVideoId);
   ytcv._set('currentAutoApplyLoudnessLive', true);
   ytcv._set('targetLufs', -18);
+  const sharedLiveFallbackKey = ytcv.autoFallbackStorageKey('UCsharedLive', 'live');
   await ytcv.applyPreferredGain();
   assert(Math.abs(ytcv.state.currentGain - expectedAutoGain) < 0.001,
     'archive applies calculated live gain');
-  assert(Math.abs(mockStorage['autoLoudnessFallbacks']['UCsharedLive'].gainLive - expectedAutoGain) < 0.001,
+  assert(Math.abs(mockStorage[sharedLiveFallbackKey] - expectedAutoGain) < 0.001,
     'archive persists calculated gain as learned live fallback');
   assert(mockStorage['channelVolumes']['UCsharedLive'].gainLive === 0.4,
     'learning fallback does not overwrite existing Saved Channels gain');
@@ -710,9 +727,9 @@ async function runTests() {
   ytcv.notifyPopup();
   const messagesBeforeFallbackSync = mockSentMessages.length;
   simulateStorageChange({
-    autoLoudnessFallbacks: {
-      oldValue: {},
-      newValue: { 'UCsharedLive': { gainLive: expectedAutoGain } }
+    [sharedLiveFallbackKey]: {
+      oldValue: 0.4,
+      newValue: expectedAutoGain
     }
   });
   assert(Math.abs(ytcv.state.currentGain - expectedAutoGain) < 0.001,
@@ -731,24 +748,22 @@ async function runTests() {
   const originalStorageGet = chrome.storage.local.get;
   let resolveStaleFallbackRead;
   chrome.storage.local.get = key => {
-    if (key === 'autoLoudnessFallbacks') {
+    if (Array.isArray(key) && key.includes(sharedLiveFallbackKey)) {
       return new Promise(resolve => { resolveStaleFallbackRead = resolve; });
     }
     return originalStorageGet(key);
   };
   const staleApply = ytcv.applyPreferredGain();
   const newerFallbackGain = 0.8;
-  mockStorage['autoLoudnessFallbacks'] = {
-    'UCsharedLive': { gainLive: newerFallbackGain }
-  };
+  mockStorage[sharedLiveFallbackKey] = newerFallbackGain;
   simulateStorageChange({
-    autoLoudnessFallbacks: {
-      oldValue: { 'UCsharedLive': { gainLive: 0.4 } },
-      newValue: mockStorage['autoLoudnessFallbacks']
+    [sharedLiveFallbackKey]: {
+      oldValue: 0.4,
+      newValue: newerFallbackGain
     }
   });
   resolveStaleFallbackRead({
-    autoLoudnessFallbacks: { 'UCsharedLive': { gainLive: 0.4 } }
+    [sharedLiveFallbackKey]: 0.4
   });
   await staleApply;
   chrome.storage.local.get = originalStorageGet;
@@ -764,11 +779,30 @@ async function runTests() {
     gain: 0.6
   });
   assert(manualFallbackResponse?.ok === true, 'manual fallback save succeeds');
-  assert(!mockStorage['autoLoudnessFallbacks']['UCsharedLive'],
+  assert(mockStorage[sharedLiveFallbackKey] === null,
     'manual live gain clears learned live fallback');
   await ytcv.applyPreferredGain();
   assert(ytcv.state.currentGain === 0.6,
     'live without LUFS uses manual fallback after explicit save');
+
+  section('Auto LUFS: concurrent channel learning uses independent storage keys');
+  const concurrentVideoKey = ytcv.autoFallbackStorageKey('UCfallbackA', 'video');
+  const concurrentLiveKey = ytcv.autoFallbackStorageKey('UCfallbackB', 'live');
+  await Promise.all([
+    ytcv.saveAutoFallbackGain('UCfallbackA', 0.55, 'video'),
+    ytcv.saveAutoFallbackGain('UCfallbackB', 0.85, 'live')
+  ]);
+  assert(mockStorage[concurrentVideoKey] === 0.55,
+    'concurrent channel A fallback remains stored');
+  assert(mockStorage[concurrentLiveKey] === 0.85,
+    'concurrent channel B fallback remains stored');
+
+  mockStorage['autoLoudnessFallbacks'] = {
+    'UClegacyFallback': { gainVideo: 0.35 }
+  };
+  const legacyFallback = await ytcv.loadAutoFallbackEntry('UClegacyFallback');
+  assert(legacyFallback?.gainVideo === 0.35,
+    'legacy aggregate fallback remains readable after storage migration');
 
   section('Auto LUFS: early bridge for next video clears stale loudness');
   const oldVideoId = 'AAAAAAAAAAA';
@@ -930,11 +964,15 @@ async function runTests() {
   assert(persistedAuto.gainVideo === 0.6, 'gainVideo preserved while saving auto flag');
   assert(persistedAuto.gainLive === 1.4, 'gainLive preserved while saving auto flag');
   await ytcv.saveChannelAutoApply('UCpersistAuto', 'Persist Auto', true, 'live', 'https://example.com');
-  assert(persistedAuto.autoApplyLoudnessVideo === true, 'video auto flag preserved when enabling live');
-  assert(persistedAuto.autoApplyLoudnessLive === true, 'live auto flag enabled independently');
+  assert(mockStorage['channelVolumes']['UCpersistAuto'].autoApplyLoudnessVideo === true,
+    'video auto flag preserved when enabling live');
+  assert(mockStorage['channelVolumes']['UCpersistAuto'].autoApplyLoudnessLive === true,
+    'live auto flag enabled independently');
   await ytcv.saveChannelAutoApply('UCpersistAuto', 'Persist Auto', false, 'video', 'https://example.com');
-  assert(!persistedAuto.autoApplyLoudnessVideo, 'video auto flag disabled independently');
-  assert(persistedAuto.autoApplyLoudnessLive === true, 'live auto flag remains enabled');
+  assert(!mockStorage['channelVolumes']['UCpersistAuto'].autoApplyLoudnessVideo,
+    'video auto flag disabled independently');
+  assert(mockStorage['channelVolumes']['UCpersistAuto'].autoApplyLoudnessLive === true,
+    'live auto flag remains enabled');
 
   mockStorage['channelVolumes']['UClegacyAuto'] = { name: 'Legacy Auto', autoApplyLoudness: true };
   await ytcv.saveChannelAutoApply('UClegacyAuto', 'Legacy Auto', false, 'video', '');
@@ -948,7 +986,7 @@ async function runTests() {
   assert(mockStorage['channelVolumes']['UCautoOnly'].autoApplyLoudnessVideo === false,
     'explicit disabled state retained for all-channel default override');
 
-  section('Auto LUFS defaults: saved settings remain stable and new channels initialize once');
+  section('Auto LUFS defaults: missing per-channel flags inherit without storage writes');
   mockStorage['channelVolumes'] = {
     'UCdefaultAuto': { name: 'Default Auto', gainVideo: 0.45, gainLive: 0.8 }
   };
@@ -957,26 +995,68 @@ async function runTests() {
   ytcv._set('currentLoudnessDb', -6);
   ytcv._set('defaultAutoApplyLoudnessVideo', true);
   ytcv._set('defaultAutoApplyLoudnessLive', false);
-  await ytcv.applyPreferredGain();
-  assert(ytcv.state.currentAutoApplyLoudnessVideo === false,
-    'existing Saved Channels entry remains manual when all-channel default changes');
-  assert(ytcv.state.currentAutoApplyLoudnessLive === false, 'live keeps independent all-channel OFF');
-  assert(ytcv.state.currentGain === 0.45, 'existing saved video gain remains applied');
-  assert(mockStorage['channelVolumes']['UCdefaultAuto'].autoApplyLoudnessVideo === false,
-    'existing channel records its preserved manual state');
-  assert(mockStorage['channelVolumes']['UCdefaultAuto'].gainVideo === 0.45 &&
-    mockStorage['channelVolumes']['UCdefaultAuto'].gainLive === 0.8,
-    'preserving Auto state does not alter Saved Channels gains');
-
-  ytcv._set('currentChannel', { id: 'UCnewDefaultAuto', name: 'New Default Auto', url: '' });
+  const defaultEntryBefore = JSON.stringify(mockStorage['channelVolumes']['UCdefaultAuto']);
   await ytcv.applyPreferredGain();
   assert(ytcv.state.currentAutoApplyLoudnessVideo === true,
-    'new channel inherits all-channel ON on first playback');
+    'saved entry with missing video flag inherits all-channel ON');
+  assert(ytcv.state.currentAutoApplyLoudnessLive === false, 'live keeps independent all-channel OFF');
   assert(Math.abs(ytcv.state.currentGain - expectedAutoGain) < 0.001,
-    'new channel applies inherited automatic gain');
-  assert(mockStorage['channelVolumes']['UCnewDefaultAuto'].autoApplyLoudnessVideo === true,
-    'new channel records inherited ON as its own setting');
+    'inherited all-channel setting applies automatic gain');
+  assert(JSON.stringify(mockStorage['channelVolumes']['UCdefaultAuto']) === defaultEntryBefore,
+    'inherited default does not write a per-channel flag or alter saved gains');
 
+  section('Auto LUFS defaults: SPA navigation cannot mix channel metadata');
+  const navigationSourceId = 'UCnavSource';
+  const navigationFallbackKey = ytcv.autoFallbackStorageKey(navigationSourceId, 'video');
+  mockStorage['channelVolumes'] = {
+    [navigationSourceId]: {
+      name: 'Channel A',
+      url: 'https://www.youtube.com/channel/UCnavSource',
+      gainVideo: 0.45
+    }
+  };
+  setURL('/watch', 'NAVIGATE001');
+  ytcv._set('currentChannel', {
+    id: navigationSourceId,
+    name: 'Channel A',
+    url: 'https://www.youtube.com/channel/UCnavSource'
+  });
+  ytcv._set('currentVideoType', 'video');
+  ytcv._set('currentLoudnessDb', -6);
+  ytcv._set('defaultAutoApplyLoudnessVideo', true);
+  const originalStorageSet = chrome.storage.local.set;
+  let releaseFallbackSave;
+  chrome.storage.local.set = obj => {
+    Object.assign(mockStorage, obj);
+    if (Object.prototype.hasOwnProperty.call(obj, navigationFallbackKey)) {
+      return new Promise(resolve => { releaseFallbackSave = resolve; });
+    }
+    return Promise.resolve();
+  };
+  const navigationApply = ytcv.applyPreferredGain();
+  await tick();
+  setURL('/watch', 'NAVIGATE002');
+  ytcv._set('currentChannel', {
+    id: 'UCnavTarget',
+    name: 'Channel B',
+    url: 'https://www.youtube.com/channel/UCnavTarget'
+  });
+  releaseFallbackSave();
+  await navigationApply;
+  chrome.storage.local.set = originalStorageSet;
+  assert(mockStorage['channelVolumes'][navigationSourceId].name === 'Channel A',
+    'source channel name is not replaced after SPA navigation');
+  assert(mockStorage['channelVolumes'][navigationSourceId].url ===
+    'https://www.youtube.com/channel/UCnavSource',
+    'source channel URL is not replaced after SPA navigation');
+  assert(!('autoApplyLoudnessVideo' in mockStorage['channelVolumes'][navigationSourceId]),
+    'inherited default remains unset after delayed fallback save');
+
+  mockStorage['channelVolumes']['UCdefaultAuto'] = {
+    name: 'Default Auto',
+    gainVideo: 0.45,
+    gainLive: 0.8
+  };
   ytcv._set('currentChannel', { id: 'UCdefaultAuto', name: 'Default Auto', url: '' });
   await ytcv.saveChannelAutoApply('UCdefaultAuto', 'Default Auto', false, 'video', '');
   await ytcv.applyPreferredGain();

@@ -2,7 +2,9 @@
 
 const SETTINGS_KEY = 'autoLoudnessSettings';
 const CHANNEL_VOLUMES_KEY = 'channelVolumes';
+// Legacy aggregate fallback storage, retained for read compatibility.
 const AUTO_FALLBACKS_KEY = 'autoLoudnessFallbacks';
+const AUTO_FALLBACK_KEY_PREFIX = 'autoLoudnessFallback:';
 const YT_REFERENCE_LUFS = -14;
 const DEFAULT_TARGET_LUFS = -18;
 const DEFAULT_AUTO_APPLY_LOUDNESS = false;
@@ -30,20 +32,21 @@ function formatAutoFallback(gain, displayUnit, autoLabel = 'Auto') {
   return `${autoLabel} (${formatted.text}${formatted.unit})`;
 }
 
-function preserveSavedAutoApplyState(channelVolumes, videoType) {
-  const key = videoType === 'live'
-    ? 'autoApplyLoudnessLive'
-    : 'autoApplyLoudnessVideo';
-  const preserved = {};
-  for (const [channelId, value] of Object.entries(channelVolumes || {})) {
-    const entry = { ...(value || {}) };
-    // A legacy all-types flag is already an explicit per-channel choice.
-    if (!(key in entry) && !('autoApplyLoudness' in entry)) {
-      entry[key] = false;
-    }
-    preserved[channelId] = entry;
+function autoFallbackStorageKey(channelId, videoType) {
+  const type = videoType === 'live' ? 'live' : 'video';
+  return `${AUTO_FALLBACK_KEY_PREFIX}${channelId}:${type}`;
+}
+
+function getStoredAutoFallbackGain(storageData, channelId, videoType) {
+  const storageKey = autoFallbackStorageKey(channelId, videoType);
+  if (Object.prototype.hasOwnProperty.call(storageData, storageKey)) {
+    const value = storageData[storageKey];
+    return typeof value === 'number' && Number.isFinite(value) ? value : null;
   }
-  return preserved;
+  const legacyEntry = storageData[AUTO_FALLBACKS_KEY]?.[channelId];
+  const legacyKey = videoType === 'live' ? 'gainLive' : 'gainVideo';
+  const value = legacyEntry?.[legacyKey];
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
 function calcGain(loudnessDb, targetLufs) {

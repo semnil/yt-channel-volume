@@ -61,27 +61,24 @@ assert(formatAutoFallback(0.7, '%') === 'Auto (70%)', 'saved 0.7 fallback → Au
 assert(formatAutoFallback(null, '%') === 'Auto (100%)', 'missing fallback → Auto (100%)');
 assert(formatAutoFallback(0.5, 'dB', '自動') === '自動 (-6.0 dB)', 'fallback respects display unit and label');
 
-section('preserveSavedAutoApplyState');
-const channelsBeforeDefaultChange = {
-  missing: { name: 'Missing', gainVideo: 0.5, gainLive: 0.7 },
-  explicit: { name: 'Explicit', gainVideo: 0.6, autoApplyLoudnessVideo: true },
-  legacy: { name: 'Legacy', gainVideo: 0.8, autoApplyLoudness: true }
-};
-const preservedChannels = preserveSavedAutoApplyState(
-  channelsBeforeDefaultChange,
-  'video'
-);
-assert(preservedChannels.missing.autoApplyLoudnessVideo === false,
-  'missing per-channel value is frozen as OFF');
-assert(preservedChannels.missing.gainVideo === 0.5 && preservedChannels.missing.gainLive === 0.7,
-  'saved gains remain unchanged');
-assert(preservedChannels.explicit.autoApplyLoudnessVideo === true,
-  'explicit per-channel value remains unchanged');
-assert(preservedChannels.legacy.autoApplyLoudness === true &&
-  !('autoApplyLoudnessVideo' in preservedChannels.legacy),
-  'legacy explicit value remains unchanged');
-assert(!('autoApplyLoudnessVideo' in channelsBeforeDefaultChange.missing),
-  'input channel data is not mutated');
+section('auto fallback storage');
+const fallbackVideoKey = autoFallbackStorageKey('UCfixture', 'video');
+const fallbackLiveKey = autoFallbackStorageKey('UCfixture', 'live');
+assert(fallbackVideoKey === 'autoLoudnessFallback:UCfixture:video',
+  'video fallback uses a channel/type-specific key');
+assert(fallbackLiveKey === 'autoLoudnessFallback:UCfixture:live',
+  'live fallback uses a channel/type-specific key');
+assert(getStoredAutoFallbackGain({
+  [AUTO_FALLBACKS_KEY]: { UCfixture: { gainVideo: 0.4 } }
+}, 'UCfixture', 'video') === 0.4, 'legacy aggregate fallback remains readable');
+assert(getStoredAutoFallbackGain({
+  [AUTO_FALLBACKS_KEY]: { UCfixture: { gainVideo: 0.4 } },
+  [fallbackVideoKey]: 0.8
+}, 'UCfixture', 'video') === 0.8, 'granular fallback overrides legacy value');
+assert(getStoredAutoFallbackGain({
+  [AUTO_FALLBACKS_KEY]: { UCfixture: { gainVideo: 0.4 } },
+  [fallbackVideoKey]: null
+}, 'UCfixture', 'video') === null, 'granular tombstone clears legacy fallback');
 
 // ── calcGain ─────────────────────────────────────────────────────────
 
@@ -148,6 +145,7 @@ assert(DEFAULT_AUTO_APPLY_LOUDNESS === false, 'DEFAULT_AUTO_APPLY_LOUDNESS = fal
 assert(SETTINGS_KEY === 'autoLoudnessSettings', 'SETTINGS_KEY');
 assert(CHANNEL_VOLUMES_KEY === 'channelVolumes', 'CHANNEL_VOLUMES_KEY');
 assert(AUTO_FALLBACKS_KEY === 'autoLoudnessFallbacks', 'AUTO_FALLBACKS_KEY');
+assert(AUTO_FALLBACK_KEY_PREFIX === 'autoLoudnessFallback:', 'AUTO_FALLBACK_KEY_PREFIX');
 
 // ── Summary ──────────────────────────────────────────────────────────
 
