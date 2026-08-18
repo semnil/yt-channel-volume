@@ -116,7 +116,10 @@ globalThis.URL = class {
 globalThis.chrome = {
   runtime: {
     id: 'test-extension-id',
-    sendMessage() { return Promise.resolve(); },
+    sendMessage(message) {
+      mockSentMessages.push(message);
+      return Promise.resolve();
+    },
     onMessage: {
       addListener(fn) { mockRuntimeMessageListeners.push(fn); }
     },
@@ -568,6 +571,17 @@ async function runTests() {
   const g3 = ytcv.calcGainFromLoudness(-6);
   assert(Math.abs(g3 - Math.pow(10, 2/20)) < 0.001, 'loudnessDb=-6 → boost');
 
+  section('commitGain keeps state, audio, and popup projection synchronized');
+  const committedGain = 0.55;
+  const messagesBeforeCommit = mockSentMessages.length;
+  ytcv.commitGain(committedGain);
+  assert(ytcv.state.currentGain === committedGain, 'committed gain stored in canonical state');
+  assert(ytcv.state.gainNode.gain.value === committedGain, 'committed gain applied to GainNode');
+  assert(mockSentMessages.length === messagesBeforeCommit + 1,
+    'committed gain publishes one popup state update');
+  assert(mockSentMessages.at(-1)?.gain === committedGain,
+    'popup state update contains the same committed gain');
+
   // ── Per-channel automatic LUFS application ─────────────────────────
 
   section('Auto LUFS: enabling for current channel applies calculated gain');
@@ -716,7 +730,7 @@ async function runTests() {
   ytcv._set('currentLoudnessVideoId', liveVideoId);
   ytcv._set('currentAutoApplyLoudnessLive', true);
   ytcv._set('currentGain', 0.4);
-  ytcv.setGain(0.4);
+  ytcv.commitGain(0.4);
 
   setURL('/watch', archiveVideoId);
   simulateBridgeMessage({
@@ -770,7 +784,7 @@ async function runTests() {
   ytcv._set('currentAutoApplyLoudnessLive', true);
   ytcv._set('currentGain', 0.4);
   ytcv._set('targetLufs', -18);
-  ytcv.setGain(0.4);
+  ytcv.commitGain(0.4);
   mockPostMessageHandler = (data) => {
     if (data.type !== '__yt_channel_volume_request__') return;
     setTimeout(() => simulateBridgeMessage({
@@ -1044,6 +1058,7 @@ async function runTests() {
   ytcv._set('currentChannel', { id: 'UCsync4', name: 'Sync Ch', url: '' });
   ytcv._set('currentVideoType', 'video');
   ytcv._set('currentGain', 0.4);
+  ytcv.notifyPopup();
   const sentBefore = mockSentMessages.length;
   simulateStorageChange({
     channelVolumes: { newValue: { 'UCsync4': { name: 'Sync Ch', gainVideo: 0.4 } } }

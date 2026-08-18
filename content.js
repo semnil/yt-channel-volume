@@ -329,8 +329,7 @@
   function applyAutomaticLoudnessGain() {
     if (!isCurrentAutoApplyEnabled() || currentLoudnessDb === null) return false;
     const gain = calcGainFromLoudness(currentLoudnessDb);
-    currentGain = gain;
-    setGain(gain);
+    commitGain(gain);
     return true;
   }
 
@@ -347,10 +346,10 @@
         requestedVideoType !== currentVideoType) return;
 
     setCurrentAutoApplyFromEntry(entry);
-    currentGain = isCurrentAutoApplyEnabled(requestedVideoType) && currentLoudnessDb !== null
+    const gain = isCurrentAutoApplyEnabled(requestedVideoType) && currentLoudnessDb !== null
       ? calcGainFromLoudness(currentLoudnessDb)
       : extractGainForType(entry, requestedVideoType) ?? 1.0;
-    setGain(currentGain);
+    commitGain(gain);
   }
 
   // ── Channel detection ──────────────────────────────────────────────
@@ -456,15 +455,28 @@
     return true;
   }
 
-  function setGain(value) {
-    const clamped = Math.max(0, Math.min(6, value));
-    if (clamped === 1.0 && !gainNode) {
+  function applyGainToAudio(value) {
+    if (value === 1.0 && !gainNode) {
       updateGainOverlay();
       return;
     }
     if (!ensureAudioChain()) return;
-    gainNode.gain.value = clamped;
+    gainNode.gain.value = value;
     updateGainOverlay();
+  }
+
+  // The only production path that changes gain. Keeping logical state, the
+  // GainNode, and popup projection in one commit prevents one surface from
+  // retaining an older value than the others.
+  function commitGain(value) {
+    const numeric = Number(value);
+    const clamped = Number.isFinite(numeric)
+      ? Math.max(0, Math.min(6, numeric))
+      : 1.0;
+    currentGain = clamped;
+    applyGainToAudio(clamped);
+    notifyPopup();
+    return clamped;
   }
 
   // ── Gain overlay on YouTube player ──────────────────────────────────
@@ -683,8 +695,7 @@
         }
         const nextGain = gain ?? 1.0;
         if (nextGain !== currentGain) {
-          currentGain = nextGain;
-          setGain(nextGain);
+          commitGain(nextGain);
         }
         notifyPopup();
       }
@@ -718,8 +729,7 @@
       // current name is still empty or a channel-ID placeholder.
       fillCurrentChannelNameFromDomFallback();
       const gain = calcGainFromLoudness(currentLoudnessDb);
-      currentGain = gain;
-      setGain(gain);
+      commitGain(gain);
       saveChannelGain(currentChannel.id, currentChannel.name, gain, currentVideoType, currentChannel.url).then(() => {
         notifyPopup();
         sendResponse({ ok: true, gain });
@@ -728,8 +738,7 @@
     }
 
     if (msg.type === 'setGainLive') {
-      currentGain = msg.gain;
-      setGain(msg.gain);
+      commitGain(msg.gain);
       sendResponse({ ok: true });
       return true;
     }
@@ -737,8 +746,7 @@
     if (msg.type === 'setGain') {
       const { channelId, gain } = msg;
       fillCurrentChannelNameFromDomFallback();
-      currentGain = gain;
-      setGain(gain);
+      commitGain(gain);
       saveChannelGain(channelId, currentChannel.name, gain, currentVideoType, currentChannel.url).then(() => {
         notifyPopup();
         sendResponse({ ok: true });
@@ -751,8 +759,7 @@
       deleteChannelGain(channelId).then(() => {
         currentAutoApplyLoudnessVideo = false;
         currentAutoApplyLoudnessLive = false;
-        currentGain = 1.0;
-        setGain(currentGain);
+        commitGain(1.0);
         notifyPopup();
         sendResponse({ ok: true });
       });
@@ -865,7 +872,7 @@
       triggerApply,
       detectChannel,
       getChannelDisplayName,
-      setGain,
+      commitGain,
       getState,
       isWatchPage,
       getUrlVideoId,
