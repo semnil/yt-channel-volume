@@ -679,6 +679,68 @@ async function runTests() {
   assert(ytcv.state.currentLoudnessDb === null, 'late response does not restore stale loudness');
   assert(ytcv.state.currentGain === 0.4, 'late response does not change fallback gain');
 
+  section('Auto LUFS: early archive gain survives delayed navigation apply');
+  const liveVideoId = 'CCCCCCCCCCC';
+  const archiveVideoId = 'DDDDDDDDDDD';
+  mockStorage['autoLoudnessSettings'] = {
+    targetLufs: -18,
+    autoApplyLoudnessVideoDefault: false,
+    autoApplyLoudnessLiveDefault: false
+  };
+  mockStorage['channelVolumes'] = {
+    'UCarchiveB': {
+      name: 'Archive B',
+      gainLive: 0.4,
+      autoApplyLoudnessLive: true
+    }
+  };
+  mockDOMElements['canonical'] = {
+    href: 'https://www.youtube.com/channel/UCstaleLiveA'
+  };
+  mockDOMElements['channelName'] = { textContent: 'Stale Live A' };
+  ytcv._set('_lastVideoId', liveVideoId);
+  ytcv._set('currentChannel', {
+    id: 'UCliveA',
+    name: 'Live A',
+    url: 'https://www.youtube.com/channel/UCliveA'
+  });
+  ytcv._set('currentChannelVideoId', liveVideoId);
+  ytcv._set('currentVideoType', 'live');
+  ytcv._set('currentVideoTypeDetected', true);
+  ytcv._set('currentLoudnessDb', null);
+  ytcv._set('currentLoudnessVideoId', liveVideoId);
+  ytcv._set('currentAutoApplyLoudnessLive', true);
+  ytcv._set('currentGain', 0.4);
+  ytcv.setGain(0.4);
+
+  setURL('/watch', archiveVideoId);
+  simulateBridgeMessage({
+    videoId: archiveVideoId,
+    loudnessDb: -6,
+    isLiveContent: true,
+    isLiveNow: false,
+    channelId: 'UCarchiveB',
+    author: 'Archive B'
+  });
+  await tick();
+  await tick();
+  assert(Math.abs(ytcv.state.currentGain - expectedAutoGain) < 0.001,
+    'archive bridge applies calculated gain before navigation handler');
+
+  await ytcv.applyVideoVolume();
+  assert(ytcv.state.currentChannel.id === 'UCarchiveB',
+    'delayed navigation preserves bridge channel over stale DOM');
+  assert(ytcv.state.currentVideoType === 'live',
+    'delayed navigation preserves archive type');
+  assert(ytcv.state.currentLoudnessDb === -6,
+    'delayed navigation preserves archive loudness');
+  assert(Math.abs(ytcv.state.currentGain - expectedAutoGain) < 0.001,
+    'delayed navigation does not replace calculated gain with fallback');
+  assert(Math.abs(ytcv.state.gainNode.gain.value - expectedAutoGain) < 0.001,
+    'calculated archive gain remains applied to audio node');
+  mockDOMElements['canonical'] = null;
+  mockDOMElements['channelName'] = null;
+
   section('Auto LUFS: saving flag preserves per-type gains');
   mockStorage['channelVolumes'] = {
     'UCpersistAuto': { name: 'Persist Auto', gainVideo: 0.6, gainLive: 1.4 }

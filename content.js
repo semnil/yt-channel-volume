@@ -25,6 +25,7 @@
   let connectedVideo = null;
 
   let currentChannel = { id: '', name: '', url: '' };
+  let currentChannelVideoId = '';
   let currentLoudnessDb = null;
   let currentLoudnessVideoId = '';
   let currentGain = 1.0;
@@ -223,6 +224,7 @@
     const bridgeChId = event.data.channelId;
     const hasValidData = hasLoudness || event.data.isLiveContent !== undefined;
     if (hasValidData && bridgeChId && bridgeChId.startsWith('UC')) {
+      if (bridgeVideoId) currentChannelVideoId = bridgeVideoId;
       const oldId = currentChannel.id;
       const idChanged = oldId !== bridgeChId;
       if (idChanged) {
@@ -510,31 +512,38 @@
     const prevVideoId = _lastVideoId;
     _lastVideoId = getUrlVideoId();
     const videoIdChanged = prevVideoId && prevVideoId !== _lastVideoId;
+    const hasEarlyBridgeLoudness = !!_lastVideoId &&
+      currentLoudnessVideoId === _lastVideoId;
+    const hasEarlyBridgeChannel = !!_lastVideoId &&
+      currentChannelVideoId === _lastVideoId;
     // On cross-video navigation, clear prior channel so stale data from the
     // previous video cannot leak into the new video's state. detectChannel()
     // may return empty when DOM is mid-transition — bridge will provide UC
-    // shortly via requestLoudnessWithRetry.
-    if (videoIdChanged) {
+    // shortly via requestLoudnessWithRetry. If the bridge already delivered
+    // metadata for this URL, preserve that authoritative state instead.
+    if (videoIdChanged && !hasEarlyBridgeChannel) {
       currentChannel = { id: '', name: '', url: '' };
+      currentChannelVideoId = '';
       currentAutoApplyLoudnessVideo = false;
       currentAutoApplyLoudnessLive = false;
     }
 
     const ch = detectChannel();
-    if (ch.id) currentChannel = ch;
+    if (ch.id && !hasEarlyBridgeChannel) currentChannel = ch;
 
-    currentLoudnessDb = null;
-    currentLoudnessVideoId = _lastVideoId;
-    currentVideoType = 'video';
-    currentVideoTypeDetected = false;
-    currentIsLiveNow = false;
+    if (!hasEarlyBridgeLoudness) {
+      currentLoudnessDb = null;
+      currentLoudnessVideoId = '';
+      currentVideoType = 'video';
+      currentVideoTypeDetected = false;
+      currentIsLiveNow = false;
+    }
 
     await loadSettings();
-
-    const initialEntry = await loadChannelEntry(currentChannel.id);
-    setCurrentAutoApplyFromEntry(initialEntry);
-    currentGain = extractGainForType(initialEntry, 'video') ?? 1.0;
-    setGain(currentGain);
+    // Use the latest bridge state if it arrived before or during the settings
+    // read. This avoids replacing an already calculated archive gain with the
+    // navigation-time fallback.
+    await applyPreferredGain();
     notifyPopup();
 
     // Fetch loudness + videoType + channelId. Auto mode applies the calculated
@@ -844,7 +853,8 @@
     globalThis.__YTCV__ = {
       get state() {
         return {
-          currentChannel, currentGain, currentLoudnessDb, currentLoudnessVideoId,
+          currentChannel, currentChannelVideoId,
+          currentGain, currentLoudnessDb, currentLoudnessVideoId,
           currentVideoType, currentVideoTypeDetected, currentIsLiveNow, showGainOverlay,
           currentAutoApplyLoudnessVideo, currentAutoApplyLoudnessLive,
           _lastVideoId, _lastProcessedVideo, _applyRunning, connectedVideo,
@@ -869,6 +879,7 @@
       _set(key, val) {
         switch (key) {
           case 'currentChannel': currentChannel = val; break;
+          case 'currentChannelVideoId': currentChannelVideoId = val; break;
           case 'currentGain': currentGain = val; break;
           case 'currentVideoType': currentVideoType = val; break;
           case 'currentVideoTypeDetected': currentVideoTypeDetected = val; break;
