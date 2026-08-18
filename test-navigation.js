@@ -662,8 +662,9 @@ async function runTests() {
   assert(Math.abs(ytcv.state.currentGain - expectedAutoGain) < 0.001, 'live auto applies calculated gain when LUFS is available');
 
   section('Auto LUFS: archive gain becomes same-channel live fallback');
-  const comparedArchiveVideoId = 'TALF7KCHMvg';
-  const comparedLiveVideoId = 'vZtGYgfW2uQ';
+  // Keep this regression independent of mutable, real YouTube content.
+  const comparedArchiveVideoId = 'ARCHIVE0001';
+  const comparedLiveVideoId = 'LIVESTREAM1';
   mockStorage['channelVolumes'] = {
     'UCsharedLive': {
       name: 'Shared Live Channel',
