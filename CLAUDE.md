@@ -152,6 +152,6 @@ python pack.py
 - テスト: `node test.js` (utils) + `node test-navigation.js` (navigation P01-P18 + bridge + guard + detectChannel + data integrity + cross-tab sync + per-channel auto LUFS)
 - テスト用 export: `__TEST_YTCV__` フラグで content.js 内部を `globalThis.__YTCV__` に露出。本番では無効
 - Storage keys: `autoLoudnessSettings` (target LUFS, display unit, Video/Live auto defaults), `channelVolumes` (saved channel gains, per-channel auto overrides, URL)
-- Storage format: `channelVolumes.{id}` = `{ name, gainLive, gainVideo, autoApplyLoudnessLive, autoApplyLoudnessVideo, url }` (個別自動適用フラグは省略時に全チャンネル既定値を継承。旧 `autoApplyLoudness` は両種別同値、旧 `{ name, gain, url }` は両ゲインとして読み替え)
+- Storage format: `channelVolumes.{id}` = `{ name, gainLive, gainVideo, autoApplyLoudnessLive, autoApplyLoudnessVideo, url }` (種別ごとの個別自動適用フラグと手動ゲインが両方ない場合だけ全チャンネル既定値を継承し、手動ゲインのみの場合は暗黙OFF。旧 `autoApplyLoudness` は両種別同値、旧 `{ name, gain, url }` は両ゲインとして読み替え)
 - slider `input` event = リアルタイムゲイン変更 (storage 書き込みなし)、`change` event = storage 保存
 - videoType 判定: page-bridge.js が `videoDetails.isLiveContent` を返す。content.js で `isLiveContent` が `true` なら 'live'、`false` なら 'video' (loudnessDb は判定に使わない)。プレミア公開は `isLiveContent=false` のため 'video' 扱い。初回ロード時はデフォルト 'video' で、bridge から isLiveContent を受信後に正しい種別のゲインに切替
