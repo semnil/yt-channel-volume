@@ -14,7 +14,7 @@ body {
 }
 
 .container {
-  max-width: 600px;
+  max-width: 760px;
   margin: 0 auto;
   padding: 32px 24px;
 }
@@ -120,6 +120,22 @@ h1 {
 .toggle-group button:hover:not(.active) {
   color: #ccc;
 }
+.type-switches {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+.type-switch {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.type-switch-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #888;
+  text-transform: uppercase;
+}
 
 /* ── Saved channels table ─────────────────────── */
 
@@ -150,7 +166,7 @@ h1 {
 
 .ch-name {
   color: #e1e1e1;
-  max-width: 300px;
+  max-width: 420px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -170,7 +186,10 @@ h1 {
   color: #ff6b9d;
   text-align: right;
   padding-right: 12px;
+  min-width: 110px;
+  white-space: nowrap;
 }
+.ch-vol.auto { color: #4ecdc4; }
 .ch-del {
   background: none;
   border: none;
@@ -260,6 +279,29 @@ h1 {
       <div style="display:flex; align-items:center;">
         <input type="range" id="targetSlider" min="-30" max="-6" value="-18" step="1">
         <span id="targetValue" class="setting-value">-18 LUFS</span>
+      </div>
+    </div>
+
+    <div class="setting-row">
+      <div>
+        <div id="allChannelsAutoLabel" class="setting-label" data-i18n="allChannelsAutoApply"></div>
+        <div class="setting-desc" data-i18n="allChannelsAutoApplyDesc"></div>
+      </div>
+      <div class="type-switches">
+        <div class="type-switch">
+          <span id="defaultAutoVideoLabel" class="type-switch-label" data-i18n="typeVideo"></span>
+          <label class="toggle-switch">
+            <input type="checkbox" id="defaultAutoVideoToggle" aria-labelledby="allChannelsAutoLabel defaultAutoVideoLabel">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="type-switch">
+          <span id="defaultAutoLiveLabel" class="type-switch-label" data-i18n="typeLive"></span>
+          <label class="toggle-switch">
+            <input type="checkbox" id="defaultAutoLiveToggle" aria-labelledby="allChannelsAutoLabel defaultAutoLiveLabel">
+            <span class="slider"></span>
+          </label>
+        </div>
       </div>
     </div>
 

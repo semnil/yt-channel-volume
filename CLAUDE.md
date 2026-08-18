@@ -15,9 +15,9 @@ page-bridge.js (MAIN world content script, document_start)
 └── postMessage → content.js へ loudnessDb + isLiveContent + channelId + author を中継
 
 content.js (ISOLATED world content script, document_idle)
-├── postMessage listener: page-bridge.js から loudnessDb 受信 (情報表示のみ)
+├── postMessage listener: page-bridge.js から loudnessDb 受信
 ├── requestLoudnessWithRetry: on-demand で page-bridge.js にリトライ要求
-├── Gain calculation (ユーザー操作トリガー)
+├── Gain calculation (手動適用 / チャンネル別 LUFS 自動適用)
 │   ├── contentLUFS = -14 + loudnessDb (YouTube reference = -14 LUFS)
 │   ├── compensationDb = targetLUFS - contentLUFS
 │   └── gain = 10^(compensationDb / 20), clamped [0, 6], NaN/Inf → 1.0
@@ -34,8 +34,8 @@ content.js (ISOLATED world content script, document_idle)
 ├── videoType: 'live' (配信/アーカイブ) or 'video' (動画/ショート) で別ゲイン管理
 ├── Cross-tab sync: chrome.storage.onChanged で channelVolumes 変更を受信し、現在チャンネル × videoType のゲインを即適用 (ポーリングなし、自タブ dedup は currentGain 比較)
 └── Storage
-    ├── autoLoudnessSettings: { targetLufs, displayUnit, showGainOverlay }
-    └── channelVolumes: { [channelId]: { name, gainLive, gainVideo, url } }
+    ├── autoLoudnessSettings: { targetLufs, displayUnit, showGainOverlay, autoApplyLoudnessVideoDefault, autoApplyLoudnessLiveDefault }
+    └── channelVolumes: { [channelId]: { name, gainLive, gainVideo, autoApplyLoudnessLive, autoApplyLoudnessVideo, url } }
 
 utils.js (shared, popup/options で読み込み + test.js)
 ├── Constants: SETTINGS_KEY, CHANNEL_VOLUMES_KEY, YT_REFERENCE_LUFS, DEFAULT_TARGET_LUFS
@@ -45,17 +45,20 @@ utils.js (shared, popup/options で読み込み + test.js)
 
 popup.html / popup.js
 ├── Loudness / Suggested / Current 表示 (読み取り専用)
+├── Auto有効・LUFS未検出時はCurrentにFallbackバッジを表示
 ├── Video Type バッジ (LIVE / VIDEO)
 ├── 「チャンネルに適用」ボタン (loudnessDb からゲイン算出・種別ごとに保存)
+├── 現在視聴中の種別だけ表示する、チャンネル × Video/Live 別「LUFS 自動適用」トグル
 ├── Manual Volume: スライダー (0–600%) + プリセット
 ├── 非 watch ページでは UI 非表示
 └── retryGetState: loudness 未取得時のポーリングフォールバック
 
 options.html / options.js (設定画面、別タブで表示)
 ├── Target LUFS スライダー (-30 ~ -6 LUFS, default -18)
+├── 全チャンネルのLUFS自動適用 (Video / Live別、default OFF、個別未設定時のみ継承)
 ├── 表示単位トグル (% / dB)
 ├── ゲイン表示トグル (プレイヤーのボリュームバー横に表示、default OFF)
-├── Saved Channels テーブル (Video / Live 2列、チャンネルリンク付き、削除可)
+├── Saved Channels テーブル (Video / Live 2列。Auto時は `Auto (fallback gain)`、チャンネルリンク付き、削除可)
 └── storage.onChanged でリアルタイム同期
 ```
 
@@ -68,10 +71,10 @@ options.html / options.js (設定画面、別タブで表示)
 
 ## User workflow
 
-1. チャンネルのアーカイブ動画を開く → Content Loudness が表示される
-2. 「チャンネルに適用」ボタンを押す → ターゲット LUFS との差分からゲインを算出・チャンネルに保存
-3. 同チャンネルのライブ配信や他の動画を開く → 保存済みゲインが自動適用
-4. Manual Volume スライダーで任意のゲインに変更・保存も可能
+1. チャンネルの動画を開く → Content Loudness が表示される
+2. ポップアップに表示された現在種別の「LUFS 自動適用」をONにする → 対象種別の検出可能な動画へTarget LUFSに対応するゲインを適用
+3. LUFS 未検出のライブ配信などでは保存済みの種別別ゲインへフォールバック
+4. 「チャンネルに適用」や Manual Volume で従来どおり種別別ゲインの保存も可能
 
 ## File overview
 
@@ -94,7 +97,8 @@ options.html / options.js (設定画面、別タブで表示)
 ## Key design decisions
 
 - **GainNode, not HTMLMediaElement.volume**: volume property caps at 1.0. GainNode allows 0.0–6.0 (0–600%)
-- **loudnessDb は情報表示のみ**: 自動適用しない。ユーザーが動画を選んで「チャンネルに適用」で保存
+- **チャンネル・種別別 LUFS 自動適用**: 現在の種別に対応する `autoApplyLoudnessVideo` / `autoApplyLoudnessLive` が true で loudnessDb を取得できた場合は、Target LUFS から算出した動画固有ゲインを保存済みゲインより優先。検出できない場合は保存済みの種別別ゲインへフォールバック。旧 `autoApplyLoudness` は両種別 true として読み替える
+- **全チャンネル既定値と個別設定**: `autoApplyLoudnessVideoDefault` / `autoApplyLoudnessLiveDefault` は個別フラグが存在しないチャンネルだけに適用。個別フラグはtrue/falseの両方を保存する三状態設計 (未設定=既定値継承、true=明示ON、false=明示OFF)。既定値変更時に`channelVolumes`は書き換えない
 - **MAIN world + ISOLATED world 分離**: YouTube の CSP が inline script を禁止するため、loudnessDb 抽出は `page-bridge.js` (MAIN world, `document_start`) で実行
 - **3経路の loudnessDb 取得**: (1) `Object.defineProperty` で変数セット検知、(2) fetch hook (`/youtubei/v1/player`)、(3) YouTube player DOM 内部データ (`ytd-watch-flexy.__data` / `movie_player.getPlayerResponse`)
 - **isLiveNow の補完**: `_capturedResp` の `isLiveNow` がページロード時点で固定されるため、request ハンドラで `movie_player.getPlayerResponse()` から最新の `isLiveNow` を補完する (待機→配信開始遷移に対応)。content.js の `forceDetect` (popup 開封時) で bridge に再問い合わせし、応答で `currentIsLiveNow` が更新された場合に `stateChanged` 経由で popup へ通知
@@ -110,7 +114,7 @@ options.html / options.js (設定画面、別タブで表示)
 - **createMediaElementSource**: called once per `<video>`. Cannot be called again — conflicts with other extensions
 - **Channel ID formats**: `UC...` (canonical) が正規 ID。`detectChannel()` は `@handle` を拒否し UC のみ返す。DOM に UC がない場合は bridge の `videoDetails.channelId` を待つ
 - **notifyPopup 重複抑制**: state key 比較で no-op 送信を防止。key には `isLiveNow` を含み、待機→配信開始の遷移でも popup へ通知が発火する
-- **クロスタブ同期**: `chrome.storage.onChanged` で `channelVolumes` 変更を受信。`extractGainForType` で旧 `{gain}` 形式含めて解決し、`currentGain` 比較で自タブ書き込みの reentry を抑止。リモート削除時は 1.0 にリセット
+- **クロスタブ同期**: `chrome.storage.onChanged` で `channelVolumes` 変更を受信。チャンネル・種別別の自動適用フラグと種別別ゲインを即時反映し、リモート削除時は 1.0 にリセット
 - **NaN/Infinity ガード**: ゲイン計算結果が非有限値なら 1.0 にフォールバック
 - **遅延オーディオチェーン**: ゲインが 1.0 (パススルー) の場合は `createMediaElementSource` を呼ばない → Live Caption のちらつきを回避。`connectedVideo` (audio chain) と `_lastProcessedVideo` (検出済み video) を分離管理
 - **triggerApply 設計**: `setTimeout` デバウンスを廃止し、async mutex (`_applyRunning`) で同時実行を防止。`yt-navigate-finish` / `popstate` / `visibilitychange` / observer / 初回ロード の全トリガーから直接呼び出し。バックグラウンドタブの throttle やライブチャットの高頻度 DOM 更新の影響を受けない
@@ -145,9 +149,9 @@ python pack.py
 - Channel detection order (UC 限定): `link[rel="canonical"][href*="/channel/"]` → `#owner a[href*="/channel/"]` / `ytd-video-owner-renderer a[href*="/channel/"]` → `meta[itemprop="channelId"]` → page-bridge `videoDetails.channelId`。`@handle` リンクは SPA 遷移中に stale になるため identifier として拒否
 - Display name: bridge `videoDetails.author` が権威ソース。DOM `#owner #channel-name a` はフォールバック
 - SPA ナビ検知: `yt-navigate-finish` + `popstate` + `visibilitychange` + MutationObserver (video 要素変更 + URL video ID 変更)
-- テスト: `node test.js` (utils) + `node test-navigation.js` (navigation P01-P18 + bridge + guard + detectChannel + data integrity + cross-tab sync)
+- テスト: `node test.js` (utils) + `node test-navigation.js` (navigation P01-P18 + bridge + guard + detectChannel + data integrity + cross-tab sync + per-channel auto LUFS)
 - テスト用 export: `__TEST_YTCV__` フラグで content.js 内部を `globalThis.__YTCV__` に露出。本番では無効
-- Storage keys: `autoLoudnessSettings` (target LUFS, display unit), `channelVolumes` (saved channel gains with URL)
-- Storage format: `channelVolumes.{id}` = `{ name, gainLive, gainVideo, url }` (旧: `{ name, gain, url }` — 自動マイグレーション)
+- Storage keys: `autoLoudnessSettings` (target LUFS, display unit, Video/Live auto defaults), `channelVolumes` (saved channel gains, per-channel auto overrides, URL)
+- Storage format: `channelVolumes.{id}` = `{ name, gainLive, gainVideo, autoApplyLoudnessLive, autoApplyLoudnessVideo, url }` (個別自動適用フラグは省略時に全チャンネル既定値を継承。旧 `autoApplyLoudness` は両種別同値、旧 `{ name, gain, url }` は両ゲインとして読み替え)
 - slider `input` event = リアルタイムゲイン変更 (storage 書き込みなし)、`change` event = storage 保存
 - videoType 判定: page-bridge.js が `videoDetails.isLiveContent` を返す。content.js で `isLiveContent` が `true` なら 'live'、`false` なら 'video' (loudnessDb は判定に使わない)。プレミア公開は `isLiveContent=false` のため 'video' 扱い。初回ロード時はデフォルト 'video' で、bridge から isLiveContent を受信後に正しい種別のゲインに切替

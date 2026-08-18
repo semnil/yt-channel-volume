@@ -548,6 +548,142 @@ async function runTests() {
   const g3 = ytcv.calcGainFromLoudness(-6);
   assert(Math.abs(g3 - Math.pow(10, 2/20)) < 0.001, 'loudnessDb=-6 → boost');
 
+  // ── Per-channel automatic LUFS application ─────────────────────────
+
+  section('Auto LUFS: enabling for current channel applies calculated gain');
+  const autoEntry = { name: 'Auto Ch', gainVideo: 0.4, gainLive: 0.7, autoApplyLoudnessVideo: true };
+  mockStorage['channelVolumes'] = { 'UCauto': autoEntry };
+  ytcv._set('currentChannel', { id: 'UCauto', name: 'Auto Ch', url: '' });
+  ytcv._set('currentVideoType', 'video');
+  ytcv._set('currentLoudnessDb', -6);
+  ytcv._set('currentGain', 0.4);
+  ytcv._set('targetLufs', -18);
+  ytcv._set('currentAutoApplyLoudnessVideo', false);
+  ytcv._set('currentAutoApplyLoudnessLive', false);
+  simulateStorageChange({
+    channelVolumes: {
+      oldValue: { 'UCauto': { name: 'Auto Ch', gainVideo: 0.4 } },
+      newValue: { 'UCauto': autoEntry }
+    }
+  });
+  const expectedAutoGain = Math.pow(10, 2/20);
+  assert(ytcv.state.currentAutoApplyLoudnessVideo === true, 'video auto flag enabled for current channel');
+  assert(ytcv.state.currentAutoApplyLoudnessLive === false, 'live auto flag remains disabled');
+  assert(Math.abs(ytcv.state.currentGain - expectedAutoGain) < 0.001, 'detected LUFS overrides saved gain');
+  assert(ytcv.getState().autoApplyLoudness === true, 'auto flag exposed to popup state');
+  assert(ytcv.getState().autoApplyLoudnessVideo === true, 'video auto flag exposed to popup state');
+  assert(ytcv.getState().autoApplyLoudnessLive === false, 'live auto flag exposed to popup state');
+
+  section('Auto LUFS: Video setting does not enable Live');
+  ytcv._set('currentVideoType', 'live');
+  await ytcv.applyPreferredGain();
+  assert(ytcv.getState().autoApplyLoudness === false, 'current live type remains manual');
+  assert(ytcv.state.currentGain === 0.7, 'live uses its saved gain while only video auto is enabled');
+  ytcv._set('currentVideoType', 'video');
+  await ytcv.applyPreferredGain();
+
+  section('Auto LUFS: Target LUFS change recalculates current video');
+  simulateStorageChange({
+    autoLoudnessSettings: {
+      newValue: { targetLufs: -20, displayUnit: '%', showGainOverlay: false }
+    }
+  });
+  await tick();
+  assert(Math.abs(ytcv.state.currentGain - 1.0) < 0.001, 'new target applied immediately');
+
+  section('Auto LUFS: disabling restores saved channel gain');
+  const manualEntry = { name: 'Auto Ch', gainVideo: 0.4 };
+  mockStorage['channelVolumes'] = { 'UCauto': manualEntry };
+  simulateStorageChange({
+    channelVolumes: {
+      oldValue: { 'UCauto': autoEntry },
+      newValue: { 'UCauto': manualEntry }
+    }
+  });
+  assert(ytcv.state.currentAutoApplyLoudnessVideo === false, 'video auto flag disabled for current channel');
+  assert(ytcv.state.currentGain === 0.4, 'saved gain restored when auto is disabled');
+
+  section('Auto LUFS: no loudness falls back to saved channel gain');
+  const liveFallbackEntry = { name: 'Live Fallback', gainLive: 0.7, autoApplyLoudnessLive: true };
+  mockStorage['channelVolumes'] = { 'UCfallback': liveFallbackEntry };
+  ytcv._set('currentChannel', { id: 'UCfallback', name: 'Live Fallback', url: '' });
+  ytcv._set('currentVideoType', 'live');
+  ytcv._set('currentLoudnessDb', null);
+  ytcv._set('currentGain', 1.0);
+  simulateStorageChange({
+    channelVolumes: {
+      oldValue: { 'UCfallback': { name: 'Live Fallback', gainLive: 0.7 } },
+      newValue: { 'UCfallback': liveFallbackEntry }
+    }
+  });
+  assert(ytcv.state.currentGain === 0.7, 'saved live gain used when LUFS is unavailable');
+  ytcv._set('targetLufs', -18);
+  ytcv._set('currentLoudnessDb', -6);
+  await ytcv.applyPreferredGain();
+  assert(Math.abs(ytcv.state.currentGain - expectedAutoGain) < 0.001, 'live auto applies calculated gain when LUFS is available');
+
+  section('Auto LUFS: saving flag preserves per-type gains');
+  mockStorage['channelVolumes'] = {
+    'UCpersistAuto': { name: 'Persist Auto', gainVideo: 0.6, gainLive: 1.4 }
+  };
+  await ytcv.saveChannelAutoApply('UCpersistAuto', 'Persist Auto', true, 'video', 'https://example.com');
+  const persistedAuto = mockStorage['channelVolumes']['UCpersistAuto'];
+  assert(persistedAuto.autoApplyLoudnessVideo === true, 'video auto flag persisted on channel entry');
+  assert(!persistedAuto.autoApplyLoudnessLive, 'live auto flag remains disabled');
+  assert(persistedAuto.gainVideo === 0.6, 'gainVideo preserved while saving auto flag');
+  assert(persistedAuto.gainLive === 1.4, 'gainLive preserved while saving auto flag');
+  await ytcv.saveChannelAutoApply('UCpersistAuto', 'Persist Auto', true, 'live', 'https://example.com');
+  assert(persistedAuto.autoApplyLoudnessVideo === true, 'video auto flag preserved when enabling live');
+  assert(persistedAuto.autoApplyLoudnessLive === true, 'live auto flag enabled independently');
+  await ytcv.saveChannelAutoApply('UCpersistAuto', 'Persist Auto', false, 'video', 'https://example.com');
+  assert(!persistedAuto.autoApplyLoudnessVideo, 'video auto flag disabled independently');
+  assert(persistedAuto.autoApplyLoudnessLive === true, 'live auto flag remains enabled');
+
+  mockStorage['channelVolumes']['UClegacyAuto'] = { name: 'Legacy Auto', autoApplyLoudness: true };
+  await ytcv.saveChannelAutoApply('UClegacyAuto', 'Legacy Auto', false, 'video', '');
+  const migratedAuto = mockStorage['channelVolumes']['UClegacyAuto'];
+  assert(!migratedAuto.autoApplyLoudness, 'legacy all-types auto flag removed on update');
+  assert(!migratedAuto.autoApplyLoudnessVideo, 'updated legacy video flag disabled');
+  assert(migratedAuto.autoApplyLoudnessLive === true, 'legacy live flag preserved as enabled');
+
+  mockStorage['channelVolumes']['UCautoOnly'] = { name: 'Auto Only', autoApplyLoudnessVideo: true };
+  await ytcv.saveChannelAutoApply('UCautoOnly', 'Auto Only', false, 'video', '');
+  assert(mockStorage['channelVolumes']['UCautoOnly'].autoApplyLoudnessVideo === false,
+    'explicit disabled state retained for all-channel default override');
+
+  section('Auto LUFS defaults: unconfigured channels inherit without storage writes');
+  mockStorage['channelVolumes'] = {
+    'UCdefaultAuto': { name: 'Default Auto', gainVideo: 0.45, gainLive: 0.8 }
+  };
+  const defaultEntryBefore = JSON.stringify(mockStorage['channelVolumes']['UCdefaultAuto']);
+  ytcv._set('currentChannel', { id: 'UCdefaultAuto', name: 'Default Auto', url: '' });
+  ytcv._set('currentVideoType', 'video');
+  ytcv._set('currentLoudnessDb', -6);
+  ytcv._set('defaultAutoApplyLoudnessVideo', true);
+  ytcv._set('defaultAutoApplyLoudnessLive', false);
+  await ytcv.applyPreferredGain();
+  assert(ytcv.state.currentAutoApplyLoudnessVideo === true, 'video inherits all-channel ON');
+  assert(ytcv.state.currentAutoApplyLoudnessLive === false, 'live keeps independent all-channel OFF');
+  assert(Math.abs(ytcv.state.currentGain - expectedAutoGain) < 0.001, 'inherited video auto applies calculated gain');
+  assert(JSON.stringify(mockStorage['channelVolumes']['UCdefaultAuto']) === defaultEntryBefore,
+    'inherited default does not rewrite existing Saved Channels entry');
+
+  await ytcv.saveChannelAutoApply('UCdefaultAuto', 'Default Auto', false, 'video', '');
+  await ytcv.applyPreferredGain();
+  const explicitOffEntry = mockStorage['channelVolumes']['UCdefaultAuto'];
+  assert(explicitOffEntry.autoApplyLoudnessVideo === false, 'per-channel OFF recorded explicitly');
+  assert(explicitOffEntry.gainVideo === 0.45 && explicitOffEntry.gainLive === 0.8,
+    'recording per-channel OFF preserves saved gains');
+  assert(ytcv.state.currentAutoApplyLoudnessVideo === false, 'per-channel OFF overrides all-channel ON');
+  assert(ytcv.state.currentGain === 0.45, 'explicit OFF restores saved video gain');
+
+  ytcv._set('currentAutoApplyLoudnessVideo', false);
+  ytcv._set('currentAutoApplyLoudnessLive', false);
+  ytcv._set('defaultAutoApplyLoudnessVideo', false);
+  ytcv._set('defaultAutoApplyLoudnessLive', false);
+  ytcv._set('currentLoudnessDb', null);
+  ytcv._set('targetLufs', -18);
+
   // ── Channel detection fallback ──────────────────────────────────────
 
   section('detectChannel: canonical link');

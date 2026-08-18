@@ -56,6 +56,11 @@ assert(f.text === gainToDb(0.5), '0.5 dB → text matches gainToDb');
 f = formatGain(0, '%');
 assert(f.text === '0' && f.unit === '%', '0 % → 0%');
 
+section('formatAutoFallback');
+assert(formatAutoFallback(0.7, '%') === 'Auto (70%)', 'saved 0.7 fallback → Auto (70%)');
+assert(formatAutoFallback(null, '%') === 'Auto (100%)', 'missing fallback → Auto (100%)');
+assert(formatAutoFallback(0.5, 'dB', '自動') === '自動 (-6.0 dB)', 'fallback respects display unit and label');
+
 // ── calcGain ─────────────────────────────────────────────────────────
 
 section('calcGain — YouTube normalization');
@@ -117,6 +122,7 @@ assertClose(calcGain(0, -18), Math.pow(10, (-18 - (-14))/20), 0.001, 'loudnessDb
 section('Constants');
 assert(YT_REFERENCE_LUFS === -14, 'YT_REFERENCE_LUFS = -14');
 assert(DEFAULT_TARGET_LUFS === -18, 'DEFAULT_TARGET_LUFS = -18');
+assert(DEFAULT_AUTO_APPLY_LOUDNESS === false, 'DEFAULT_AUTO_APPLY_LOUDNESS = false');
 assert(SETTINGS_KEY === 'autoLoudnessSettings', 'SETTINGS_KEY');
 assert(CHANNEL_VOLUMES_KEY === 'channelVolumes', 'CHANNEL_VOLUMES_KEY');
 

@@ -13,8 +13,13 @@
   const contentLufsEl = document.getElementById('contentLufs');
   const suggestedVolEl = document.getElementById('suggestedVol');
   const currentVolEl = document.getElementById('currentVol');
+  const fallbackBadge = document.getElementById('fallbackBadge');
   const applyBtn = document.getElementById('applyBtn');
   const applyHint = document.getElementById('applyHint');
+  const autoVideoControl = document.getElementById('autoVideoControl');
+  const autoLiveControl = document.getElementById('autoLiveControl');
+  const autoApplyVideoToggle = document.getElementById('autoApplyVideoToggle');
+  const autoApplyLiveToggle = document.getElementById('autoApplyLiveToggle');
   const volumeSlider = document.getElementById('volumeSlider');
   const volumeValueEl = document.getElementById('volumeValue');
   const settingsBtn = document.getElementById('settingsBtn');
@@ -31,6 +36,8 @@
   let lastGain = 1.0;
   let displayUnit = '%';
   let currentVideoType = 'video';
+  let autoApplyLoudnessVideo = false;
+  let autoApplyLoudnessLive = false;
 
   function fmtGain(gain) { return formatGain(gain, displayUnit); }
 
@@ -74,6 +81,10 @@
 
     const fc = fmtGain(lastGain);
     setCardValue(currentVolEl, fc.text, fc.unit, 'current');
+    const autoApplyCurrentType = currentVideoType === 'live'
+      ? autoApplyLoudnessLive
+      : autoApplyLoudnessVideo;
+    fallbackBadge.style.display = autoApplyCurrentType && !hasLoudness ? '' : 'none';
 
     volumeSlider.value = gainToPercent(lastGain);
     const fv = fmtGain(lastGain);
@@ -87,12 +98,25 @@
       currentChannel = state.channel;
       channelNameEl.textContent = state.channel.name;
       channelNameEl.classList.remove('empty');
+    } else {
+      currentChannel = { id: '', name: '' };
+      channelNameEl.textContent = msg('channelNotDetected');
+      channelNameEl.classList.add('empty');
     }
 
     hasLoudness = state.contentLufs !== null && state.contentLufs !== undefined;
     currentLoudnessDb = state.loudnessDb;
     lastGain = state.gain ?? 1.0;
     currentVideoType = state.videoType || 'video';
+    autoApplyLoudnessVideo = !!state.autoApplyLoudnessVideo;
+    autoApplyLoudnessLive = !!state.autoApplyLoudnessLive;
+    autoApplyVideoToggle.checked = autoApplyLoudnessVideo;
+    autoApplyLiveToggle.checked = autoApplyLoudnessLive;
+    const isLive = currentVideoType === 'live';
+    autoVideoControl.style.display = isLive ? 'none' : '';
+    autoLiveControl.style.display = isLive ? '' : 'none';
+    autoApplyVideoToggle.disabled = !currentChannel.id || isLive;
+    autoApplyLiveToggle.disabled = !currentChannel.id || !isLive;
 
     if (state.targetLufs !== undefined) {
       currentTargetLufs = state.targetLufs;
@@ -111,7 +135,14 @@
   }
 
   function updateApplyBtn() {
-    if (hasLoudness && currentChannel.id) {
+    const autoApplyCurrentType = currentVideoType === 'live'
+      ? autoApplyLoudnessLive
+      : autoApplyLoudnessVideo;
+    if (autoApplyCurrentType && currentChannel.id) {
+      applyBtn.disabled = true;
+      applyBtn.textContent = msg('applyToChannel');
+      applyHint.textContent = msg('hintAutoApplyEnabled');
+    } else if (hasLoudness && currentChannel.id) {
       const sg = calcGain(currentLoudnessDb, currentTargetLufs);
       const f = fmtGain(sg);
       const typeLabel = currentVideoType === 'live' ? msg('typeLive') : msg('typeVideo');
@@ -150,6 +181,40 @@
         }).catch(() => {});
       }
     }).catch(() => {});
+  });
+
+  function handleAutoApplyChange(toggle, videoType) {
+    if (!currentChannel.id || videoType !== currentVideoType) return;
+    const enabled = toggle.checked;
+    toggle.disabled = true;
+    sendMsg({
+      type: 'setAutoApplyLoudness',
+      channelId: currentChannel.id,
+      videoType,
+      enabled
+    }).then(resp => {
+      if (resp?.ok) {
+        updateUI(resp);
+      } else {
+        toggle.checked = videoType === 'live'
+          ? autoApplyLoudnessLive
+          : autoApplyLoudnessVideo;
+        toggle.disabled = !currentChannel.id || currentVideoType !== videoType;
+      }
+    }).catch(() => {
+      toggle.checked = videoType === 'live'
+        ? autoApplyLoudnessLive
+        : autoApplyLoudnessVideo;
+      toggle.disabled = !currentChannel.id || currentVideoType !== videoType;
+    });
+  }
+
+  autoApplyVideoToggle.addEventListener('change', () => {
+    handleAutoApplyChange(autoApplyVideoToggle, 'video');
+  });
+
+  autoApplyLiveToggle.addEventListener('change', () => {
+    handleAutoApplyChange(autoApplyLiveToggle, 'live');
   });
 
   // input: real-time gain change (no storage write)
@@ -206,40 +271,53 @@
 
   // ── Init ───────────────────────────────────────────────────────────
 
+  function revealPopup() {
+    // Commit the checked states while transitions are disabled, then reveal
+    // the fully initialized popup on the next frame.
+    void document.body.offsetWidth;
+    requestAnimationFrame(() => {
+      document.body.classList.remove('initializing');
+    });
+  }
+
   async function init() {
-    // Load display unit preference
-    const data = await chrome.storage.local.get(SETTINGS_KEY);
-    displayUnit = data[SETTINGS_KEY]?.displayUnit || '%';
-
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab || !tab.url?.includes('youtube.com')) {
-      mainEl.style.display = 'none';
-      notYtEl.style.display = '';
-      return;
-    }
-
-    activeTabId = tab.id;
-
     try {
-      const resp = await chrome.tabs.sendMessage(tab.id, { type: 'forceDetect' });
-      if (resp) {
-        if (!resp.isWatchPage) {
-          mainEl.style.display = 'none';
-          notWatchEl.style.display = '';
-          return;
-        }
-        updateUI(resp);
-        if (resp.contentLufs === null || resp.contentLufs === undefined) {
-          retryGetState(8, 500);
-        }
+      // Load display unit preference
+      const data = await chrome.storage.local.get(SETTINGS_KEY);
+      displayUnit = data[SETTINGS_KEY]?.displayUnit || '%';
+
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tab || !tab.url?.includes('youtube.com')) {
+        mainEl.style.display = 'none';
+        notYtEl.style.display = '';
+        return;
       }
-    } catch (_) {
-      // sendMessage rejects when content.js is unreachable. The most common
-      // cause is runtime context invalidation: when this or another extension
-      // is reloaded, existing tabs' content scripts lose their chrome.runtime
-      // connection. The page must be reloaded for content.js to be re-injected.
-      mainEl.style.display = 'none';
-      reloadNeededEl.style.display = '';
+
+      activeTabId = tab.id;
+
+      try {
+        const resp = await chrome.tabs.sendMessage(tab.id, { type: 'forceDetect' });
+        if (resp) {
+          if (!resp.isWatchPage) {
+            mainEl.style.display = 'none';
+            notWatchEl.style.display = '';
+            return;
+          }
+          updateUI(resp);
+          if (resp.contentLufs === null || resp.contentLufs === undefined) {
+            retryGetState(8, 500);
+          }
+        }
+      } catch (_) {
+        // sendMessage rejects when content.js is unreachable. The most common
+        // cause is runtime context invalidation: when this or another extension
+        // is reloaded, existing tabs' content scripts lose their chrome.runtime
+        // connection. The page must be reloaded for content.js to be re-injected.
+        mainEl.style.display = 'none';
+        reloadNeededEl.style.display = '';
+      }
+    } finally {
+      revealPopup();
     }
   }
 

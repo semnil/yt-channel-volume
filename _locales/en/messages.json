@@ -23,6 +23,9 @@
   "hintNoChannel": {
     "message": "Channel not detected"
   },
+  "hintAutoApplyEnabled": {
+    "message": "Auto-apply is enabled for this type"
+  },
   "openOnVideoPage": {
     "message": "Use while playing a video"
   },
@@ -40,6 +43,15 @@
   },
   "targetLufsDesc": {
     "message": "Reference level for gain calculation from Loudness"
+  },
+  "allChannelsAutoApply": {
+    "message": "Auto-apply LUFS for all channels"
+  },
+  "allChannelsAutoApplyDesc": {
+    "message": "Default for channels without an individual setting"
+  },
+  "autoApplyLoudness": {
+    "message": "Auto-apply LUFS"
   },
   "displayUnit": {
     "message": "Display unit"
@@ -73,6 +85,12 @@
   },
   "labelCurrent": {
     "message": "Current"
+  },
+  "labelAuto": {
+    "message": "Auto"
+  },
+  "labelFallback": {
+    "message": "Fallback"
   },
   "colChannel": {
     "message": "Channel"

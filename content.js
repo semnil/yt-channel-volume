@@ -1,5 +1,5 @@
 // content.js — YT Channel Volume
-// Reads YouTube's Content Loudness (informational) and applies saved per-channel gain.
+// Reads YouTube's Content Loudness and applies automatic or saved per-channel gain.
 // loudnessDb extraction is handled by page-bridge.js (MAIN world).
 
 (() => {
@@ -11,6 +11,7 @@
 
   const YT_REFERENCE_LUFS = -14;
   const DEFAULT_TARGET_LUFS = -18;
+  const DEFAULT_AUTO_APPLY_LOUDNESS = false;
   const SETTINGS_KEY = 'autoLoudnessSettings';
   const CHANNEL_VOLUMES_KEY = 'channelVolumes';
 
@@ -27,8 +28,13 @@
   let currentLoudnessDb = null;
   let currentGain = 1.0;
   let targetLufs = DEFAULT_TARGET_LUFS;
+  let defaultAutoApplyLoudnessVideo = DEFAULT_AUTO_APPLY_LOUDNESS;
+  let defaultAutoApplyLoudnessLive = DEFAULT_AUTO_APPLY_LOUDNESS;
+  let currentAutoApplyLoudnessVideo = false;
+  let currentAutoApplyLoudnessLive = false;
   /** 'live' (live stream / archive) or 'video' (regular video / shorts) */
   let currentVideoType = 'video';
+  let currentVideoTypeDetected = false;
   let currentIsLiveNow = false;
   let showGainOverlay = false;
 
@@ -39,8 +45,12 @@
     const data = await chrome.storage.local.get(SETTINGS_KEY);
     const s = data[SETTINGS_KEY] || {};
     targetLufs = s.targetLufs ?? DEFAULT_TARGET_LUFS;
+    defaultAutoApplyLoudnessVideo =
+      s.autoApplyLoudnessVideoDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS;
+    defaultAutoApplyLoudnessLive =
+      s.autoApplyLoudnessLiveDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS;
     showGainOverlay = !!s.showGainOverlay;
-    return { targetLufs };
+    return { targetLufs, defaultAutoApplyLoudnessVideo, defaultAutoApplyLoudnessLive };
   }
 
   async function saveSettings(settings) {
@@ -48,6 +58,10 @@
     const data = await chrome.storage.local.get(SETTINGS_KEY);
     const merged = { ...data[SETTINGS_KEY] || {}, ...settings };
     targetLufs = merged.targetLufs ?? targetLufs;
+    defaultAutoApplyLoudnessVideo =
+      merged.autoApplyLoudnessVideoDefault ?? defaultAutoApplyLoudnessVideo;
+    defaultAutoApplyLoudnessLive =
+      merged.autoApplyLoudnessLiveDefault ?? defaultAutoApplyLoudnessLive;
     await chrome.storage.local.set({ [SETTINGS_KEY]: merged });
   }
 
@@ -61,11 +75,46 @@
     return entry[key] ?? null;
   }
 
-  async function loadChannelGain(channelId, videoType) {
+  function extractAutoApplyOverride(entry, videoType) {
+    if (!entry) return null;
+    const key = videoType === 'live'
+      ? 'autoApplyLoudnessLive'
+      : 'autoApplyLoudnessVideo';
+    if (key in entry) return !!entry[key];
+    // Migration: the first implementation used one flag for both types.
+    if ('autoApplyLoudness' in entry) return !!entry.autoApplyLoudness;
+    return null;
+  }
+
+  function resolveAutoApplyForType(entry, videoType) {
+    const override = extractAutoApplyOverride(entry, videoType);
+    if (override !== null) return override;
+    return videoType === 'live'
+      ? defaultAutoApplyLoudnessLive
+      : defaultAutoApplyLoudnessVideo;
+  }
+
+  function setCurrentAutoApplyFromEntry(entry) {
+    currentAutoApplyLoudnessVideo = resolveAutoApplyForType(entry, 'video');
+    currentAutoApplyLoudnessLive = resolveAutoApplyForType(entry, 'live');
+  }
+
+  function isCurrentAutoApplyEnabled(videoType = currentVideoType) {
+    return videoType === 'live'
+      ? currentAutoApplyLoudnessLive
+      : currentAutoApplyLoudnessVideo;
+  }
+
+  async function loadChannelEntry(channelId) {
     if (!channelId || !isContextValid()) return null;
     const data = await chrome.storage.local.get(CHANNEL_VOLUMES_KEY);
     const all = data[CHANNEL_VOLUMES_KEY] || {};
-    return extractGainForType(all[channelId], videoType);
+    return all[channelId] || null;
+  }
+
+  async function loadChannelGain(channelId, videoType) {
+    const entry = await loadChannelEntry(channelId);
+    return extractGainForType(entry, videoType);
   }
 
   async function saveChannelGain(channelId, name, gain, videoType, url) {
@@ -83,6 +132,31 @@
     }
     const key = videoType === 'live' ? 'gainLive' : 'gainVideo';
     entry[key] = gain;
+    all[channelId] = entry;
+    await chrome.storage.local.set({ [CHANNEL_VOLUMES_KEY]: all });
+  }
+
+  async function saveChannelAutoApply(channelId, name, enabled, videoType, url) {
+    if (!channelId || !isContextValid()) return;
+    const data = await chrome.storage.local.get(CHANNEL_VOLUMES_KEY);
+    const all = data[CHANNEL_VOLUMES_KEY] || {};
+    const entry = all[channelId] || { name: name || channelId };
+    if (name) entry.name = name;
+    if (url) entry.url = url;
+
+    // Expand the legacy all-types flag before updating one type.
+    if ('autoApplyLoudness' in entry) {
+      entry.autoApplyLoudnessVideo = !!entry.autoApplyLoudness;
+      entry.autoApplyLoudnessLive = !!entry.autoApplyLoudness;
+      delete entry.autoApplyLoudness;
+    }
+
+    const key = videoType === 'live'
+      ? 'autoApplyLoudnessLive'
+      : 'autoApplyLoudnessVideo';
+    // Store both true and false so an explicit per-channel choice can override
+    // the all-channel default without modifying any saved gain.
+    entry[key] = !!enabled;
     all[channelId] = entry;
     await chrome.storage.local.set({ [CHANNEL_VOLUMES_KEY]: all });
   }
@@ -109,6 +183,7 @@
     }
     if (event.data.isLiveContent !== undefined) {
       currentVideoType = event.data.isLiveContent ? 'live' : 'video';
+      currentVideoTypeDetected = true;
       currentIsLiveNow = !!event.data.isLiveNow;
     }
     // Only accept channelId if it came with valid data for current video.
@@ -124,6 +199,8 @@
       if (idChanged) {
         currentChannel.id = bridgeChId;
         currentChannel.url = 'https://www.youtube.com/channel/' + bridgeChId;
+        currentAutoApplyLoudnessVideo = false;
+        currentAutoApplyLoudnessLive = false;
         // Bridge author comes from the current video's player response — it is
         // authoritative for bridgeChId. Prefer it over DOM, which may lag the
         // SPA navigation and still describe the previous channel.
@@ -160,7 +237,11 @@
         });
       }
     }
-    notifyPopup();
+    if (applyAutomaticLoudnessGain()) {
+      notifyPopup();
+    } else {
+      applyPreferredGain().then(notifyPopup);
+    }
     const waiters = loudnessWaiters;
     loudnessWaiters = [];
     for (const resolve of waiters) resolve(db);
@@ -210,6 +291,33 @@
     const gain = Math.pow(10, compensationDb / 20);
     if (!isFinite(gain)) return 1.0;
     return Math.max(0, Math.min(6, gain));
+  }
+
+  function applyAutomaticLoudnessGain() {
+    if (!isCurrentAutoApplyEnabled() || currentLoudnessDb === null) return false;
+    const gain = calcGainFromLoudness(currentLoudnessDb);
+    currentGain = gain;
+    setGain(gain);
+    return true;
+  }
+
+  async function applyPreferredGain() {
+    const requestedVideoId = getUrlVideoId();
+    const requestedChannelId = currentChannel.id;
+    const requestedVideoType = currentVideoType;
+    const entry = await loadChannelEntry(requestedChannelId);
+
+    // Ignore a storage result that belongs to state superseded by SPA
+    // navigation, bridge metadata, or a settings change.
+    if (requestedVideoId !== getUrlVideoId() ||
+        requestedChannelId !== currentChannel.id ||
+        requestedVideoType !== currentVideoType) return;
+
+    setCurrentAutoApplyFromEntry(entry);
+    currentGain = isCurrentAutoApplyEnabled(requestedVideoType) && currentLoudnessDb !== null
+      ? calcGainFromLoudness(currentLoudnessDb)
+      : extractGainForType(entry, requestedVideoType) ?? 1.0;
+    setGain(currentGain);
   }
 
   // ── Channel detection ──────────────────────────────────────────────
@@ -370,32 +478,30 @@
     // shortly via requestLoudnessWithRetry.
     if (videoIdChanged) {
       currentChannel = { id: '', name: '', url: '' };
+      currentAutoApplyLoudnessVideo = false;
+      currentAutoApplyLoudnessLive = false;
     }
 
     const ch = detectChannel();
     if (ch.id) currentChannel = ch;
 
-    await loadSettings();
-
     currentLoudnessDb = null;
     currentVideoType = 'video';
+    currentVideoTypeDetected = false;
     currentIsLiveNow = false;
 
-    const initialGain = await loadChannelGain(currentChannel.id, 'video');
-    currentGain = initialGain ?? 1.0;
+    await loadSettings();
+
+    const initialEntry = await loadChannelEntry(currentChannel.id);
+    setCurrentAutoApplyFromEntry(initialEntry);
+    currentGain = extractGainForType(initialEntry, 'video') ?? 1.0;
     setGain(currentGain);
     notifyPopup();
 
-    // Fetch loudness + videoType + channelId, then re-apply if changed
-    const initialType = currentVideoType;
-    const initialChId = currentChannel.id;
+    // Fetch loudness + videoType + channelId. Auto mode applies the calculated
+    // per-video gain; otherwise the saved channel/type gain remains in use.
     requestLoudnessWithRetry(10, 500).then(async () => {
-      const chIdChanged = currentChannel.id !== initialChId;
-      if (currentVideoType !== initialType || chIdChanged) {
-        const typeGain = await loadChannelGain(currentChannel.id, currentVideoType);
-        currentGain = typeGain ?? 1.0;
-        setGain(currentGain);
-      }
+      await applyPreferredGain();
       notifyPopup();
     });
   }
@@ -410,7 +516,11 @@
       loudnessDb: currentLoudnessDb,
       contentLufs,
       targetLufs,
+      autoApplyLoudness: isCurrentAutoApplyEnabled(),
+      autoApplyLoudnessVideo: currentAutoApplyLoudnessVideo,
+      autoApplyLoudnessLive: currentAutoApplyLoudnessLive,
       videoType: currentVideoType,
+      videoTypeDetected: currentVideoTypeDetected,
       isLiveNow: currentIsLiveNow,
       isWatchPage: isWatchPage()
     };
@@ -420,7 +530,7 @@
   function notifyPopup() {
     if (!isContextValid()) return;
     const state = getState();
-    const key = state.loudnessDb + '|' + state.gain + '|' + state.channel.id + '|' + state.channel.name + '|' + state.videoType + '|' + state.isLiveNow;
+    const key = state.loudnessDb + '|' + state.gain + '|' + state.channel.id + '|' + state.channel.name + '|' + state.videoType + '|' + state.videoTypeDetected + '|' + state.isLiveNow + '|' + state.autoApplyLoudnessVideo + '|' + state.autoApplyLoudnessLive;
     if (key === _lastNotifiedState) return;
     _lastNotifiedState = key;
     chrome.runtime.sendMessage({ type: 'stateChanged', ...state }).catch(() => {});
@@ -489,16 +599,45 @@
       if (area !== 'local') return;
       if (changes[SETTINGS_KEY]) {
         const s = changes[SETTINGS_KEY].newValue || {};
+        targetLufs = s.targetLufs ?? DEFAULT_TARGET_LUFS;
+        defaultAutoApplyLoudnessVideo =
+          s.autoApplyLoudnessVideoDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS;
+        defaultAutoApplyLoudnessLive =
+          s.autoApplyLoudnessLiveDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS;
         showGainOverlay = !!s.showGainOverlay;
-        updateGainOverlay();
+        applyPreferredGain().then(() => {
+          updateGainOverlay();
+          notifyPopup();
+        });
       }
       if (changes[CHANNEL_VOLUMES_KEY] && currentChannel.id) {
         const all = changes[CHANNEL_VOLUMES_KEY].newValue || {};
+        const oldAll = changes[CHANNEL_VOLUMES_KEY].oldValue || {};
         const entry = all[currentChannel.id];
-        const gain = entry ? extractGainForType(entry, currentVideoType) : 1.0;
-        if (gain == null || gain === currentGain) return;
-        currentGain = gain;
-        setGain(gain);
+        const oldEntry = oldAll[currentChannel.id];
+        const previousAutoApplyVideo = resolveAutoApplyForType(oldEntry, 'video');
+        const previousAutoApplyLive = resolveAutoApplyForType(oldEntry, 'live');
+        const previousAutoApply = currentVideoType === 'live'
+          ? previousAutoApplyLive
+          : previousAutoApplyVideo;
+        setCurrentAutoApplyFromEntry(entry);
+        const currentAutoApply = isCurrentAutoApplyEnabled();
+        const currentTypeAutoApplyChanged = previousAutoApply !== currentAutoApply;
+        const anyAutoApplyChanged =
+          previousAutoApplyVideo !== currentAutoApplyLoudnessVideo ||
+          previousAutoApplyLive !== currentAutoApplyLoudnessLive;
+        const gain = currentAutoApply && currentLoudnessDb !== null
+          ? calcGainFromLoudness(currentLoudnessDb)
+          : (entry ? extractGainForType(entry, currentVideoType) : 1.0);
+        if (gain == null && !currentTypeAutoApplyChanged) {
+          if (anyAutoApplyChanged) notifyPopup();
+          return;
+        }
+        const nextGain = gain ?? 1.0;
+        if (nextGain !== currentGain) {
+          currentGain = nextGain;
+          setGain(nextGain);
+        }
         notifyPopup();
       }
     });
@@ -519,6 +658,10 @@
     }
 
     if (msg.type === 'applyLoudness') {
+      if (isCurrentAutoApplyEnabled()) {
+        sendResponse({ ok: false, reason: 'auto apply enabled' });
+        return true;
+      }
       if (currentLoudnessDb === null || !currentChannel.id) {
         sendResponse({ ok: false, reason: 'no loudness data' });
         return true;
@@ -559,6 +702,8 @@
     if (msg.type === 'clearChannel') {
       const { channelId } = msg;
       deleteChannelGain(channelId).then(() => {
+        currentAutoApplyLoudnessVideo = false;
+        currentAutoApplyLoudnessLive = false;
         currentGain = 1.0;
         setGain(currentGain);
         notifyPopup();
@@ -567,9 +712,32 @@
       return true;
     }
 
+    if (msg.type === 'setAutoApplyLoudness') {
+      if (!currentChannel.id || msg.channelId !== currentChannel.id) {
+        sendResponse({ ok: false, reason: 'channel mismatch' });
+        return true;
+      }
+      const videoType = msg.videoType === 'live' ? 'live' : 'video';
+      const freshName = getChannelDisplayName();
+      if (freshName) currentChannel.name = freshName;
+      saveChannelAutoApply(
+        currentChannel.id,
+        currentChannel.name,
+        !!msg.enabled,
+        videoType,
+        currentChannel.url
+      ).then(async () => {
+        await applyPreferredGain();
+        notifyPopup();
+        sendResponse({ ok: true, ...getState() });
+      });
+      return true;
+    }
+
     if (msg.type === 'setTargetLufs') {
       const { value } = msg;
       saveSettings({ targetLufs: value }).then(() => {
+        applyAutomaticLoudnessGain();
         notifyPopup();
         sendResponse({ ok: true });
       });
@@ -612,13 +780,23 @@
       // Also request MAIN-world diagnostic from page-bridge (player response,
       // movie_player state, flexy data — none visible from ISOLATED world).
       try { window.postMessage({ type: '__yt_channel_volume_diag__' }, '*'); } catch (_) {}
-      if (stale && !_applyRunning) {
-        triggerApply().then(() => {
-          sendResponse(getState());
-        });
-      } else {
-        requestLoudness();
+
+      async function sendDetectedState() {
+        if (!currentVideoTypeDetected) {
+          await requestLoudnessWithRetry(4, 250);
+        } else {
+          requestLoudness();
+        }
+        // A bridge response can change the channel and start an asynchronous
+        // preference load. Resolve it before the popup becomes visible.
+        await applyPreferredGain();
         sendResponse(getState());
+      }
+
+      if (stale && !_applyRunning) {
+        triggerApply().then(sendDetectedState);
+      } else {
+        sendDetectedState();
       }
       return true;
     }
@@ -630,9 +808,11 @@
       get state() {
         return {
           currentChannel, currentGain, currentLoudnessDb,
-          currentVideoType, currentIsLiveNow, showGainOverlay,
+          currentVideoType, currentVideoTypeDetected, currentIsLiveNow, showGainOverlay,
+          currentAutoApplyLoudnessVideo, currentAutoApplyLoudnessLive,
           _lastVideoId, _lastProcessedVideo, _applyRunning, connectedVideo,
-          targetLufs, gainNode, audioCtx
+          targetLufs, defaultAutoApplyLoudnessVideo,
+          defaultAutoApplyLoudnessLive, gainNode, audioCtx
         };
       },
       applyVideoVolume,
@@ -645,6 +825,8 @@
       getUrlVideoId,
       calcGainFromLoudness,
       loadChannelGain,
+      saveChannelAutoApply,
+      applyPreferredGain,
       notifyPopup,
       // Setters for test setup
       _set(key, val) {
@@ -652,10 +834,15 @@
           case 'currentChannel': currentChannel = val; break;
           case 'currentGain': currentGain = val; break;
           case 'currentVideoType': currentVideoType = val; break;
+          case 'currentVideoTypeDetected': currentVideoTypeDetected = val; break;
           case '_lastVideoId': _lastVideoId = val; break;
           case '_lastProcessedVideo': _lastProcessedVideo = val; break;
           case '_applyRunning': _applyRunning = val; break;
           case 'targetLufs': targetLufs = val; break;
+          case 'defaultAutoApplyLoudnessVideo': defaultAutoApplyLoudnessVideo = val; break;
+          case 'defaultAutoApplyLoudnessLive': defaultAutoApplyLoudnessLive = val; break;
+          case 'currentAutoApplyLoudnessVideo': currentAutoApplyLoudnessVideo = val; break;
+          case 'currentAutoApplyLoudnessLive': currentAutoApplyLoudnessLive = val; break;
           case 'currentLoudnessDb': currentLoudnessDb = val; break;
         }
       }

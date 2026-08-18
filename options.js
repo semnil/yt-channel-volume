@@ -10,6 +10,8 @@
 
   const targetSlider = document.getElementById('targetSlider');
   const targetValueEl = document.getElementById('targetValue');
+  const defaultAutoVideoToggle = document.getElementById('defaultAutoVideoToggle');
+  const defaultAutoLiveToggle = document.getElementById('defaultAutoLiveToggle');
   const unitToggle = document.getElementById('unitToggle');
   const overlayToggle = document.getElementById('overlayToggle');
   const clearAllBtn = document.getElementById('clearAllBtn');
@@ -17,6 +19,8 @@
 
   let displayUnit = '%';
   let targetLufs = DEFAULT_TARGET_LUFS;
+  let defaultAutoApplyVideo = DEFAULT_AUTO_APPLY_LOUDNESS;
+  let defaultAutoApplyLive = DEFAULT_AUTO_APPLY_LOUDNESS;
 
   function fmtGain(gain) {
     const f = formatGain(gain, displayUnit);
@@ -30,6 +34,12 @@
     const s = data[SETTINGS_KEY] || {};
     targetLufs = s.targetLufs ?? DEFAULT_TARGET_LUFS;
     displayUnit = s.displayUnit || '%';
+    defaultAutoApplyVideo =
+      s.autoApplyLoudnessVideoDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS;
+    defaultAutoApplyLive =
+      s.autoApplyLoudnessLiveDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS;
+    defaultAutoVideoToggle.checked = defaultAutoApplyVideo;
+    defaultAutoLiveToggle.checked = defaultAutoApplyLive;
     overlayToggle.checked = !!s.showGainOverlay;
     targetSlider.value = targetLufs;
     targetValueEl.textContent = targetLufs + ' LUFS';
@@ -47,6 +57,15 @@
     unitToggle.querySelectorAll('button').forEach(btn => {
       btn.classList.toggle('active', btn.dataset.unit === displayUnit);
     });
+  }
+
+  function resolveAutoApply(entry, videoType) {
+    const key = videoType === 'live'
+      ? 'autoApplyLoudnessLive'
+      : 'autoApplyLoudnessVideo';
+    if (key in entry) return !!entry[key];
+    if ('autoApplyLoudness' in entry) return !!entry.autoApplyLoudness;
+    return videoType === 'live' ? defaultAutoApplyLive : defaultAutoApplyVideo;
   }
 
   // ── Channel list ───────────────────────────────────────────────────
@@ -79,14 +98,22 @@
       // Support old format (single gain) and new format (gainLive/gainVideo)
       const gainLive = entry.gainLive ?? entry.gain ?? null;
       const gainVideo = entry.gainVideo ?? entry.gain ?? null;
+      const autoVideo = resolveAutoApply(entry, 'video');
+      const autoLive = resolveAutoApply(entry, 'live');
+      const videoText = autoVideo
+        ? formatAutoFallback(gainVideo, displayUnit, msg('labelAuto'))
+        : (gainVideo !== null ? fmtGain(gainVideo) : '—');
+      const liveText = autoLive
+        ? formatAutoFallback(gainLive, displayUnit, msg('labelAuto'))
+        : (gainLive !== null ? fmtGain(gainLive) : '—');
       const tr = document.createElement('tr');
       const nameHtml = url
         ? `<a class="ch-link" href="${esc(url)}" target="_blank">${esc(name)}</a>`
         : esc(name);
       tr.innerHTML = `
         <td class="ch-name">${nameHtml}</td>
-        <td class="ch-vol">${gainVideo !== null ? fmtGain(gainVideo) : '—'}</td>
-        <td class="ch-vol">${gainLive !== null ? fmtGain(gainLive) : '—'}</td>
+        <td class="ch-vol${autoVideo ? ' auto' : ''}">${esc(videoText)}</td>
+        <td class="ch-vol${autoLive ? ' auto' : ''}">${esc(liveText)}</td>
         <td style="text-align:right"><button class="ch-del" data-id="${esc(id)}" title="${esc(msg('delete'))}">×</button></td>
       `;
       tbody.appendChild(tr);
@@ -117,6 +144,18 @@
   targetSlider.addEventListener('change', () => {
     targetLufs = Number(targetSlider.value);
     saveSetting('targetLufs', targetLufs);
+  });
+
+  defaultAutoVideoToggle.addEventListener('change', () => {
+    defaultAutoApplyVideo = defaultAutoVideoToggle.checked;
+    saveSetting('autoApplyLoudnessVideoDefault', defaultAutoApplyVideo);
+    renderChannels();
+  });
+
+  defaultAutoLiveToggle.addEventListener('change', () => {
+    defaultAutoApplyLive = defaultAutoLiveToggle.checked;
+    saveSetting('autoApplyLoudnessLiveDefault', defaultAutoApplyLive);
+    renderChannels();
   });
 
   overlayToggle.addEventListener('change', () => {
@@ -156,6 +195,18 @@
       if (s.displayUnit && s.displayUnit !== displayUnit) {
         displayUnit = s.displayUnit;
         updateUnitButtons();
+        renderChannels();
+      }
+      const nextDefaultVideo =
+        s.autoApplyLoudnessVideoDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS;
+      const nextDefaultLive =
+        s.autoApplyLoudnessLiveDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS;
+      if (nextDefaultVideo !== defaultAutoApplyVideo ||
+          nextDefaultLive !== defaultAutoApplyLive) {
+        defaultAutoApplyVideo = nextDefaultVideo;
+        defaultAutoApplyLive = nextDefaultLive;
+        defaultAutoVideoToggle.checked = defaultAutoApplyVideo;
+        defaultAutoLiveToggle.checked = defaultAutoApplyLive;
         renderChannels();
       }
     }

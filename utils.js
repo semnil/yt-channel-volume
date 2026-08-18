@@ -4,6 +4,7 @@ const SETTINGS_KEY = 'autoLoudnessSettings';
 const CHANNEL_VOLUMES_KEY = 'channelVolumes';
 const YT_REFERENCE_LUFS = -14;
 const DEFAULT_TARGET_LUFS = -18;
+const DEFAULT_AUTO_APPLY_LOUDNESS = false;
 
 function gainToPercent(gain) { return Math.round(gain * 100); }
 function percentToGain(pct) { return pct / 100; }
@@ -21,6 +22,11 @@ function msg(key, substitutions) {
 function formatGain(gain, displayUnit) {
   if (displayUnit === 'dB') return { text: gainToDb(gain), unit: ' dB' };
   return { text: String(gainToPercent(gain)), unit: '%' };
+}
+
+function formatAutoFallback(gain, displayUnit, autoLabel = 'Auto') {
+  const formatted = formatGain(gain ?? 1.0, displayUnit);
+  return `${autoLabel} (${formatted.text}${formatted.unit})`;
 }
 
 function calcGain(loudnessDb, targetLufs) {
