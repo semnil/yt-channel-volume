@@ -1042,7 +1042,7 @@ async function runTests() {
   assert(mockStorage['channelVolumes']['UCautoOnly'].autoApplyLoudnessVideo === false,
     'explicit disabled state retained for all-channel default override');
 
-  section('Auto LUFS defaults: missing per-channel flags inherit without storage writes');
+  section('Auto LUFS defaults: manual gains remain manual without storage writes');
   mockStorage['channelVolumes'] = {
     'UCdefaultAuto': { name: 'Default Auto', gainVideo: 0.45, gainLive: 0.8 }
   };
@@ -1053,13 +1053,27 @@ async function runTests() {
   ytcv._set('defaultAutoApplyLoudnessLive', false);
   const defaultEntryBefore = JSON.stringify(mockStorage['channelVolumes']['UCdefaultAuto']);
   await ytcv.applyPreferredGain();
-  assert(ytcv.state.currentAutoApplyLoudnessVideo === true,
-    'saved entry with missing video flag inherits all-channel ON');
+  assert(ytcv.state.currentAutoApplyLoudnessVideo === false,
+    'saved manual Video gain remains manual when all-channel default is ON');
   assert(ytcv.state.currentAutoApplyLoudnessLive === false, 'live keeps independent all-channel OFF');
-  assert(Math.abs(ytcv.state.currentGain - expectedAutoGain) < 0.001,
-    'inherited all-channel setting applies automatic gain');
+  assert(ytcv.state.currentGain === 0.45,
+    'saved manual Video gain remains applied');
   assert(JSON.stringify(mockStorage['channelVolumes']['UCdefaultAuto']) === defaultEntryBefore,
-    'inherited default does not write a per-channel flag or alter saved gains');
+    'resolving manual state does not write a per-channel flag or alter saved gains');
+
+  mockStorage['channelVolumes']['UCunconfiguredAuto'] = { name: 'Unconfigured Auto' };
+  ytcv._set('currentChannel', {
+    id: 'UCunconfiguredAuto',
+    name: 'Unconfigured Auto',
+    url: ''
+  });
+  await ytcv.applyPreferredGain();
+  assert(ytcv.state.currentAutoApplyLoudnessVideo === true,
+    'channel type without Auto or manual gain inherits all-channel ON');
+  assert(Math.abs(ytcv.state.currentGain - expectedAutoGain) < 0.001,
+    'unconfigured channel type applies automatic gain');
+  assert(!('autoApplyLoudnessVideo' in mockStorage['channelVolumes']['UCunconfiguredAuto']),
+    'inherited default remains unpersisted');
 
   section('Auto LUFS defaults: SPA navigation cannot mix channel metadata');
   const navigationSourceId = 'UCnavSource';
@@ -1067,8 +1081,7 @@ async function runTests() {
   mockStorage['channelVolumes'] = {
     [navigationSourceId]: {
       name: 'Channel A',
-      url: 'https://www.youtube.com/channel/UCnavSource',
-      gainVideo: 0.45
+      url: 'https://www.youtube.com/channel/UCnavSource'
     }
   };
   setURL('/watch', 'NAVIGATE001');

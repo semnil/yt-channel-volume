@@ -80,6 +80,22 @@ assert(getStoredAutoFallbackGain({
   [fallbackVideoKey]: null
 }, 'UCfixture', 'video') === null, 'granular tombstone clears legacy fallback');
 
+section('resolveAutoApplySetting');
+assert(resolveAutoApplySetting({ gainVideo: 0.5 }, 'video', true) === false,
+  'manual Video gain remains manual when default is ON');
+assert(resolveAutoApplySetting({ gainLive: 0.7 }, 'live', true) === false,
+  'manual Live gain remains manual when default is ON');
+assert(resolveAutoApplySetting({ gainVideo: 0.5 }, 'live', true) === true,
+  'manual Video gain does not block the Live default');
+assert(resolveAutoApplySetting({ gain: 0.6 }, 'video', true) === false,
+  'legacy manual gain remains manual');
+assert(resolveAutoApplySetting({ autoApplyLoudnessVideo: true, gainVideo: 0.5 },
+  'video', false) === true, 'explicit Auto ON overrides a manual fallback gain');
+assert(resolveAutoApplySetting({ autoApplyLoudnessVideo: false },
+  'video', true) === false, 'explicit Auto OFF overrides the global default');
+assert(resolveAutoApplySetting({ name: 'Unconfigured' }, 'video', true) === true,
+  'channel type without Auto or manual gain inherits the default');
+
 // ── calcGain ─────────────────────────────────────────────────────────
 
 section('calcGain — YouTube normalization');

@@ -49,6 +49,21 @@ function getStoredAutoFallbackGain(storageData, channelId, videoType) {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
+function resolveAutoApplySetting(entry, videoType, defaultValue) {
+  if (!entry) return !!defaultValue;
+  const autoKey = videoType === 'live'
+    ? 'autoApplyLoudnessLive'
+    : 'autoApplyLoudnessVideo';
+  if (autoKey in entry) return !!entry[autoKey];
+  if ('autoApplyLoudness' in entry) return !!entry.autoApplyLoudness;
+
+  const gainKey = videoType === 'live' ? 'gainLive' : 'gainVideo';
+  const hasTypedGain = entry[gainKey] !== null && entry[gainKey] !== undefined;
+  const hasLegacyGain = entry.gain !== null && entry.gain !== undefined;
+  if (hasTypedGain || hasLegacyGain) return false;
+  return !!defaultValue;
+}
+
 function calcGain(loudnessDb, targetLufs) {
   const effectiveLufs = loudnessDb > 0
     ? YT_REFERENCE_LUFS

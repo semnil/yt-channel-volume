@@ -60,12 +60,10 @@
   }
 
   function resolveAutoApply(entry, videoType) {
-    const key = videoType === 'live'
-      ? 'autoApplyLoudnessLive'
-      : 'autoApplyLoudnessVideo';
-    if (key in entry) return !!entry[key];
-    if ('autoApplyLoudness' in entry) return !!entry.autoApplyLoudness;
-    return videoType === 'live' ? defaultAutoApplyLive : defaultAutoApplyVideo;
+    const defaultValue = videoType === 'live'
+      ? defaultAutoApplyLive
+      : defaultAutoApplyVideo;
+    return resolveAutoApplySetting(entry, videoType, defaultValue);
   }
 
   // ── Channel list ───────────────────────────────────────────────────

@@ -126,6 +126,10 @@
   function resolveAutoApplyForType(entry, videoType) {
     const override = extractAutoApplyOverride(entry, videoType);
     if (override !== null) return override;
+    // A saved manual gain is itself a per-channel choice. Legacy entries do
+    // not have Auto flags, so treating them as unset would unexpectedly turn
+    // every manually configured channel into Auto when the default is enabled.
+    if (extractGainForType(entry, videoType) !== null) return false;
     return videoType === 'live'
       ? defaultAutoApplyLoudnessLive
       : defaultAutoApplyLoudnessVideo;
