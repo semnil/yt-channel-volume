@@ -17,6 +17,7 @@ let mockStorage = {};
 let mockVideoEl = { id: 'mock-video-1' };
 let mockDOMElements = {};
 let mockEventListeners = {};
+let mockRuntimeMessageListeners = [];
 let mockSentMessages = [];
 let mockPostMessages = [];
 
@@ -26,6 +27,7 @@ function resetMocks() {
   mockVideoEl = { id: 'mock-video-1' };
   mockDOMElements = {};
   mockEventListeners = {};
+  mockRuntimeMessageListeners = [];
   mockSentMessages = [];
   mockPostMessages = [];
 }
@@ -110,7 +112,9 @@ globalThis.chrome = {
   runtime: {
     id: 'test-extension-id',
     sendMessage() { return Promise.resolve(); },
-    onMessage: { addListener() {} },
+    onMessage: {
+      addListener(fn) { mockRuntimeMessageListeners.push(fn); }
+    },
   },
   storage: {
     local: {
@@ -166,6 +170,17 @@ function simulateBridgeMessage(data) {
   for (const fn of listeners) {
     fn({ source: globalThis.window, data: { type: '__yt_channel_volume__', ...data } });
   }
+}
+
+function simulateRuntimeMessage(data) {
+  return new Promise((resolve) => {
+    const listener = mockRuntimeMessageListeners[0];
+    if (!listener) {
+      resolve(undefined);
+      return;
+    }
+    listener(data, {}, resolve);
+  });
 }
 
 // Helper to fire yt-navigate-finish
@@ -622,6 +637,48 @@ async function runTests() {
   await ytcv.applyPreferredGain();
   assert(Math.abs(ytcv.state.currentGain - expectedAutoGain) < 0.001, 'live auto applies calculated gain when LUFS is available');
 
+  section('Auto LUFS: early bridge for next video clears stale loudness');
+  const oldVideoId = 'AAAAAAAAAAA';
+  const nextVideoId = 'BBBBBBBBBBB';
+  mockStorage['channelVolumes'] = {
+    'UCchannelB': {
+      name: 'Channel B',
+      gainVideo: 0.4,
+      autoApplyLoudnessVideo: true
+    }
+  };
+  setURL('/watch', nextVideoId);
+  ytcv._set('currentChannel', { id: 'UCchannelA', name: 'Channel A', url: '' });
+  ytcv._set('currentVideoType', 'video');
+  ytcv._set('currentLoudnessDb', -20);
+  ytcv._set('currentLoudnessVideoId', oldVideoId);
+  ytcv._set('currentAutoApplyLoudnessVideo', true);
+  ytcv._set('targetLufs', -18);
+  simulateBridgeMessage({
+    videoId: nextVideoId,
+    loudnessDb: null,
+    isLiveContent: false,
+    channelId: 'UCchannelB',
+    author: 'Channel B'
+  });
+  await tick();
+  await tick();
+  assert(ytcv.state.currentLoudnessVideoId === nextVideoId, 'loudness state associated with next video');
+  assert(ytcv.state.currentLoudnessDb === null, 'next video null clears previous video loudness');
+  assert(ytcv.state.currentGain === 0.4, 'next video uses saved fallback instead of stale auto gain');
+
+  simulateBridgeMessage({
+    videoId: oldVideoId,
+    loudnessDb: -20,
+    isLiveContent: false,
+    channelId: 'UCchannelA',
+    author: 'Channel A'
+  });
+  await tick();
+  assert(ytcv.state.currentChannel.id === 'UCchannelB', 'late previous-video bridge response ignored');
+  assert(ytcv.state.currentLoudnessDb === null, 'late response does not restore stale loudness');
+  assert(ytcv.state.currentGain === 0.4, 'late response does not change fallback gain');
+
   section('Auto LUFS: saving flag preserves per-type gains');
   mockStorage['channelVolumes'] = {
     'UCpersistAuto': { name: 'Persist Auto', gainVideo: 0.6, gainLive: 1.4 }
@@ -756,6 +813,48 @@ async function runTests() {
   simulateBridgeMessage({ loudnessDb: -3.0, isLiveContent: false, channelId: 'UCfresh', author: 'Fresh Channel' });
   assert(ytcv.state.currentChannel.id === 'UCfresh', 'id updated');
   assert(ytcv.state.currentChannel.name === 'Fresh Channel', 'name replaced by author');
+
+  section('Data: Auto toggle preserves authoritative bridge author');
+  mockStorage['channelVolumes'] = {
+    'UCchannelB': { name: 'Channel B', gainVideo: 0.4 }
+  };
+  setURL('/watch', 'BBBBBBBBBBB');
+  ytcv._set('currentChannel', {
+    id: 'UCchannelB',
+    name: 'Channel B',
+    url: 'https://www.youtube.com/channel/UCchannelB'
+  });
+  ytcv._set('currentVideoType', 'video');
+  ytcv._set('currentLoudnessDb', null);
+  mockDOMElements['channelName'] = { textContent: 'Stale Channel A' };
+  const toggleResponse = await simulateRuntimeMessage({
+    type: 'setAutoApplyLoudness',
+    channelId: 'UCchannelB',
+    enabled: true,
+    videoType: 'video'
+  });
+  assert(toggleResponse?.ok === true, 'Auto toggle succeeds');
+  assert(mockStorage['channelVolumes']['UCchannelB'].name === 'Channel B',
+    'stale DOM does not overwrite authoritative bridge author');
+
+  section('Data: Auto toggle uses DOM only for a placeholder name');
+  mockStorage['channelVolumes']['UCchannelC'] = { name: 'UCchannelC', gainVideo: 0.5 };
+  ytcv._set('currentChannel', {
+    id: 'UCchannelC',
+    name: 'UCchannelC',
+    url: 'https://www.youtube.com/channel/UCchannelC'
+  });
+  mockDOMElements['channelName'] = { textContent: 'Channel C' };
+  const stubToggleResponse = await simulateRuntimeMessage({
+    type: 'setAutoApplyLoudness',
+    channelId: 'UCchannelC',
+    enabled: false,
+    videoType: 'video'
+  });
+  assert(stubToggleResponse?.ok === true, 'Auto toggle succeeds for placeholder name');
+  assert(mockStorage['channelVolumes']['UCchannelC'].name === 'Channel C',
+    'DOM fills an empty or channel-ID placeholder name');
+  mockDOMElements['channelName'] = null;
 
   // ── Data integrity: saveChannelGain preserves other fields ─────────
 

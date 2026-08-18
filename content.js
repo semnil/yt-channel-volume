@@ -26,6 +26,7 @@
 
   let currentChannel = { id: '', name: '', url: '' };
   let currentLoudnessDb = null;
+  let currentLoudnessVideoId = '';
   let currentGain = 1.0;
   let targetLufs = DEFAULT_TARGET_LUFS;
   let defaultAutoApplyLoudnessVideo = DEFAULT_AUTO_APPLY_LOUDNESS;
@@ -173,12 +174,40 @@
 
   let loudnessWaiters = [];
 
+  function isBridgeMessageForCurrentVideo(videoId) {
+    if (!videoId) return true;
+    const urlVideoId = getUrlVideoId();
+    if (!urlVideoId) return true;
+    if (location.pathname === '/watch') return videoId === urlVideoId;
+    // `/live/<handle>` does not necessarily contain a video ID. Only compare
+    // the path segment when it has the shape of a YouTube video ID.
+    if (location.pathname.startsWith('/live/') && urlVideoId.length === 11) {
+      return videoId === urlVideoId;
+    }
+    return true;
+  }
+
   window.addEventListener('message', (event) => {
     if (event.source !== window) return;
     if (event.data?.type !== '__yt_channel_volume__') return;
 
+    const bridgeVideoId = typeof event.data.videoId === 'string'
+      ? event.data.videoId
+      : '';
+    // A queued response for the previous video may arrive after the URL has
+    // already changed. It must not mutate channel, loudness, or gain state.
+    if (!isBridgeMessageForCurrentVideo(bridgeVideoId)) return;
+
     const db = event.data.loudnessDb;
-    if (db !== null && db !== undefined && !isNaN(db)) {
+    const hasLoudness = db !== null && db !== undefined && !isNaN(db);
+    const loudnessVideoChanged = bridgeVideoId &&
+      bridgeVideoId !== currentLoudnessVideoId;
+    if (loudnessVideoChanged) {
+      // `null` is meaningful for a new video: it clears the previous video's
+      // LUFS so Auto uses the saved fallback instead of stale loudness data.
+      currentLoudnessVideoId = bridgeVideoId;
+      currentLoudnessDb = hasLoudness ? db : null;
+    } else if (hasLoudness) {
       currentLoudnessDb = db;
     }
     if (event.data.isLiveContent !== undefined) {
@@ -192,7 +221,7 @@
     // isLiveContent=false with db=null, so relying on db alone loses their
     // channelId and leaves saved gain unapplied.
     const bridgeChId = event.data.channelId;
-    const hasValidData = (db !== null && db !== undefined) || event.data.isLiveContent !== undefined;
+    const hasValidData = hasLoudness || event.data.isLiveContent !== undefined;
     if (hasValidData && bridgeChId && bridgeChId.startsWith('UC')) {
       const oldId = currentChannel.id;
       const idChanged = oldId !== bridgeChId;
@@ -207,8 +236,10 @@
         currentChannel.name = event.data.author || getChannelDisplayName() || bridgeChId;
       } else {
         const nameIsStub = !currentChannel.name || currentChannel.name === bridgeChId;
-        if (nameIsStub) {
-          currentChannel.name = event.data.author || getChannelDisplayName() || currentChannel.name;
+        if (event.data.author) {
+          currentChannel.name = event.data.author;
+        } else if (nameIsStub) {
+          currentChannel.name = getChannelDisplayName() || currentChannel.name;
         }
       }
       // Backfill: orphan @handle entries in storage (saved before UC ever
@@ -334,6 +365,13 @@
     if (name) return name;
     const meta = document.querySelector('link[itemprop="name"]');
     return meta?.content || '';
+  }
+
+  function fillCurrentChannelNameFromDomFallback() {
+    const nameIsStub = !currentChannel.name || currentChannel.name === currentChannel.id;
+    if (!nameIsStub) return;
+    const freshName = getChannelDisplayName();
+    if (freshName) currentChannel.name = freshName;
   }
 
   // Returns UC-format channel id only. The modern YouTube owner widget
@@ -486,6 +524,7 @@
     if (ch.id) currentChannel = ch;
 
     currentLoudnessDb = null;
+    currentLoudnessVideoId = _lastVideoId;
     currentVideoType = 'video';
     currentVideoTypeDetected = false;
     currentIsLiveNow = false;
@@ -666,9 +705,9 @@
         sendResponse({ ok: false, reason: 'no loudness data' });
         return true;
       }
-      // Re-detect name at save time (DOM may have updated since initial detection)
-      const freshName = getChannelDisplayName();
-      if (freshName) currentChannel.name = freshName;
+      // The bridge author is authoritative. DOM is only a fallback while the
+      // current name is still empty or a channel-ID placeholder.
+      fillCurrentChannelNameFromDomFallback();
       const gain = calcGainFromLoudness(currentLoudnessDb);
       currentGain = gain;
       setGain(gain);
@@ -688,8 +727,7 @@
 
     if (msg.type === 'setGain') {
       const { channelId, gain } = msg;
-      const freshName = getChannelDisplayName();
-      if (freshName) currentChannel.name = freshName;
+      fillCurrentChannelNameFromDomFallback();
       currentGain = gain;
       setGain(gain);
       saveChannelGain(channelId, currentChannel.name, gain, currentVideoType, currentChannel.url).then(() => {
@@ -718,8 +756,7 @@
         return true;
       }
       const videoType = msg.videoType === 'live' ? 'live' : 'video';
-      const freshName = getChannelDisplayName();
-      if (freshName) currentChannel.name = freshName;
+      fillCurrentChannelNameFromDomFallback();
       saveChannelAutoApply(
         currentChannel.id,
         currentChannel.name,
@@ -807,7 +844,7 @@
     globalThis.__YTCV__ = {
       get state() {
         return {
-          currentChannel, currentGain, currentLoudnessDb,
+          currentChannel, currentGain, currentLoudnessDb, currentLoudnessVideoId,
           currentVideoType, currentVideoTypeDetected, currentIsLiveNow, showGainOverlay,
           currentAutoApplyLoudnessVideo, currentAutoApplyLoudnessLive,
           _lastVideoId, _lastProcessedVideo, _applyRunning, connectedVideo,
@@ -844,6 +881,7 @@
           case 'currentAutoApplyLoudnessVideo': currentAutoApplyLoudnessVideo = val; break;
           case 'currentAutoApplyLoudnessLive': currentAutoApplyLoudnessLive = val; break;
           case 'currentLoudnessDb': currentLoudnessDb = val; break;
+          case 'currentLoudnessVideoId': currentLoudnessVideoId = val; break;
         }
       }
     };
