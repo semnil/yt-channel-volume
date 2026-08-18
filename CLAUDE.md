@@ -98,7 +98,7 @@ options.html / options.js (設定画面、別タブで表示)
 
 - **GainNode, not HTMLMediaElement.volume**: volume property caps at 1.0. GainNode allows 0.0–6.0 (0–600%)
 - **チャンネル・種別別 LUFS 自動適用**: 現在の種別に対応する `autoApplyLoudnessVideo` / `autoApplyLoudnessLive` が true で loudnessDb を取得できた場合は、Target LUFS から算出した動画固有ゲインを保存済みゲインより優先。検出できない場合は保存済みの種別別ゲインへフォールバック。旧 `autoApplyLoudness` は両種別 true として読み替える
-- **全チャンネル既定値と個別設定**: `autoApplyLoudnessVideoDefault` / `autoApplyLoudnessLiveDefault` は個別フラグが存在しないチャンネルだけに適用。個別フラグはtrue/falseの両方を保存する三状態設計 (未設定=既定値継承、true=明示ON、false=明示OFF)。既定値変更時に`channelVolumes`は書き換えない
+- **全チャンネル既定値と個別設定**: `autoApplyLoudnessVideoDefault` / `autoApplyLoudnessLiveDefault` は、種別ごとの個別Autoフラグも手動ゲインも存在しない場合だけ適用。判定優先順位は個別Autoフラグ (true=明示ON、false=明示OFF) → 保存済み手動ゲイン (暗黙OFF) → 全チャンネル既定値。既定値変更時に`channelVolumes`は書き換えない
 - **MAIN world + ISOLATED world 分離**: YouTube の CSP が inline script を禁止するため、loudnessDb 抽出は `page-bridge.js` (MAIN world, `document_start`) で実行
 - **3経路の loudnessDb 取得**: (1) `Object.defineProperty` で変数セット検知、(2) fetch hook (`/youtubei/v1/player`)、(3) YouTube player DOM 内部データ (`ytd-watch-flexy.__data` / `movie_player.getPlayerResponse`)
 - **isLiveNow の補完**: `_capturedResp` の `isLiveNow` がページロード時点で固定されるため、request ハンドラで `movie_player.getPlayerResponse()` から最新の `isLiveNow` を補完する (待機→配信開始遷移に対応)。content.js の `forceDetect` (popup 開封時) で bridge に再問い合わせし、応答で `currentIsLiveNow` が更新された場合に `stateChanged` 経由で popup へ通知
