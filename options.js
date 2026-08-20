@@ -78,15 +78,6 @@
       return;
     }
 
-    const fallbackKeys = entries.flatMap(([id]) => [
-      autoFallbackStorageKey(id, 'video'),
-      autoFallbackStorageKey(id, 'live')
-    ]);
-    const fallbackData = await chrome.storage.local.get([
-      AUTO_FALLBACKS_KEY,
-      ...fallbackKeys
-    ]);
-
     entries.sort((a, b) => a[1].name.localeCompare(b[1].name));
 
     const table = document.createElement('table');
@@ -105,15 +96,13 @@
       // Support old format (single gain) and new format (gainLive/gainVideo)
       const gainLive = getChannelGain(entry, 'live');
       const gainVideo = getChannelGain(entry, 'video');
-      const fallbackLive = getStoredAutoFallbackGain(fallbackData, id, 'live') ?? gainLive;
-      const fallbackVideo = getStoredAutoFallbackGain(fallbackData, id, 'video') ?? gainVideo;
       const autoVideo = resolveAutoApply(entry, 'video');
       const autoLive = resolveAutoApply(entry, 'live');
       const videoText = autoVideo
-        ? formatAutoFallback(fallbackVideo, displayUnit, msg('labelAuto'))
+        ? formatAutoGain(gainVideo, displayUnit, msg('labelAuto'))
         : (gainVideo !== null ? fmtGain(gainVideo) : '—');
       const liveText = autoLive
-        ? formatAutoFallback(fallbackLive, displayUnit, msg('labelAuto'))
+        ? formatAutoGain(gainLive, displayUnit, msg('labelAuto'))
         : (gainLive !== null ? fmtGain(gainLive) : '—');
       const tr = document.createElement('tr');
       const nameHtml = url
@@ -138,11 +127,7 @@
         const d = await chrome.storage.local.get(CHANNEL_VOLUMES_KEY);
         const obj = d[CHANNEL_VOLUMES_KEY] || {};
         delete obj[id];
-        await chrome.storage.local.set({
-          [CHANNEL_VOLUMES_KEY]: obj,
-          [autoFallbackStorageKey(id, 'video')]: null,
-          [autoFallbackStorageKey(id, 'live')]: null
-        });
+        await chrome.storage.local.set({ [CHANNEL_VOLUMES_KEY]: obj });
         renderChannels();
       });
     });
@@ -195,15 +180,7 @@
 
   clearAllBtn.addEventListener('click', async () => {
     if (!confirm(msg('clearAllConfirm'))) return;
-    const stored = await chrome.storage.local.get(null);
-    const fallbackKeys = Object.keys(stored).filter(key =>
-      key.startsWith(AUTO_FALLBACK_KEY_PREFIX)
-    );
-    if (fallbackKeys.length) await chrome.storage.local.remove(fallbackKeys);
-    await chrome.storage.local.set({
-      [CHANNEL_VOLUMES_KEY]: {},
-      [AUTO_FALLBACKS_KEY]: {}
-    });
+    await chrome.storage.local.set({ [CHANNEL_VOLUMES_KEY]: {} });
     renderChannels();
   });
 
@@ -221,10 +198,7 @@
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local') return;
-    const fallbackChanged = Object.keys(changes).some(key =>
-      key === AUTO_FALLBACKS_KEY || key.startsWith(AUTO_FALLBACK_KEY_PREFIX)
-    );
-    if (changes[CHANNEL_VOLUMES_KEY] || fallbackChanged) {
+    if (changes[CHANNEL_VOLUMES_KEY]) {
       renderChannels();
     }
     if (changes[SETTINGS_KEY]) {
@@ -263,7 +237,9 @@
     });
   }
 
-  loadSettings().then(() => {
-    return renderChannels();
-  }).finally(revealOptions);
+  migrateLegacyAutoGains()
+    .catch(() => {})
+    .then(loadSettings)
+    .then(renderChannels)
+    .finally(revealOptions);
 })();
