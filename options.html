@@ -12,6 +12,9 @@ body {
   background: #0f0f23;
   min-height: 100vh;
 }
+body.initializing { visibility: hidden; }
+body.initializing .toggle-switch .slider,
+body.initializing .toggle-switch .slider::before { transition: none; }
 
 .container {
   max-width: 760px;
@@ -228,7 +231,8 @@ h1 {
 .toggle-switch {
   position: relative;
   width: 36px;
-  height: 20px;
+  height: 36px;
+  margin: -8px 0;
   flex-shrink: 0;
 }
 .toggle-switch input {
@@ -238,7 +242,7 @@ h1 {
 }
 .toggle-switch .slider {
   position: absolute;
-  inset: 0;
+  inset: 8px 0;
   background: #2a2a4a;
   border-radius: 10px;
   cursor: pointer;
@@ -264,7 +268,7 @@ h1 {
 }
 </style>
 </head>
-<body>
+<body class="initializing">
 <div class="container">
   <h1>YT Channel Volume</h1>
 

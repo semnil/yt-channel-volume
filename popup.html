@@ -143,7 +143,8 @@ body.initializing .toggle-switch .slider::before { transition: none; }
 .toggle-switch {
   position: relative;
   width: 36px;
-  height: 20px;
+  height: 36px;
+  margin: -8px 0;
   flex-shrink: 0;
 }
 .toggle-switch input {
@@ -153,7 +154,7 @@ body.initializing .toggle-switch .slider::before { transition: none; }
 }
 .toggle-switch .slider {
   position: absolute;
-  inset: 0;
+  inset: 8px 0;
   background: #2a2a4a;
   border-radius: 10px;
   cursor: pointer;
@@ -256,6 +257,13 @@ body.initializing .toggle-switch .slider::before { transition: none; }
   cursor: pointer;
   border: 2px solid #1a1a2e;
 }
+.slider-row input[type="range"]:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.slider-row input[type="range"]:disabled::-webkit-slider-thumb {
+  cursor: not-allowed;
+}
 .slider-value {
   min-width: 42px;
   text-align: right;
@@ -285,6 +293,12 @@ body.initializing .toggle-switch .slider::before { transition: none; }
 .presets button:hover {
   background: #ff6b9d;
   color: #fff;
+}
+.presets button:disabled,
+.presets button:disabled:hover {
+  color: #666;
+  background: #22223d;
+  cursor: not-allowed;
 }
 
 .status-msg {

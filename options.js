@@ -103,8 +103,8 @@
       const name = entry.name || id;
       const url = entry.url;
       // Support old format (single gain) and new format (gainLive/gainVideo)
-      const gainLive = entry.gainLive ?? entry.gain ?? null;
-      const gainVideo = entry.gainVideo ?? entry.gain ?? null;
+      const gainLive = getChannelGain(entry, 'live');
+      const gainVideo = getChannelGain(entry, 'video');
       const fallbackLive = getStoredAutoFallbackGain(fallbackData, id, 'live') ?? gainLive;
       const fallbackVideo = getStoredAutoFallbackGain(fallbackData, id, 'video') ?? gainVideo;
       const autoVideo = resolveAutoApply(entry, 'video');
@@ -256,7 +256,14 @@
 
   // ── Init ───────────────────────────────────────────────────────────
 
+  function revealOptions() {
+    void document.body.offsetWidth;
+    requestAnimationFrame(() => {
+      document.body.classList.remove('initializing');
+    });
+  }
+
   loadSettings().then(() => {
-    renderChannels();
-  });
+    return renderChannels();
+  }).finally(revealOptions);
 })();

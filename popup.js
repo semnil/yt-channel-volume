@@ -21,6 +21,7 @@
   const autoApplyVideoToggle = document.getElementById('autoApplyVideoToggle');
   const autoApplyLiveToggle = document.getElementById('autoApplyLiveToggle');
   const volumeSlider = document.getElementById('volumeSlider');
+  const presetButtons = document.querySelectorAll('.presets button');
   const volumeValueEl = document.getElementById('volumeValue');
   const settingsBtn = document.getElementById('settingsBtn');
   const mainEl = document.getElementById('main');
@@ -85,6 +86,9 @@
       ? autoApplyLoudnessLive
       : autoApplyLoudnessVideo;
     fallbackBadge.style.display = autoApplyCurrentType && !hasLoudness ? '' : 'none';
+    const manualGainLocked = isManualGainLocked(autoApplyCurrentType, hasLoudness);
+    volumeSlider.disabled = manualGainLocked;
+    presetButtons.forEach(btn => { btn.disabled = manualGainLocked; });
 
     volumeSlider.value = gainToPercent(lastGain);
     const fv = fmtGain(lastGain);
@@ -167,6 +171,15 @@
     return chrome.tabs.sendMessage(activeTabId, msg);
   }
 
+  function sendManualGain(msg) {
+    sendMsg(msg).then(resp => {
+      if (resp?.ok) return;
+      sendMsg({ type: 'getState' }).then(state => {
+        if (state) updateUI(state);
+      }).catch(() => {});
+    }).catch(() => {});
+  }
+
   // ── Event handlers ─────────────────────────────────────────────────
 
   settingsBtn.addEventListener('click', () => {
@@ -226,25 +239,25 @@
     volumeValueEl.textContent = f.text + f.unit;
     setCardValue(currentVolEl, f.text, f.unit, 'current');
     if (currentChannel.id) {
-      sendMsg({
+      sendManualGain({
         type: 'setGainLive',
         gain
-      }).catch(() => {});
+      });
     }
   });
 
   // change: save to storage on slider release
   volumeSlider.addEventListener('change', () => {
     if (currentChannel.id) {
-      sendMsg({
+      sendManualGain({
         type: 'setGain',
         channelId: currentChannel.id,
         gain: lastGain
-      }).catch(() => {});
+      });
     }
   });
 
-  document.querySelectorAll('.presets button').forEach(btn => {
+  presetButtons.forEach(btn => {
     btn.addEventListener('click', () => {
       const pct = Number(btn.dataset.vol);
       const gain = percentToGain(pct);
@@ -254,11 +267,11 @@
       volumeValueEl.textContent = f.text + f.unit;
       setCardValue(currentVolEl, f.text, f.unit, 'current');
       if (currentChannel.id) {
-        sendMsg({
+        sendManualGain({
           type: 'setGain',
           channelId: currentChannel.id,
           gain
-        }).catch(() => {});
+        });
       }
     });
   });

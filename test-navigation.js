@@ -187,6 +187,9 @@ globalThis.AudioContext = class {
 
 globalThis.__TEST_YTCV__ = true;
 
+const utilsSrc = fs.readFileSync('./utils.js', 'utf8')
+  .replace(/^(const|let) /gm, 'var ');
+eval(utilsSrc);
 const contentSrc = fs.readFileSync('./content.js', 'utf8');
 eval(contentSrc);
 
@@ -625,17 +628,29 @@ async function runTests() {
   assert(ytcv.state.currentAutoApplyLoudnessVideo === true, 'video auto flag enabled for current channel');
   assert(ytcv.state.currentAutoApplyLoudnessLive === false, 'live auto flag remains disabled');
   assert(Math.abs(ytcv.state.currentGain - expectedAutoGain) < 0.001, 'detected LUFS overrides saved gain');
-  assert(ytcv.getState().autoApplyLoudness === true, 'auto flag exposed to popup state');
-  assert(ytcv.getState().autoApplyLoudnessVideo === true, 'video auto flag exposed to popup state');
-  assert(ytcv.getState().autoApplyLoudnessLive === false, 'live auto flag exposed to popup state');
+  const exposedAutoState = ytcv.getState();
+  assert(!('autoApplyLoudness' in exposedAutoState), 'unused aggregate auto state is omitted');
+  assert(!('videoTypeDetected' in exposedAutoState), 'internal detection state is omitted');
+  assert(exposedAutoState.autoApplyLoudnessVideo === true, 'video auto flag exposed to popup state');
+  assert(exposedAutoState.autoApplyLoudnessLive === false, 'live auto flag exposed to popup state');
 
   section('Auto LUFS: Video setting does not enable Live');
   ytcv._set('currentVideoType', 'live');
   await ytcv.applyPreferredGain();
-  assert(ytcv.getState().autoApplyLoudness === false, 'current live type remains manual');
+  assert(ytcv.getState().autoApplyLoudnessLive === false, 'current live type remains manual');
   assert(ytcv.state.currentGain === 0.7, 'live uses its saved gain while only video auto is enabled');
   ytcv._set('currentVideoType', 'video');
   await ytcv.applyPreferredGain();
+
+  section('Popup state: internal type detection does not emit a redundant update');
+  ytcv._set('currentVideoTypeDetected', false);
+  ytcv._set('currentGain', 0.4321);
+  ytcv.notifyPopup();
+  const messagesBeforeDetectionOnlyChange = mockSentMessages.length;
+  ytcv._set('currentVideoTypeDetected', true);
+  ytcv.notifyPopup();
+  assert(mockSentMessages.length === messagesBeforeDetectionOnlyChange,
+    'internal detection transition is absent from popup state deduplication');
 
   section('Auto LUFS: Target LUFS change recalculates current video');
   simulateStorageChange({
@@ -840,6 +855,57 @@ async function runTests() {
   await ytcv.applyPreferredGain();
   assert(ytcv.state.currentGain === 0.6,
     'live without LUFS uses manual fallback after explicit save');
+
+  section('Auto LUFS: detected loudness blocks manual gain changes');
+  const detectedManualChannelId = 'UCdetectedManual';
+  const detectedManualFallbackKey = ytcv.autoFallbackStorageKey(
+    detectedManualChannelId,
+    'video'
+  );
+  mockStorage['channelVolumes'] = {
+    [detectedManualChannelId]: {
+      name: 'Detected Manual',
+      gainVideo: 0.4,
+      autoApplyLoudnessVideo: true
+    }
+  };
+  ytcv._set('currentChannel', {
+    id: detectedManualChannelId,
+    name: 'Detected Manual',
+    url: ''
+  });
+  ytcv._set('currentVideoType', 'video');
+  ytcv._set('currentLoudnessDb', 4);
+  ytcv._set('currentAutoApplyLoudnessVideo', true);
+  ytcv._set('targetLufs', -18);
+  await ytcv.applyPreferredGain();
+  const detectedAutoGain = ytcv.state.currentGain;
+  const storedDetectedManualBefore = JSON.stringify(
+    mockStorage['channelVolumes'][detectedManualChannelId]
+  );
+  const liveManualResponse = await simulateRuntimeMessage({
+    type: 'setGainLive',
+    gain: 3.0
+  });
+  assert(liveManualResponse?.ok === false,
+    'real-time manual gain is rejected while detected loudness controls Auto');
+  assert(ytcv.state.currentGain === detectedAutoGain,
+    'rejected real-time gain does not replace the calculated Auto gain');
+  const savedManualResponse = await simulateRuntimeMessage({
+    type: 'setGain',
+    channelId: detectedManualChannelId,
+    gain: 3.0
+  });
+  assert(savedManualResponse?.ok === false,
+    'saved manual gain is rejected while detected loudness controls Auto');
+  assert(JSON.stringify(mockStorage['channelVolumes'][detectedManualChannelId]) ===
+    storedDetectedManualBefore,
+    'rejected manual gain does not change the saved fallback');
+  assert(mockStorage[detectedManualFallbackKey] === detectedAutoGain,
+    'rejected manual gain preserves the learned Auto fallback');
+  await ytcv.applyPreferredGain();
+  assert(ytcv.state.currentGain === detectedAutoGain,
+    'preference re-resolution keeps the same calculated Auto gain');
 
   section('Auto LUFS: concurrent channel learning uses independent storage keys');
   const concurrentVideoKey = ytcv.autoFallbackStorageKey('UCfallbackA', 'video');

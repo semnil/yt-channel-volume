@@ -9,15 +9,6 @@
     try { return !!chrome.runtime?.id; } catch (_) { return false; }
   }
 
-  const YT_REFERENCE_LUFS = -14;
-  const DEFAULT_TARGET_LUFS = -18;
-  const DEFAULT_AUTO_APPLY_LOUDNESS = false;
-  const SETTINGS_KEY = 'autoLoudnessSettings';
-  const CHANNEL_VOLUMES_KEY = 'channelVolumes';
-  // Legacy aggregate fallback storage, retained for read compatibility.
-  const AUTO_FALLBACKS_KEY = 'autoLoudnessFallbacks';
-  const AUTO_FALLBACK_KEY_PREFIX = 'autoLoudnessFallback:';
-
   /** @type {AudioContext | null} */
   let audioCtx = null;
   /** @type {GainNode | null} */
@@ -80,16 +71,6 @@
     await chrome.storage.local.set({ [SETTINGS_KEY]: merged });
   }
 
-  function extractGainForType(entry, videoType) {
-    if (!entry) return null;
-    // Migration: old format had single `gain` → treat as both
-    if ('gain' in entry && !('gainLive' in entry) && !('gainVideo' in entry)) {
-      return entry.gain;
-    }
-    const key = videoType === 'live' ? 'gainLive' : 'gainVideo';
-    return entry[key] ?? null;
-  }
-
   function extractAutoFallbackForType(entry, videoType) {
     if (!entry) return null;
     const key = videoType === 'live' ? 'gainLive' : 'gainVideo';
@@ -112,27 +93,11 @@
     else currentAutoFallbackVideo = gain;
   }
 
-  function extractAutoApplyOverride(entry, videoType) {
-    if (!entry) return null;
-    const key = videoType === 'live'
-      ? 'autoApplyLoudnessLive'
-      : 'autoApplyLoudnessVideo';
-    if (key in entry) return !!entry[key];
-    // Migration: the first implementation used one flag for both types.
-    if ('autoApplyLoudness' in entry) return !!entry.autoApplyLoudness;
-    return null;
-  }
-
   function resolveAutoApplyForType(entry, videoType) {
-    const override = extractAutoApplyOverride(entry, videoType);
-    if (override !== null) return override;
-    // A saved manual gain is itself a per-channel choice. Legacy entries do
-    // not have Auto flags, so treating them as unset would unexpectedly turn
-    // every manually configured channel into Auto when the default is enabled.
-    if (extractGainForType(entry, videoType) !== null) return false;
-    return videoType === 'live'
+    const defaultValue = videoType === 'live'
       ? defaultAutoApplyLoudnessLive
       : defaultAutoApplyLoudnessVideo;
+    return resolveAutoApplySetting(entry, videoType, defaultValue);
   }
 
   function setCurrentAutoApplyFromEntry(entry) {
@@ -146,6 +111,13 @@
       : currentAutoApplyLoudnessVideo;
   }
 
+  function isCurrentManualGainLocked() {
+    return isManualGainLocked(
+      isCurrentAutoApplyEnabled(),
+      currentLoudnessDb !== null
+    );
+  }
+
   async function loadChannelEntry(channelId) {
     if (!channelId || !isContextValid()) return null;
     const data = await chrome.storage.local.get(CHANNEL_VOLUMES_KEY);
@@ -155,27 +127,7 @@
 
   async function loadChannelGain(channelId, videoType) {
     const entry = await loadChannelEntry(channelId);
-    return extractGainForType(entry, videoType);
-  }
-
-  function autoFallbackStorageKey(channelId, videoType) {
-    const type = videoType === 'live' ? 'live' : 'video';
-    return `${AUTO_FALLBACK_KEY_PREFIX}${channelId}:${type}`;
-  }
-
-  function normalizeAutoFallbackGain(value) {
-    return typeof value === 'number' && Number.isFinite(value) ? value : null;
-  }
-
-  function getStoredAutoFallbackGain(data, channelId, videoType) {
-    const storageKey = autoFallbackStorageKey(channelId, videoType);
-    if (Object.prototype.hasOwnProperty.call(data, storageKey)) {
-      return normalizeAutoFallbackGain(data[storageKey]);
-    }
-    const legacyEntry = data[AUTO_FALLBACKS_KEY]?.[channelId];
-    return normalizeAutoFallbackGain(
-      extractAutoFallbackForType(legacyEntry, videoType)
-    );
+    return getChannelGain(entry, videoType);
   }
 
   async function loadAutoFallbackEntry(channelId) {
@@ -406,15 +358,7 @@
   // ── Gain calculation ───────────────────────────────────────────────
 
   function calcGainFromLoudness(loudnessDb) {
-    // YouTube only attenuates loud content (loudnessDb > 0) to -14 LUFS.
-    // Quiet content (loudnessDb <= 0) is not boosted.
-    const effectiveLufs = loudnessDb > 0
-      ? YT_REFERENCE_LUFS
-      : YT_REFERENCE_LUFS + loudnessDb;
-    const compensationDb = targetLufs - effectiveLufs;
-    const gain = Math.pow(10, compensationDb / 20);
-    if (!isFinite(gain)) return 1.0;
-    return Math.max(0, Math.min(6, gain));
+    return calcGain(loudnessDb, targetLufs);
   }
 
   function applyAutomaticLoudnessGain() {
@@ -460,8 +404,8 @@
       ? calcGainFromLoudness(currentLoudnessDb)
       : autoEnabled
         ? getCurrentAutoFallback(requestedVideoType) ??
-          extractGainForType(entry, requestedVideoType) ?? 1.0
-        : extractGainForType(entry, requestedVideoType) ?? 1.0;
+          getChannelGain(entry, requestedVideoType) ?? 1.0
+        : getChannelGain(entry, requestedVideoType) ?? 1.0;
     if (autoEnabled && hasLoudness) {
       setCurrentAutoFallback(gain, requestedVideoType);
     }
@@ -697,11 +641,9 @@
       loudnessDb: currentLoudnessDb,
       contentLufs,
       targetLufs,
-      autoApplyLoudness: isCurrentAutoApplyEnabled(),
       autoApplyLoudnessVideo: currentAutoApplyLoudnessVideo,
       autoApplyLoudnessLive: currentAutoApplyLoudnessLive,
       videoType: currentVideoType,
-      videoTypeDetected: currentVideoTypeDetected,
       isLiveNow: currentIsLiveNow,
       isWatchPage: isWatchPage()
     };
@@ -711,7 +653,7 @@
   function notifyPopup() {
     if (!isContextValid()) return;
     const state = getState();
-    const key = state.loudnessDb + '|' + state.gain + '|' + state.channel.id + '|' + state.channel.name + '|' + state.videoType + '|' + state.videoTypeDetected + '|' + state.isLiveNow + '|' + state.autoApplyLoudnessVideo + '|' + state.autoApplyLoudnessLive;
+    const key = state.loudnessDb + '|' + state.gain + '|' + state.channel.id + '|' + state.channel.name + '|' + state.videoType + '|' + state.isLiveNow + '|' + state.autoApplyLoudnessVideo + '|' + state.autoApplyLoudnessLive;
     if (key === _lastNotifiedState) return;
     _lastNotifiedState = key;
     chrome.runtime.sendMessage({ type: 'stateChanged', ...state }).catch(() => {});
@@ -860,12 +802,12 @@
             setCurrentAutoFallbacksFromEntry(allFallbacks[currentChannel.id]);
           }
           if (fallbackVideoChange) {
-            currentAutoFallbackVideo = normalizeAutoFallbackGain(
+            currentAutoFallbackVideo = normalizeStoredGain(
               fallbackVideoChange.newValue
             );
           }
           if (fallbackLiveChange) {
-            currentAutoFallbackLive = normalizeAutoFallbackGain(
+            currentAutoFallbackLive = normalizeStoredGain(
               fallbackLiveChange.newValue
             );
           }
@@ -895,8 +837,8 @@
           ? calcGainFromLoudness(currentLoudnessDb)
           : currentAutoApply
             ? getCurrentAutoFallback() ??
-              extractGainForType(entry, currentVideoType) ?? 1.0
-            : (entry ? extractGainForType(entry, currentVideoType) : 1.0);
+              getChannelGain(entry, currentVideoType) ?? 1.0
+            : (entry ? getChannelGain(entry, currentVideoType) : 1.0);
         if (gain == null && !currentTypeAutoApplyChanged) {
           if (anyAutoApplyChanged) notifyPopup();
           return;
@@ -946,12 +888,20 @@
     }
 
     if (msg.type === 'setGainLive') {
+      if (isCurrentManualGainLocked()) {
+        sendResponse({ ok: false, reason: 'auto apply controls current gain' });
+        return true;
+      }
       commitGain(msg.gain);
       sendResponse({ ok: true });
       return true;
     }
 
     if (msg.type === 'setGain') {
+      if (isCurrentManualGainLocked()) {
+        sendResponse({ ok: false, reason: 'auto apply controls current gain' });
+        return true;
+      }
       const { channelId, gain } = msg;
       fillCurrentChannelNameFromDomFallback();
       commitGain(gain);

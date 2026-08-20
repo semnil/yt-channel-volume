@@ -37,16 +37,27 @@ function autoFallbackStorageKey(channelId, videoType) {
   return `${AUTO_FALLBACK_KEY_PREFIX}${channelId}:${type}`;
 }
 
+function normalizeStoredGain(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
 function getStoredAutoFallbackGain(storageData, channelId, videoType) {
   const storageKey = autoFallbackStorageKey(channelId, videoType);
   if (Object.prototype.hasOwnProperty.call(storageData, storageKey)) {
-    const value = storageData[storageKey];
-    return typeof value === 'number' && Number.isFinite(value) ? value : null;
+    return normalizeStoredGain(storageData[storageKey]);
   }
   const legacyEntry = storageData[AUTO_FALLBACKS_KEY]?.[channelId];
   const legacyKey = videoType === 'live' ? 'gainLive' : 'gainVideo';
-  const value = legacyEntry?.[legacyKey];
-  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+  return normalizeStoredGain(legacyEntry?.[legacyKey]);
+}
+
+function getChannelGain(entry, videoType) {
+  if (!entry) return null;
+  if ('gain' in entry && !('gainLive' in entry) && !('gainVideo' in entry)) {
+    return entry.gain;
+  }
+  const gainKey = videoType === 'live' ? 'gainLive' : 'gainVideo';
+  return entry[gainKey] ?? null;
 }
 
 function resolveAutoApplySetting(entry, videoType, defaultValue) {
@@ -56,12 +67,12 @@ function resolveAutoApplySetting(entry, videoType, defaultValue) {
     : 'autoApplyLoudnessVideo';
   if (autoKey in entry) return !!entry[autoKey];
   if ('autoApplyLoudness' in entry) return !!entry.autoApplyLoudness;
-
-  const gainKey = videoType === 'live' ? 'gainLive' : 'gainVideo';
-  const hasTypedGain = entry[gainKey] !== null && entry[gainKey] !== undefined;
-  const hasLegacyGain = entry.gain !== null && entry.gain !== undefined;
-  if (hasTypedGain || hasLegacyGain) return false;
+  if (getChannelGain(entry, videoType) !== null) return false;
   return !!defaultValue;
+}
+
+function isManualGainLocked(autoApplyEnabled, hasLoudness) {
+  return !!autoApplyEnabled && !!hasLoudness;
 }
 
 function calcGain(loudnessDb, targetLufs) {

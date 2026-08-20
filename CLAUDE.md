@@ -14,7 +14,7 @@ page-bridge.js (MAIN world content script, document_start)
 ├── isLiveContent: videoDetails.isLiveContent を抽出
 └── postMessage → content.js へ loudnessDb + isLiveContent + channelId + author を中継
 
-content.js (ISOLATED world content script, document_idle)
+utils.js → content.js (ISOLATED world content scripts, document_idle)
 ├── postMessage listener: page-bridge.js から loudnessDb 受信
 ├── requestLoudnessWithRetry: on-demand で page-bridge.js にリトライ要求
 ├── Gain calculation (手動適用 / チャンネル別 LUFS 自動適用)
@@ -35,11 +35,15 @@ content.js (ISOLATED world content script, document_idle)
 ├── Cross-tab sync: chrome.storage.onChanged で channelVolumes 変更を受信し、現在チャンネル × videoType のゲインを即適用 (ポーリングなし、自タブ dedup は currentGain 比較)
 └── Storage
     ├── autoLoudnessSettings: { targetLufs, displayUnit, showGainOverlay, autoApplyLoudnessVideoDefault, autoApplyLoudnessLiveDefault }
-    └── channelVolumes: { [channelId]: { name, gainLive, gainVideo, autoApplyLoudnessLive, autoApplyLoudnessVideo, url } }
+    ├── channelVolumes: { [channelId]: { name, gainLive, gainVideo, autoApplyLoudnessLive, autoApplyLoudnessVideo, url } }
+    ├── autoLoudnessFallback:<channelId>:<type>: チャンネル・種別別の学習済みAutoフォールバック
+    └── autoLoudnessFallbacks: 旧集約形式 (読み取り互換のみ)
 
-utils.js (shared, popup/options で読み込み + test.js)
-├── Constants: SETTINGS_KEY, CHANNEL_VOLUMES_KEY, YT_REFERENCE_LUFS, DEFAULT_TARGET_LUFS
-├── Gain utilities: gainToPercent, percentToGain, gainToDb, formatGain, calcGain
+utils.js (shared, content/popup/options で読み込み + test.js)
+├── Constants: storage keys, YT_REFERENCE_LUFS, DEFAULT_TARGET_LUFS
+├── Gain utilities: gainToPercent, percentToGain, gainToDb, formatGain, formatAutoFallback, calcGain
+├── Storage utilities: autoFallbackStorageKey, getStoredAutoFallbackGain, getChannelGain
+├── Auto state: resolveAutoApplySetting, isManualGainLocked
 ├── i18n: msg()
 └── HTML escape: esc()
 
@@ -49,13 +53,13 @@ popup.html / popup.js
 ├── Video Type バッジ (LIVE / VIDEO)
 ├── 「チャンネルに適用」ボタン (loudnessDb からゲイン算出・種別ごとに保存)
 ├── 現在視聴中の種別だけ表示する、チャンネル × Video/Live 別「LUFS 自動適用」トグル
-├── Manual Volume: スライダー (0–600%) + プリセット
+├── Manual Volume: スライダー (0–600%) + プリセット。Auto有効・LUFS検出済みでは無効、LUFS未検出時はフォールバック調整に使用
 ├── 非 watch ページでは UI 非表示
 └── retryGetState: loudness 未取得時のポーリングフォールバック
 
 options.html / options.js (設定画面、別タブで表示)
 ├── Target LUFS スライダー (-30 ~ -6 LUFS, default -18)
-├── 全チャンネルのLUFS自動適用 (Video / Live別、default OFF、個別未設定時のみ継承)
+├── 全チャンネルのLUFS自動適用 (Video / Live別、default OFF、個別Autoフラグ・手動ゲインが両方ない種別のみ継承)
 ├── 表示単位トグル (% / dB)
 ├── ゲイン表示トグル (プレイヤーのボリュームバー横に表示、default OFF)
 ├── Saved Channels テーブル (Video / Live 2列。Auto時は `Auto (fallback gain)`、チャンネルリンク付き、削除可)
@@ -74,7 +78,7 @@ options.html / options.js (設定画面、別タブで表示)
 1. チャンネルの動画を開く → Content Loudness が表示される
 2. ポップアップに表示された現在種別の「LUFS 自動適用」をONにする → 対象種別の検出可能な動画へTarget LUFSに対応するゲインを適用
 3. LUFS 未検出のライブ配信などでは保存済みの種別別ゲインへフォールバック
-4. 「チャンネルに適用」や Manual Volume で従来どおり種別別ゲインの保存も可能
+4. Autoが現在の検出済みLUFSを適用していない場合は、「チャンネルに適用」や Manual Volume で種別別ゲインを保存可能
 
 ## File overview
 
@@ -151,7 +155,8 @@ python pack.py
 - SPA ナビ検知: `yt-navigate-finish` + `popstate` + `visibilitychange` + MutationObserver (video 要素変更 + URL video ID 変更)
 - テスト: `node test.js` (utils) + `node test-navigation.js` (navigation P01-P18 + bridge + guard + detectChannel + data integrity + cross-tab sync + per-channel auto LUFS)
 - テスト用 export: `__TEST_YTCV__` フラグで content.js 内部を `globalThis.__YTCV__` に露出。本番では無効
-- Storage keys: `autoLoudnessSettings` (target LUFS, display unit, Video/Live auto defaults), `channelVolumes` (saved channel gains, per-channel auto overrides, URL)
+- Storage keys: `autoLoudnessSettings` (target LUFS, display unit, Video/Live auto defaults), `channelVolumes` (saved channel gains, per-channel auto overrides, URL), `autoLoudnessFallback:<channelId>:<type>` (学習済みAutoフォールバック), legacy `autoLoudnessFallbacks` (読み取り互換)
 - Storage format: `channelVolumes.{id}` = `{ name, gainLive, gainVideo, autoApplyLoudnessLive, autoApplyLoudnessVideo, url }` (種別ごとの個別自動適用フラグと手動ゲインが両方ない場合だけ全チャンネル既定値を継承し、手動ゲインのみの場合は暗黙OFF。旧 `autoApplyLoudness` は両種別同値、旧 `{ name, gain, url }` は両ゲインとして読み替え)
-- slider `input` event = リアルタイムゲイン変更 (storage 書き込みなし)、`change` event = storage 保存
+- Autoフォールバック削除時は granular key に `null` を保存し、legacy `autoLoudnessFallbacks` の同値を再読込しないためのtombstoneとして扱う。全消去時はlegacy集約値も同時に空にするためgranular keyをremoveする
+- slider `input` event = リアルタイムゲイン変更 (storage 書き込みなし)、`change` event = storage 保存。Auto有効・LUFS検出済みでは両操作を拒否する
 - videoType 判定: page-bridge.js が `videoDetails.isLiveContent` を返す。content.js で `isLiveContent` が `true` なら 'live'、`false` なら 'video' (loudnessDb は判定に使わない)。プレミア公開は `isLiveContent=false` のため 'video' 扱い。初回ロード時はデフォルト 'video' で、bridge から isLiveContent を受信後に正しい種別のゲインに切替
