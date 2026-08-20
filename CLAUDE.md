@@ -34,7 +34,7 @@ utils.js → content.js (ISOLATED world content scripts, document_idle)
 ├── videoType: 'live' (配信/アーカイブ) or 'video' (動画/ショート) で別ゲイン管理
 ├── Cross-tab sync: chrome.storage.onChanged で channelVolumes 変更を受信し、現在チャンネル × videoType のゲインを即適用 (ポーリングなし、自タブ dedup は currentGain 比較)
 └── Storage
-    ├── autoLoudnessSettings: { targetLufs, displayUnit, showGainOverlay, autoApplyLoudnessVideoDefault, autoApplyLoudnessLiveDefault }
+    ├── autoLoudnessSettings: { targetLufs, displayUnit, showGainOverlay, autoApplyLoudnessVideoDefault, autoApplyLoudnessLiveDefault, unifiedGains }
     └── channelVolumes: { [channelId]: { name, gainLive, gainVideo, autoApplyLoudnessLive, autoApplyLoudnessVideo, url } }
 
 utils.js (shared, content/popup/options で読み込み + test.js)
@@ -109,7 +109,7 @@ options.html / options.js (設定画面、別タブで表示)
 - **watch ページ限定**: MutationObserver / scheduleApply / AudioContext 生成は `/watch` のみ
 - **チャンネル × 種別保存**: `gainLive` (配信/アーカイブ) と `gainVideo` (動画/ショート/プレミア公開) を別管理。videoType は `videoDetails.isLiveContent` のみで判定し (`isLiveContent ? 'live' : 'video'`)、loudnessDb は判定に使わない。ライブ配信とそのアーカイブは `isLiveContent=true` で live、プレミア公開は `isLiveContent=false` のため video 扱い
 - **YouTube loudness normalization 考慮**: loudnessDb > 0 の場合、YouTube が -14 LUFS に減衰済み → effectiveLufs = -14。loudnessDb <= 0 の場合はそのまま
-- **Storage migration**: 旧形式 `{ gain }` → `{ gainLive, gainVideo }` への自動マイグレーション。旧 `autoLoudnessFallback:<channelId>:<type>` / `autoLoudnessFallbacks` は `migrateLegacyAutoGains()` が起動時に `channelVolumes` へ畳み込んで削除する (Auto有効な種別は学習値をゲインへ移し、フラグのない保存済みゲインには明示OFFを記録して旧判定を保存する)。orphan `@handle` エントリは author 名一致による backfill で UC に統合 (id 形状ベースのマイグレーションは SPA 遷移で cross-channel corruption を引き起こすため廃止)
+- **Storage migration**: 旧形式 `{ gain }` → `{ gainLive, gainVideo }` への自動マイグレーション。`migrateLegacyAutoGains()` が起動時に 1 プロファイル 1 回だけ走り、フラグのない保存済みゲインに明示OFFを記録して旧判定 (保存済みゲイン=暗黙OFF) を保存する。旧 `autoLoudnessFallback:<channelId>:<type>` / `autoLoudnessFallbacks` があればAuto有効な種別の学習値をゲインへ畳み込んで削除する。実行済みの印は `autoLoudnessSettings.unifiedGains` の有無 (Autoもフラグなしでゲインを書くため、2回目が走るとAutoの学習値を明示OFFに固定してしまう)。orphan `@handle` エントリは author 名一致による backfill で UC に統合 (id 形状ベースのマイグレーションは SPA 遷移で cross-channel corruption を引き起こすため廃止)
 - **Channel ID 統一**: `detectChannel()` は UC 形式のみ返す。DOM の `@handle` リンクは SPA 遷移中に stale (前チャンネルを指す) になるため identifier として拒否。page-bridge.js の `videoDetails.channelId` (UC 形式) がフォールバック
 - **チャンネル表示名の選択**: bridge の `videoDetails.author` を権威ソースとする (現在の動画の player response 由来で SPA 遷移後も正確)。DOM `getChannelDisplayName()` はフォールバックのみ (stale 可能性あり)
 - **YouTube reference = -14 LUFS**: `contentLUFS = -14 + loudnessDb`
@@ -155,7 +155,7 @@ python pack.py
 - SPA ナビ検知: `yt-navigate-finish` + `popstate` + `visibilitychange` + MutationObserver (video 要素変更 + URL video ID 変更)
 - テスト: `node test.js` (utils) + `node test-navigation.js` (navigation P01-P18 + bridge + guard + detectChannel + data integrity + cross-tab sync + per-channel auto LUFS)
 - テスト用 export: `__TEST_YTCV__` フラグで content.js 内部を `globalThis.__YTCV__` に露出。本番では無効
-- Storage keys: `autoLoudnessSettings` (target LUFS, display unit, Video/Live auto defaults), `channelVolumes` (saved channel gains, per-channel auto overrides, URL)。legacy `autoLoudnessFallback:<channelId>:<type>` / `autoLoudnessFallbacks` は起動時に畳み込んで削除
+- Storage keys: `autoLoudnessSettings` (target LUFS, display unit, Video/Live auto defaults, `unifiedGains` マイグレーション済み印), `channelVolumes` (saved channel gains, per-channel auto overrides, URL)。legacy `autoLoudnessFallback:<channelId>:<type>` / `autoLoudnessFallbacks` は起動時に畳み込んで削除
 - Storage format: `channelVolumes.{id}` = `{ name, gainLive, gainVideo, autoApplyLoudnessLive, autoApplyLoudnessVideo, url }` (種別ごとの個別自動適用フラグがない場合に全チャンネル既定値を継承。旧 `autoApplyLoudness` は両種別同値、旧 `{ name, gain, url }` は両ゲインとして読み替え)
 - slider `input` event = リアルタイムゲイン変更 (storage 書き込みなし)、`change` event = storage 保存。Auto有効・LUFS検出済みでは両操作を拒否する
 - videoType 判定: page-bridge.js が `videoDetails.isLiveContent` を返す。content.js で `isLiveContent` が `true` なら 'live'、`false` なら 'video' (loudnessDb は判定に使わない)。プレミア公開は `isLiveContent=false` のため 'video' 扱い。初回ロード時はデフォルト 'video' で、bridge から isLiveContent を受信後に正しい種別のゲインに切替

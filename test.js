@@ -263,11 +263,59 @@ async function runMigrationTests() {
   assert(Object.keys(mockStorage).filter(k => k.startsWith('autoLoudnessFallback:')).length === 0,
     'granular legacy keys are removed');
   assert(!('autoLoudnessFallbacks' in mockStorage), 'legacy aggregate key is removed');
+  assert(mockStorage.autoLoudnessSettings.unifiedGains === true,
+    'the profile is marked so the migration cannot run a second time');
+  assert(mockStorage.autoLoudnessSettings.autoApplyLoudnessVideoDefault === true,
+    'marking the profile preserves the existing settings');
 
   const settled = JSON.stringify(mockStorage);
-  assert(await migrateLegacyAutoGains() === false, 'migration is a no-op once keys are gone');
+  assert(await migrateLegacyAutoGains() === false, 'migration is a no-op once the profile is marked');
   assert(JSON.stringify(mockStorage) === settled, 'no-op migration leaves storage untouched');
 
+  // Auto stores a gain without an Auto flag — the same shape the migration
+  // reads as "saved manually". A second pass must not pin it OFF.
+  mockStorage.channelVolumes.UCautoLearned = { name: 'Auto Learned', gainVideo: 0.7 };
+  await migrateLegacyAutoGains();
+  assert(!('autoApplyLoudnessVideo' in mockStorage.channelVolumes.UCautoLearned),
+    'a gain Auto stored after the migration is never pinned OFF');
+
+  section('migrateLegacyAutoGains — storage that predates the Auto feature');
+  mockStorage = {
+    autoLoudnessSettings: { targetLufs: -18 },
+    channelVolumes: {
+      UCreleased: { name: 'Released Ch', gainVideo: 0.5, url: 'https://example.com' },
+      UCbothTypes: { name: 'Both', gain: 0.6 }
+    }
+  };
+  assert(await migrateLegacyAutoGains() === true,
+    'a profile with no legacy Auto keys still migrates');
+  assert(mockStorage.channelVolumes.UCreleased.autoApplyLoudnessVideo === false,
+    'a gain saved before Auto existed is pinned against the all-channel default');
+  assert(mockStorage.channelVolumes.UCreleased.gainVideo === 0.5,
+    'pinning leaves the saved gain untouched');
+  assert(!('autoApplyLoudnessLive' in mockStorage.channelVolumes.UCreleased),
+    'the type with no saved gain keeps inheriting the default');
+  assert(mockStorage.channelVolumes.UCbothTypes.autoApplyLoudnessVideo === false &&
+    mockStorage.channelVolumes.UCbothTypes.autoApplyLoudnessLive === false,
+    'a legacy single gain pins both types');
+  assert(mockStorage.autoLoudnessSettings.targetLufs === -18,
+    'migrating without legacy keys preserves the target LUFS');
+
+  section('migrateLegacyAutoGains — leftover legacy keys after the marker');
+  mockStorage = {
+    autoLoudnessSettings: { unifiedGains: true },
+    channelVolumes: { UCkept: { name: 'Kept', gainVideo: 0.42 } },
+    'autoLoudnessFallback:UCkept:video': 0.9,
+    autoLoudnessFallbacks: { UCkept: { gainVideo: 0.9 } }
+  };
+  assert(await migrateLegacyAutoGains() === false, 'a marked profile does not migrate again');
+  assert(mockStorage.channelVolumes.UCkept.gainVideo === 0.42,
+    'leftover legacy values never overwrite the unified gain');
+  assert(!('autoLoudnessFallback:UCkept:video' in mockStorage) &&
+    !('autoLoudnessFallbacks' in mockStorage),
+    'leftover legacy keys are cleared on the next run');
+
+  section('migrateLegacyAutoGains — dormant learned gain');
   mockStorage = {
     channelVolumes: { UCoff: { name: 'Off', gainLive: 0.6 } },
     'autoLoudnessFallback:UCoff:live': 0.2

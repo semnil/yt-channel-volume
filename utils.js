@@ -8,6 +8,10 @@ const LEGACY_AUTO_FALLBACK_KEY_PREFIX = 'autoLoudnessFallback:';
 const YT_REFERENCE_LUFS = -14;
 const DEFAULT_TARGET_LUFS = -18;
 const DEFAULT_AUTO_APPLY_LOUDNESS = false;
+// Presence marks a profile whose gains already went through the unification
+// below. Auto stores gains without an Auto flag, which is the same shape the
+// migration reads as "saved manually", so it must run at most once.
+const UNIFIED_GAINS_KEY = 'unifiedGains';
 
 function gainToPercent(gain) { return Math.round(gain * 100); }
 function percentToGain(pct) { return pct / 100; }
@@ -89,17 +93,27 @@ function resolveAutoApplySetting(entry, videoType, defaultValue) {
 // so switching Auto off swapped the applied value for a separately kept manual
 // gain. Fold the learned values into the single per-channel gain, and record
 // the Auto state that a saved gain used to imply, then drop the old keys.
+// Channels saved before Auto existed carry a gain and no flag, so this runs
+// for them as well — the marker, not the presence of legacy keys, decides.
 async function migrateLegacyAutoGains() {
   const stored = await chrome.storage.local.get(null);
+  const settings = stored[SETTINGS_KEY] || {};
   const legacyKeys = Object.keys(stored).filter(
     key => key.startsWith(LEGACY_AUTO_FALLBACK_KEY_PREFIX)
   );
   const hasLegacyAggregate =
     Object.prototype.hasOwnProperty.call(stored, LEGACY_AUTO_FALLBACKS_KEY);
-  if (!legacyKeys.length && !hasLegacyAggregate) return false;
+  const removeKeys = hasLegacyAggregate
+    ? legacyKeys.concat(LEGACY_AUTO_FALLBACKS_KEY)
+    : legacyKeys;
+  if (UNIFIED_GAINS_KEY in settings) {
+    // Reached when an earlier run stored the unified gains but did not finish
+    // clearing. Nothing reads these keys any more.
+    if (removeKeys.length) await chrome.storage.local.remove(removeKeys);
+    return false;
+  }
 
   const all = stored[CHANNEL_VOLUMES_KEY] || {};
-  const settings = stored[SETTINGS_KEY] || {};
   const defaults = {
     video: settings.autoApplyLoudnessVideoDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS,
     live: settings.autoApplyLoudnessLiveDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS
@@ -127,11 +141,13 @@ async function migrateLegacyAutoGains() {
     }
   }
 
-  await chrome.storage.local.set({ [CHANNEL_VOLUMES_KEY]: all });
-  const removeKeys = hasLegacyAggregate
-    ? legacyKeys.concat(LEGACY_AUTO_FALLBACKS_KEY)
-    : legacyKeys;
-  await chrome.storage.local.remove(removeKeys);
+  // One write, so a profile can never end up with the gains unified and the
+  // marker missing — the next run would then pin Auto's own gains OFF.
+  await chrome.storage.local.set({
+    [CHANNEL_VOLUMES_KEY]: all,
+    [SETTINGS_KEY]: { ...settings, [UNIFIED_GAINS_KEY]: true }
+  });
+  if (removeKeys.length) await chrome.storage.local.remove(removeKeys);
   return true;
 }
 

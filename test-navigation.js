@@ -1221,6 +1221,31 @@ async function runTests() {
   assert(!('autoApplyLoudnessVideo' in inheritedEntry),
     'storing the gain does not pin the inherited default');
 
+  section('Upgrade: a gain saved before Auto existed survives the all-channel default');
+  // Released 1.0.4 storage: a saved gain, no Auto flag, no learned Auto key.
+  mockStorage = {
+    autoLoudnessSettings: { targetLufs: -18, autoApplyLoudnessVideoDefault: true },
+    channelVolumes: { 'UCreleased': { name: 'Released Ch', gainVideo: 0.5, url: '' } }
+  };
+  await migrateLegacyAutoGains();
+  setURL('/watch', 'UPGRADE0001');
+  ytcv._set('currentChannel', { id: 'UCreleased', name: 'Released Ch', url: '' });
+  ytcv._set('currentVideoType', 'video');
+  ytcv._set('currentLoudnessDb', -6);
+  ytcv._set('currentLoudnessVideoId', 'UPGRADE0001');
+  ytcv._set('targetLufs', -18);
+  ytcv._set('defaultAutoApplyLoudnessVideo', true);
+  ytcv._set('defaultAutoApplyLoudnessLive', false);
+  await ytcv.applyPreferredGain();
+  assert(ytcv.state.currentAutoApplyLoudnessVideo === false,
+    'a pre-Auto saved gain does not inherit the all-channel default');
+  assert(ytcv.state.currentGain === 0.5, 'the saved gain is what plays');
+  assert(mockStorage['channelVolumes']['UCreleased'].gainVideo === 0.5,
+    'the saved gain is not overwritten by a calculated one');
+  delete mockStorage['autoLoudnessSettings'];
+  ytcv._set('defaultAutoApplyLoudnessVideo', false);
+  ytcv._set('currentLoudnessDb', null);
+
   section('Auto LUFS defaults: SPA navigation cannot mix channel metadata');
   const navigationSourceId = 'UCnavSource';
   mockStorage['channelVolumes'] = {
