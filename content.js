@@ -5,10 +5,10 @@
 (() => {
   'use strict';
 
-  // A rejected storage write leaves the GainNode at a level nothing recorded.
-  // Extension reload is the documented cause and needs no console noise; any
-  // other cause has to be visible, because the gain silently reverts later.
-  function reportStorageFailure(what, err) {
+  // A failed save leaves the GainNode at a level nothing recorded, and a failed
+  // apply leaves the popup waiting. Extension reload is the documented cause
+  // and needs no console noise; any other cause has to be visible.
+  function reportFailure(what, err) {
     if (!isContextValid()) return;
     console.error('[YTCV] ' + what, err);
   }
@@ -244,7 +244,7 @@
             url: 'https://www.youtube.com/channel/' + bridgeChId
           };
           delete all[oldKey];
-        }).catch(err => reportStorageFailure('handle entry not adopted', err));
+        }).catch(err => reportFailure('handle entry not adopted', err));
       }
     }
     if (applyAutomaticLoudnessGain()) {
@@ -305,7 +305,7 @@
     // of the same channel without Content Loudness keeps the same level.
     saveChannelGain(
       channelId, currentChannel.name, gain, videoType, currentChannel.url
-    ).catch(err => reportStorageFailure('auto gain not stored', err));
+    ).catch(err => reportFailure('auto gain not stored', err));
     return true;
   }
 
@@ -336,7 +336,7 @@
       await saveChannelGain(
         requestedChannelId, currentChannel.name, gain,
         requestedVideoType, currentChannel.url
-      ).catch(err => reportStorageFailure('auto gain not stored', err));
+      ).catch(err => reportFailure('auto gain not stored', err));
     }
   }
 
@@ -611,7 +611,7 @@
     try {
       await applyVideoVolume();
     } catch (err) {
-      reportStorageFailure('apply failed', err);
+      reportFailure('apply failed', err);
     } finally {
       _applyRunning = false;
     }
@@ -645,7 +645,7 @@
     migrateLegacyAutoGains()
       // Applying a saved gain still beats leaving playback unattenuated, so a
       // failed fold is logged and the apply proceeds on the old shape.
-      .catch(err => reportStorageFailure('legacy auto gains not folded in', err))
+      .catch(err => reportFailure('legacy auto gains not folded in', err))
       .then(() => { if (isWatchPage()) triggerApply(); });
   } else if (isWatchPage()) {
     triggerApply();
@@ -734,9 +734,9 @@
       saveManualChannelGain(currentChannel.id, currentChannel.name, gain, currentVideoType, currentChannel.url).then(() => {
         notifyPopup();
         sendResponse({ ok: true, gain });
-      }, err => {
-        reportStorageFailure('channel gain not saved', err);
-        sendResponse({ ok: false, reason: 'storage write failed' });
+      }).catch(err => {
+        reportFailure('applyLoudness failed', err);
+        sendResponse({ ok: false, reason: 'request failed' });
       });
       return true;
     }
@@ -762,9 +762,9 @@
       saveManualChannelGain(channelId, currentChannel.name, gain, currentVideoType, currentChannel.url).then(() => {
         notifyPopup();
         sendResponse({ ok: true });
-      }, err => {
-        reportStorageFailure('channel gain not saved', err);
-        sendResponse({ ok: false, reason: 'storage write failed' });
+      }).catch(err => {
+        reportFailure('setGain failed', err);
+        sendResponse({ ok: false, reason: 'request failed' });
       });
       return true;
     }
@@ -777,9 +777,9 @@
         commitGain(1.0);
         notifyPopup();
         sendResponse({ ok: true });
-      }, err => {
-        reportStorageFailure('channel not deleted', err);
-        sendResponse({ ok: false, reason: 'storage write failed' });
+      }).catch(err => {
+        reportFailure('clearChannel failed', err);
+        sendResponse({ ok: false, reason: 'request failed' });
       });
       return true;
     }
@@ -801,9 +801,9 @@
         await applyPreferredGain();
         notifyPopup();
         sendResponse({ ok: true, ...getState() });
-      }, err => {
-        reportStorageFailure('auto apply setting not saved', err);
-        sendResponse({ ok: false, reason: 'storage write failed' });
+      }).catch(err => {
+        reportFailure('setAutoApplyLoudness failed', err);
+        sendResponse({ ok: false, reason: 'request failed' });
       });
       return true;
     }

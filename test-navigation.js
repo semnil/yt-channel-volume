@@ -1287,6 +1287,30 @@ async function runTests() {
   ytcv._set('currentLoudnessDb', null);
   ytcv._set('currentAutoApplyLoudnessVideo', false);
 
+  // A throw from the apply the handler runs after the write is the same
+  // problem as a rejected write: the popup is left waiting.
+  // A fresh element forces the chain to be rebuilt, which is where another
+  // extension owning the <video> surfaces.
+  const contestedCtx = ytcv.state.audioCtx;
+  const realCreateSource = contestedCtx.createMediaElementSource;
+  contestedCtx.createMediaElementSource = () => {
+    throw new Error('InvalidStateError: already connected');
+  };
+  const videoBeforeThrow = mockVideoEl;
+  mockVideoEl = { id: 'contested-video' };
+  ytcv._set('currentLoudnessDb', -6);
+  const failedApplyToggle = await simulateRuntimeMessage({
+    type: 'setAutoApplyLoudness', channelId: 'UCwritefail', videoType: 'video', enabled: true
+  });
+  assert(failedApplyToggle?.ok === false,
+    'a throw from the apply after the write still answers the popup');
+  contestedCtx.createMediaElementSource = realCreateSource;
+  mockVideoEl = videoBeforeThrow;
+  ytcv._set('currentLoudnessDb', null);
+  await simulateRuntimeMessage({
+    type: 'setAutoApplyLoudness', channelId: 'UCwritefail', videoType: 'video', enabled: false
+  });
+
   // One rejection must not poison the queue every later save runs through.
   const recovered = await simulateRuntimeMessage({
     type: 'setGain', channelId: 'UCwritefail', gain: 0.44
@@ -1351,6 +1375,37 @@ async function runTests() {
     'the migration folds onto what storage holds now, not onto its own snapshot');
   assert(mockStorage['channelVolumes']['UCinflight'].autoApplyLoudnessVideo === false,
     'the concurrent save is still pinned against the all-channel default');
+
+  // The learned value is older than anything written while the fold was
+  // reading it, so it must not be folded over the newer gain.
+  mockStorage = {
+    autoLoudnessSettings: { targetLufs: -18 },
+    channelVolumes: {
+      'UCnewer': { name: 'Newer', autoApplyLoudnessLive: true, gainLive: 0.4 }
+    },
+    'autoLoudnessFallback:UCnewer:live': 0.8
+  };
+  const foldingLearned = migrateLegacyAutoGains();
+  const newerSave = ytcv.saveChannelGain('UCnewer', 'Newer', 0.9, 'live', '', true);
+  await Promise.all([foldingLearned, newerSave]);
+  assert(mockStorage['channelVolumes']['UCnewer'].gainLive === 0.9,
+    'a gain written during the fold is not overwritten by the learned value');
+
+  // Auto saves a gain with no flag — the same shape the fold reads as manual.
+  // A channel that only appears while the fold is in flight is Auto's.
+  mockStorage = {
+    autoLoudnessSettings: { targetLufs: -18, autoApplyLoudnessVideoDefault: true },
+    channelVolumes: {}
+  };
+  const foldingAgain = migrateLegacyAutoGains();
+  const autoSaveDuringFold = ytcv.saveChannelGain('UCarrived', 'Arrived', 0.42, 'video', '');
+  await Promise.all([foldingAgain, autoSaveDuringFold]);
+  const arrived = mockStorage['channelVolumes']['UCarrived'];
+  assert(arrived.gainVideo === 0.42, 'the gain Auto stored during the fold is kept');
+  assert(!('autoApplyLoudnessVideo' in arrived),
+    'a gain that arrived after the snapshot is not read as a manual save');
+  assert(resolveAutoApplySetting(arrived, 'video', true) === true,
+    'that channel keeps following the all-channel default');
 
   section('Upgrade: a gain saved before Auto existed survives the all-channel default');
   // Released 1.0.4 storage: a saved gain, no Auto flag, no learned Auto key.

@@ -149,23 +149,31 @@ async function migrateLegacyAutoGains() {
     live: settings.autoApplyLoudnessLiveDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS
   };
   const legacyAggregate = stored[LEGACY_AUTO_FALLBACKS_KEY] || {};
+  const snapshot = stored[CHANNEL_VOLUMES_KEY] || {};
 
   // Queued like every other channel-map write, and carrying the mark in the
   // same set: a profile can never end up with the gains unified and the mark
   // missing, because the next run would then pin Auto's own gains OFF. The
   // channel map is re-read inside the queue, so a gain saved while the legacy
-  // keys were being read is folded rather than rolled back.
+  // keys were being read survives — every decision below is taken from the
+  // snapshot, because a gain that arrived after it is one Auto stored and
+  // carries no flag either, which is indistinguishable from a manual save.
   await updateChannelVolumes(all => {
-    for (const entry of Object.values(all)) {
+    for (const [channelId, entry] of Object.entries(all)) {
+      const saved = snapshot[channelId];
+      if (!saved) continue;
       for (const videoType of ['video', 'live']) {
+        if (hasExplicitAutoApply(saved, videoType)) continue;
+        if (getChannelGain(saved, videoType) === null) continue;
         if (hasExplicitAutoApply(entry, videoType)) continue;
-        if (getChannelGain(entry, videoType) === null) continue;
         setChannelAutoApply(entry, videoType, false);
       }
     }
 
     for (const [channelId, entry] of Object.entries(all)) {
+      const saved = snapshot[channelId];
       for (const videoType of ['video', 'live']) {
+        if (getChannelGain(entry, videoType) !== getChannelGain(saved, videoType)) continue;
         if (!resolveAutoApplySetting(entry, videoType, defaults[videoType])) continue;
         const granularKey =
           `${LEGACY_AUTO_FALLBACK_KEY_PREFIX}${channelId}:${videoType}`;
