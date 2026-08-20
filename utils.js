@@ -2,8 +2,12 @@
 
 const SETTINGS_KEY = 'autoLoudnessSettings';
 const CHANNEL_VOLUMES_KEY = 'channelVolumes';
+// Legacy aggregate fallback storage, retained for read compatibility.
+const AUTO_FALLBACKS_KEY = 'autoLoudnessFallbacks';
+const AUTO_FALLBACK_KEY_PREFIX = 'autoLoudnessFallback:';
 const YT_REFERENCE_LUFS = -14;
 const DEFAULT_TARGET_LUFS = -18;
+const DEFAULT_AUTO_APPLY_LOUDNESS = false;
 
 function gainToPercent(gain) { return Math.round(gain * 100); }
 function percentToGain(pct) { return pct / 100; }
@@ -21,6 +25,54 @@ function msg(key, substitutions) {
 function formatGain(gain, displayUnit) {
   if (displayUnit === 'dB') return { text: gainToDb(gain), unit: ' dB' };
   return { text: String(gainToPercent(gain)), unit: '%' };
+}
+
+function formatAutoFallback(gain, displayUnit, autoLabel = 'Auto') {
+  const formatted = formatGain(gain ?? 1.0, displayUnit);
+  return `${autoLabel} (${formatted.text}${formatted.unit})`;
+}
+
+function autoFallbackStorageKey(channelId, videoType) {
+  const type = videoType === 'live' ? 'live' : 'video';
+  return `${AUTO_FALLBACK_KEY_PREFIX}${channelId}:${type}`;
+}
+
+function normalizeStoredGain(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function getStoredAutoFallbackGain(storageData, channelId, videoType) {
+  const storageKey = autoFallbackStorageKey(channelId, videoType);
+  if (Object.prototype.hasOwnProperty.call(storageData, storageKey)) {
+    return normalizeStoredGain(storageData[storageKey]);
+  }
+  const legacyEntry = storageData[AUTO_FALLBACKS_KEY]?.[channelId];
+  const legacyKey = videoType === 'live' ? 'gainLive' : 'gainVideo';
+  return normalizeStoredGain(legacyEntry?.[legacyKey]);
+}
+
+function getChannelGain(entry, videoType) {
+  if (!entry) return null;
+  if ('gain' in entry && !('gainLive' in entry) && !('gainVideo' in entry)) {
+    return entry.gain;
+  }
+  const gainKey = videoType === 'live' ? 'gainLive' : 'gainVideo';
+  return entry[gainKey] ?? null;
+}
+
+function resolveAutoApplySetting(entry, videoType, defaultValue) {
+  if (!entry) return !!defaultValue;
+  const autoKey = videoType === 'live'
+    ? 'autoApplyLoudnessLive'
+    : 'autoApplyLoudnessVideo';
+  if (autoKey in entry) return !!entry[autoKey];
+  if ('autoApplyLoudness' in entry) return !!entry.autoApplyLoudness;
+  if (getChannelGain(entry, videoType) !== null) return false;
+  return !!defaultValue;
+}
+
+function isManualGainLocked(autoApplyEnabled, hasLoudness) {
+  return !!autoApplyEnabled && !!hasLoudness;
 }
 
 function calcGain(loudnessDb, targetLufs) {

@@ -6,9 +6,12 @@ YouTube チャンネルごとに音量を記憶し、動画を開いた時に自
 
 - **チャンネル単位の音量記憶**: 一度設定すれば、同じチャンネルの動画を開くたびに保存済みの音量が自動適用
 - **Content Loudness からの最適音量算出**: YouTube が動画ごとに測定した Content Loudness を読み取り、ターゲット LUFS に基づいて最適なボリュームを算出。ワンクリックでチャンネルに保存
+- **チャンネル別 LUFS 自動適用**: ポップアップには現在視聴中のVideo / Liveに対応するスイッチだけを表示し、チャンネル・種別別にON/OFF。ONの種別ではLUFSを検出できた動画をTarget LUFSに自動調整
+- **全チャンネル既定値**: オプション画面でVideo / Live別にLUFS自動適用の既定値を設定可能。個別Auto設定と手動ゲインが両方ないチャンネル・種別だけが継承
 - **ライブ / 動画で別音量**: 同じチャンネルでもライブ配信 (アーカイブ含む) と通常の動画で異なる音量を設定可能
-- **手動ボリューム調整**: 0〜600% の範囲でスライダーまたはプリセットボタンから設定
+- **手動ボリューム調整**: Autoが検出済みLUFSを適用している場合を除き、0〜600% の範囲でスライダーまたはプリセットボタンから設定
 - **ゲイン表示**: プレイヤーの音量バーの横に現在のゲイン値を表示 (設定で ON/OFF)
+- **フォールバック学習・表示**: LUFSを検出できる動画で算出したゲインを、既存の手動設定を上書きせずチャンネル・種別別のFallbackとして記憶。LUFS未検出時はポップアップのCurrentにFallbackを表示し、Saved Channelsでは`Auto (70%)`の形式で確認可能
 - **日本語/英語**: ブラウザ言語設定で自動切替
 - **外部依存ゼロ**: npm パッケージ・CDN なし。全コード自作
 
@@ -22,16 +25,17 @@ YouTube チャンネルごとに音量を記憶し、動画を開いた時に自
 
 ### 2. 使う
 
-1. チャンネルのアーカイブ動画を開く
-2. ポップアップに表示される Content Loudness と Suggested (推奨ボリューム) を確認
-3. 「チャンネルに適用」ボタンをクリック
-4. 同じチャンネルの他の動画やライブ配信を開くと、保存した音量が自動適用
+1. チャンネルの動画を開く
+2. ポップアップに表示された現在のVideo / Live用「LUFS 自動適用」をONにする
+3. LUFS を検出できる動画では Target LUFS に合わせたゲインが自動適用される
+4. LUFS のないライブ配信などでは、保存済みのチャンネル音量が引き続き適用される
 
 ### 3. 設定
 
 ポップアップの歯車アイコンから設定画面を開く:
 
 - **Target LUFS**: Loudness から算出するゲインの基準値 (デフォルト: -18 LUFS)
+- **全チャンネルのLUFS自動適用**: 個別設定がないチャンネルのVideo / Live別初期値 (デフォルト: OFF)
 - **表示単位**: % または dB
 - **ゲイン表示**: プレイヤー上にゲイン値をオーバーレイ表示 (デフォルト: OFF)
 - **Saved Channels**: 保存済みチャンネルの一覧管理
@@ -45,9 +49,10 @@ page-bridge.js (MAIN world, document_start)
   → postMessage で content.js に中継
 
 content.js (ISOLATED world, document_idle)
-  → postMessage で loudnessDb を受信 (情報表示のみ)
-  → ユーザーが「チャンネルに適用」→ ゲイン算出・チャンネルに保存
-  → 保存済みチャンネルの動画を開く → Web Audio API GainNode でゲイン適用
+  → postMessage で loudnessDb を受信
+  → チャンネルの LUFS 自動適用が ON なら動画ごとのゲインを算出・適用
+  → OFF または LUFS 未検出なら保存済みチャンネルゲインを適用
+  → Web Audio API GainNode で音量を制御
 ```
 
 - YouTube のボリュームスライダーには一切触れない
@@ -58,8 +63,8 @@ content.js (ISOLATED world, document_idle)
 
 ```bash
 # テスト実行
-node test.js              # utils 37件
-node test-navigation.js   # navigation + data integrity 65件
+node test.js
+node test-navigation.js
 
 # アイコン再生成
 python gen_icons.py

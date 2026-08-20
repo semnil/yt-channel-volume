@@ -56,6 +56,87 @@ assert(f.text === gainToDb(0.5), '0.5 dB → text matches gainToDb');
 f = formatGain(0, '%');
 assert(f.text === '0' && f.unit === '%', '0 % → 0%');
 
+section('formatAutoFallback');
+assert(formatAutoFallback(0.7, '%') === 'Auto (70%)', 'saved 0.7 fallback → Auto (70%)');
+assert(formatAutoFallback(null, '%') === 'Auto (100%)', 'missing fallback → Auto (100%)');
+assert(formatAutoFallback(0.5, 'dB', '自動') === '自動 (-6.0 dB)', 'fallback respects display unit and label');
+
+section('auto fallback storage');
+assert(normalizeStoredGain(0.5) === 0.5, 'finite stored gain remains available');
+assert(normalizeStoredGain(NaN) === null, 'non-finite stored gain is rejected');
+const fallbackVideoKey = autoFallbackStorageKey('UCfixture', 'video');
+const fallbackLiveKey = autoFallbackStorageKey('UCfixture', 'live');
+assert(fallbackVideoKey === 'autoLoudnessFallback:UCfixture:video',
+  'video fallback uses a channel/type-specific key');
+assert(fallbackLiveKey === 'autoLoudnessFallback:UCfixture:live',
+  'live fallback uses a channel/type-specific key');
+assert(getStoredAutoFallbackGain({
+  [AUTO_FALLBACKS_KEY]: { UCfixture: { gainVideo: 0.4 } }
+}, 'UCfixture', 'video') === 0.4, 'legacy aggregate fallback remains readable');
+assert(getStoredAutoFallbackGain({
+  [AUTO_FALLBACKS_KEY]: { UCfixture: { gainVideo: 0.4 } },
+  [fallbackVideoKey]: 0.8
+}, 'UCfixture', 'video') === 0.8, 'granular fallback overrides legacy value');
+assert(getStoredAutoFallbackGain({
+  [AUTO_FALLBACKS_KEY]: { UCfixture: { gainVideo: 0.4 } },
+  [fallbackVideoKey]: null
+}, 'UCfixture', 'video') === null, 'granular tombstone clears legacy fallback');
+
+section('getChannelGain');
+assert(getChannelGain({ gainVideo: 0.5, gainLive: 0.7 }, 'video') === 0.5,
+  'typed Video gain is selected');
+assert(getChannelGain({ gainVideo: 0.5, gainLive: 0.7 }, 'live') === 0.7,
+  'typed Live gain is selected');
+assert(getChannelGain({ gain: 0.6 }, 'live') === 0.6,
+  'legacy gain applies to both types when typed gains are absent');
+assert(getChannelGain({ gain: 0.6, gainVideo: 0.5 }, 'live') === null,
+  'mixed storage does not reuse legacy gain for a missing typed gain');
+
+section('resolveAutoApplySetting');
+assert(resolveAutoApplySetting({ gainVideo: 0.5 }, 'video', true) === false,
+  'manual Video gain remains manual when default is ON');
+assert(resolveAutoApplySetting({ gainLive: 0.7 }, 'live', true) === false,
+  'manual Live gain remains manual when default is ON');
+assert(resolveAutoApplySetting({ gainVideo: 0.5 }, 'live', true) === true,
+  'manual Video gain does not block the Live default');
+assert(resolveAutoApplySetting({ gain: 0.6 }, 'video', true) === false,
+  'legacy manual gain remains manual');
+assert(resolveAutoApplySetting({ autoApplyLoudnessVideo: true, gainVideo: 0.5 },
+  'video', false) === true, 'explicit Auto ON overrides a manual fallback gain');
+assert(resolveAutoApplySetting({ autoApplyLoudnessVideo: false },
+  'video', true) === false, 'explicit Auto OFF overrides the global default');
+assert(resolveAutoApplySetting({ name: 'Unconfigured' }, 'video', true) === true,
+  'channel type without Auto or manual gain inherits the default');
+assert(resolveAutoApplySetting({ gain: 0.6, gainVideo: 0.5 }, 'live', true) === true,
+  'mixed storage uses the same typed-gain rule as content preference resolution');
+
+section('isManualGainLocked');
+assert(isManualGainLocked(true, true) === true,
+  'detected loudness locks manual gain while Auto controls playback');
+assert(isManualGainLocked(true, false) === false,
+  'missing loudness keeps manual fallback adjustment available');
+assert(isManualGainLocked(false, true) === false,
+  'manual mode keeps gain adjustment available');
+
+section('manifest content utilities');
+const manifest = JSON.parse(fs.readFileSync('./manifest.json', 'utf8'));
+const isolatedContentScript = manifest.content_scripts.find(script =>
+  script.world !== 'MAIN'
+);
+assert(JSON.stringify(isolatedContentScript?.js) ===
+  JSON.stringify(['utils.js', 'content.js']),
+  'shared utilities load before the isolated content script');
+
+section('options initialization');
+const optionsHtml = fs.readFileSync('./options.html', 'utf8');
+const optionsSrc = fs.readFileSync('./options.js', 'utf8');
+assert(optionsHtml.includes('<body class="initializing">'),
+  'options remain hidden while asynchronous settings load');
+assert(optionsHtml.includes('body.initializing .toggle-switch .slider'),
+  'options toggle transitions are disabled during initialization');
+assert(optionsSrc.includes('}).finally(revealOptions);'),
+  'options reveal after initialization succeeds or fails');
+
 // ── calcGain ─────────────────────────────────────────────────────────
 
 section('calcGain — YouTube normalization');
@@ -117,8 +198,11 @@ assertClose(calcGain(0, -18), Math.pow(10, (-18 - (-14))/20), 0.001, 'loudnessDb
 section('Constants');
 assert(YT_REFERENCE_LUFS === -14, 'YT_REFERENCE_LUFS = -14');
 assert(DEFAULT_TARGET_LUFS === -18, 'DEFAULT_TARGET_LUFS = -18');
+assert(DEFAULT_AUTO_APPLY_LOUDNESS === false, 'DEFAULT_AUTO_APPLY_LOUDNESS = false');
 assert(SETTINGS_KEY === 'autoLoudnessSettings', 'SETTINGS_KEY');
 assert(CHANNEL_VOLUMES_KEY === 'channelVolumes', 'CHANNEL_VOLUMES_KEY');
+assert(AUTO_FALLBACKS_KEY === 'autoLoudnessFallbacks', 'AUTO_FALLBACKS_KEY');
+assert(AUTO_FALLBACK_KEY_PREFIX === 'autoLoudnessFallback:', 'AUTO_FALLBACK_KEY_PREFIX');
 
 // ── Summary ──────────────────────────────────────────────────────────
 

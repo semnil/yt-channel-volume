@@ -23,6 +23,9 @@
   "hintNoChannel": {
     "message": "チャンネル未検出"
   },
+  "hintAutoApplyEnabled": {
+    "message": "この種別は自動適用が有効です"
+  },
   "openOnVideoPage": {
     "message": "動画を再生中に使用してください"
   },
@@ -40,6 +43,15 @@
   },
   "targetLufsDesc": {
     "message": "Loudness から算出するゲインの基準値"
+  },
+  "allChannelsAutoApply": {
+    "message": "全チャンネルの LUFS 自動適用"
+  },
+  "allChannelsAutoApplyDesc": {
+    "message": "個別設定がないチャンネルの既定値"
+  },
+  "autoApplyLoudness": {
+    "message": "LUFS 自動適用"
   },
   "displayUnit": {
     "message": "表示単位"
@@ -73,6 +85,12 @@
   },
   "labelCurrent": {
     "message": "Current"
+  },
+  "labelAuto": {
+    "message": "Auto"
+  },
+  "labelFallback": {
+    "message": "Fallback"
   },
   "colChannel": {
     "message": "Channel"

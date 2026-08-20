@@ -10,6 +10,8 @@
 
   const targetSlider = document.getElementById('targetSlider');
   const targetValueEl = document.getElementById('targetValue');
+  const defaultAutoVideoToggle = document.getElementById('defaultAutoVideoToggle');
+  const defaultAutoLiveToggle = document.getElementById('defaultAutoLiveToggle');
   const unitToggle = document.getElementById('unitToggle');
   const overlayToggle = document.getElementById('overlayToggle');
   const clearAllBtn = document.getElementById('clearAllBtn');
@@ -17,6 +19,8 @@
 
   let displayUnit = '%';
   let targetLufs = DEFAULT_TARGET_LUFS;
+  let defaultAutoApplyVideo = DEFAULT_AUTO_APPLY_LOUDNESS;
+  let defaultAutoApplyLive = DEFAULT_AUTO_APPLY_LOUDNESS;
 
   function fmtGain(gain) {
     const f = formatGain(gain, displayUnit);
@@ -30,6 +34,12 @@
     const s = data[SETTINGS_KEY] || {};
     targetLufs = s.targetLufs ?? DEFAULT_TARGET_LUFS;
     displayUnit = s.displayUnit || '%';
+    defaultAutoApplyVideo =
+      s.autoApplyLoudnessVideoDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS;
+    defaultAutoApplyLive =
+      s.autoApplyLoudnessLiveDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS;
+    defaultAutoVideoToggle.checked = defaultAutoApplyVideo;
+    defaultAutoLiveToggle.checked = defaultAutoApplyLive;
     overlayToggle.checked = !!s.showGainOverlay;
     targetSlider.value = targetLufs;
     targetValueEl.textContent = targetLufs + ' LUFS';
@@ -49,6 +59,13 @@
     });
   }
 
+  function resolveAutoApply(entry, videoType) {
+    const defaultValue = videoType === 'live'
+      ? defaultAutoApplyLive
+      : defaultAutoApplyVideo;
+    return resolveAutoApplySetting(entry, videoType, defaultValue);
+  }
+
   // ── Channel list ───────────────────────────────────────────────────
 
   async function renderChannels() {
@@ -60,6 +77,15 @@
       channelListEl.innerHTML = '<div class="empty-msg">' + esc(msg('noSavedChannels')) + '</div>';
       return;
     }
+
+    const fallbackKeys = entries.flatMap(([id]) => [
+      autoFallbackStorageKey(id, 'video'),
+      autoFallbackStorageKey(id, 'live')
+    ]);
+    const fallbackData = await chrome.storage.local.get([
+      AUTO_FALLBACKS_KEY,
+      ...fallbackKeys
+    ]);
 
     entries.sort((a, b) => a[1].name.localeCompare(b[1].name));
 
@@ -77,16 +103,26 @@
       const name = entry.name || id;
       const url = entry.url;
       // Support old format (single gain) and new format (gainLive/gainVideo)
-      const gainLive = entry.gainLive ?? entry.gain ?? null;
-      const gainVideo = entry.gainVideo ?? entry.gain ?? null;
+      const gainLive = getChannelGain(entry, 'live');
+      const gainVideo = getChannelGain(entry, 'video');
+      const fallbackLive = getStoredAutoFallbackGain(fallbackData, id, 'live') ?? gainLive;
+      const fallbackVideo = getStoredAutoFallbackGain(fallbackData, id, 'video') ?? gainVideo;
+      const autoVideo = resolveAutoApply(entry, 'video');
+      const autoLive = resolveAutoApply(entry, 'live');
+      const videoText = autoVideo
+        ? formatAutoFallback(fallbackVideo, displayUnit, msg('labelAuto'))
+        : (gainVideo !== null ? fmtGain(gainVideo) : '—');
+      const liveText = autoLive
+        ? formatAutoFallback(fallbackLive, displayUnit, msg('labelAuto'))
+        : (gainLive !== null ? fmtGain(gainLive) : '—');
       const tr = document.createElement('tr');
       const nameHtml = url
         ? `<a class="ch-link" href="${esc(url)}" target="_blank">${esc(name)}</a>`
         : esc(name);
       tr.innerHTML = `
         <td class="ch-name">${nameHtml}</td>
-        <td class="ch-vol">${gainVideo !== null ? fmtGain(gainVideo) : '—'}</td>
-        <td class="ch-vol">${gainLive !== null ? fmtGain(gainLive) : '—'}</td>
+        <td class="ch-vol${autoVideo ? ' auto' : ''}">${esc(videoText)}</td>
+        <td class="ch-vol${autoLive ? ' auto' : ''}">${esc(liveText)}</td>
         <td style="text-align:right"><button class="ch-del" data-id="${esc(id)}" title="${esc(msg('delete'))}">×</button></td>
       `;
       tbody.appendChild(tr);
@@ -102,7 +138,11 @@
         const d = await chrome.storage.local.get(CHANNEL_VOLUMES_KEY);
         const obj = d[CHANNEL_VOLUMES_KEY] || {};
         delete obj[id];
-        await chrome.storage.local.set({ [CHANNEL_VOLUMES_KEY]: obj });
+        await chrome.storage.local.set({
+          [CHANNEL_VOLUMES_KEY]: obj,
+          [autoFallbackStorageKey(id, 'video')]: null,
+          [autoFallbackStorageKey(id, 'live')]: null
+        });
         renderChannels();
       });
     });
@@ -119,13 +159,51 @@
     saveSetting('targetLufs', targetLufs);
   });
 
+  defaultAutoVideoToggle.addEventListener('change', async () => {
+    const previous = defaultAutoApplyVideo;
+    const enabled = defaultAutoVideoToggle.checked;
+    defaultAutoVideoToggle.disabled = true;
+    try {
+      await saveSetting('autoApplyLoudnessVideoDefault', enabled);
+      defaultAutoApplyVideo = enabled;
+      await renderChannels();
+    } catch (_) {
+      defaultAutoVideoToggle.checked = previous;
+    } finally {
+      defaultAutoVideoToggle.disabled = false;
+    }
+  });
+
+  defaultAutoLiveToggle.addEventListener('change', async () => {
+    const previous = defaultAutoApplyLive;
+    const enabled = defaultAutoLiveToggle.checked;
+    defaultAutoLiveToggle.disabled = true;
+    try {
+      await saveSetting('autoApplyLoudnessLiveDefault', enabled);
+      defaultAutoApplyLive = enabled;
+      await renderChannels();
+    } catch (_) {
+      defaultAutoLiveToggle.checked = previous;
+    } finally {
+      defaultAutoLiveToggle.disabled = false;
+    }
+  });
+
   overlayToggle.addEventListener('change', () => {
     saveSetting('showGainOverlay', overlayToggle.checked);
   });
 
   clearAllBtn.addEventListener('click', async () => {
     if (!confirm(msg('clearAllConfirm'))) return;
-    await chrome.storage.local.set({ [CHANNEL_VOLUMES_KEY]: {} });
+    const stored = await chrome.storage.local.get(null);
+    const fallbackKeys = Object.keys(stored).filter(key =>
+      key.startsWith(AUTO_FALLBACK_KEY_PREFIX)
+    );
+    if (fallbackKeys.length) await chrome.storage.local.remove(fallbackKeys);
+    await chrome.storage.local.set({
+      [CHANNEL_VOLUMES_KEY]: {},
+      [AUTO_FALLBACKS_KEY]: {}
+    });
     renderChannels();
   });
 
@@ -143,7 +221,10 @@
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local') return;
-    if (changes[CHANNEL_VOLUMES_KEY]) {
+    const fallbackChanged = Object.keys(changes).some(key =>
+      key === AUTO_FALLBACKS_KEY || key.startsWith(AUTO_FALLBACK_KEY_PREFIX)
+    );
+    if (changes[CHANNEL_VOLUMES_KEY] || fallbackChanged) {
       renderChannels();
     }
     if (changes[SETTINGS_KEY]) {
@@ -158,12 +239,31 @@
         updateUnitButtons();
         renderChannels();
       }
+      const nextDefaultVideo =
+        s.autoApplyLoudnessVideoDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS;
+      const nextDefaultLive =
+        s.autoApplyLoudnessLiveDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS;
+      if (nextDefaultVideo !== defaultAutoApplyVideo ||
+          nextDefaultLive !== defaultAutoApplyLive) {
+        defaultAutoApplyVideo = nextDefaultVideo;
+        defaultAutoApplyLive = nextDefaultLive;
+        defaultAutoVideoToggle.checked = defaultAutoApplyVideo;
+        defaultAutoLiveToggle.checked = defaultAutoApplyLive;
+        renderChannels();
+      }
     }
   });
 
   // ── Init ───────────────────────────────────────────────────────────
 
+  function revealOptions() {
+    void document.body.offsetWidth;
+    requestAnimationFrame(() => {
+      document.body.classList.remove('initializing');
+    });
+  }
+
   loadSettings().then(() => {
-    renderChannels();
-  });
+    return renderChannels();
+  }).finally(revealOptions);
 })();

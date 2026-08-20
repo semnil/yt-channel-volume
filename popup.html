@@ -11,6 +11,9 @@ body {
   color: #e1e1e1;
   background: #1a1a2e;
 }
+body.initializing { visibility: hidden; }
+body.initializing .toggle-switch .slider,
+body.initializing .toggle-switch .slider::before { transition: none; }
 
 .header {
   padding: 12px 16px 8px;
@@ -88,6 +91,19 @@ body {
   text-transform: uppercase;
   letter-spacing: 0.3px;
 }
+.fallback-badge {
+  display: block;
+  width: fit-content;
+  margin-top: 2px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  color: #f9ca24;
+  background: #332f1d;
+  font-size: 8px;
+  line-height: 1.2;
+  text-transform: none;
+  letter-spacing: 0;
+}
 .loudness-card .value {
   font-size: 17px;
   font-weight: 700;
@@ -103,6 +119,66 @@ body {
   font-weight: 400;
   color: #888;
   margin-left: 1px;
+}
+
+/* ── Per-channel automatic LUFS ─────────────────── */
+
+.auto-section {
+  padding: 8px 16px;
+  border-bottom: 1px solid #2a2a4a;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.auto-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #ccc;
+}
+.auto-toggles {
+  display: flex;
+  align-items: center;
+}
+.toggle-switch {
+  position: relative;
+  width: 36px;
+  height: 36px;
+  margin: -8px 0;
+  flex-shrink: 0;
+}
+.toggle-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.toggle-switch .slider {
+  position: absolute;
+  inset: 8px 0;
+  background: #2a2a4a;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.toggle-switch .slider::before {
+  content: '';
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  left: 3px;
+  top: 3px;
+  background: #888;
+  border-radius: 50%;
+  transition: transform 0.2s, background 0.2s;
+}
+.toggle-switch input:checked + .slider { background: #1b3a4b; }
+.toggle-switch input:checked + .slider::before {
+  transform: translateX(16px);
+  background: #4ecdc4;
+}
+.toggle-switch input:disabled + .slider {
+  cursor: default;
+  opacity: 0.45;
 }
 
 /* ── Apply button ──────────────────────────────── */
@@ -181,6 +257,13 @@ body {
   cursor: pointer;
   border: 2px solid #1a1a2e;
 }
+.slider-row input[type="range"]:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.slider-row input[type="range"]:disabled::-webkit-slider-thumb {
+  cursor: not-allowed;
+}
 .slider-value {
   min-width: 42px;
   text-align: right;
@@ -211,6 +294,12 @@ body {
   background: #ff6b9d;
   color: #fff;
 }
+.presets button:disabled,
+.presets button:disabled:hover {
+  color: #666;
+  background: #22223d;
+  cursor: not-allowed;
+}
 
 .status-msg {
   padding: 20px 16px;
@@ -219,7 +308,7 @@ body {
 }
 </style>
 </head>
-<body>
+<body class="initializing">
 <div class="header">
   <h1>YT Channel Volume</h1>
   <button id="settingsBtn" class="settings-link" title="Settings">&#9881;</button>
@@ -241,9 +330,26 @@ body {
         <div id="suggestedVol" class="value suggested unknown">---</div>
       </div>
       <div class="loudness-card">
-        <div class="label" data-i18n="labelCurrent"></div>
+        <div class="label">
+          <span data-i18n="labelCurrent"></span>
+          <span id="fallbackBadge" class="fallback-badge" style="display:none" data-i18n="labelFallback"></span>
+        </div>
         <div id="currentVol" class="value current unknown">---</div>
       </div>
+    </div>
+  </div>
+
+  <div class="auto-section">
+    <div id="autoApplyLabel" class="auto-label" data-i18n="autoApplyLoudness"></div>
+    <div class="auto-toggles">
+      <label id="autoVideoControl" class="toggle-switch">
+        <input type="checkbox" id="autoApplyVideoToggle" aria-labelledby="autoApplyLabel" disabled>
+        <span class="slider"></span>
+      </label>
+      <label id="autoLiveControl" class="toggle-switch" style="display:none">
+        <input type="checkbox" id="autoApplyLiveToggle" aria-labelledby="autoApplyLabel" disabled>
+        <span class="slider"></span>
+      </label>
     </div>
   </div>
 
