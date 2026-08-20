@@ -2,6 +2,7 @@
 // Run: node test-navigation.js
 
 const fs = require('fs');
+const vm = require('vm');
 
 let passed = 0, failed = 0;
 function assert(condition, msg) {
@@ -187,11 +188,8 @@ globalThis.AudioContext = class {
 
 globalThis.__TEST_YTCV__ = true;
 
-const utilsSrc = fs.readFileSync('./utils.js', 'utf8')
-  .replace(/^(const|let) /gm, 'var ');
-eval(utilsSrc);
-const contentSrc = fs.readFileSync('./content.js', 'utf8');
-eval(contentSrc);
+vm.runInThisContext(fs.readFileSync('./utils.js', 'utf8'), { filename: 'utils.js' });
+vm.runInThisContext(fs.readFileSync('./content.js', 'utf8'), { filename: 'content.js' });
 
 const ytcv = globalThis.__YTCV__;
 assert(!!ytcv, 'Test export available');
