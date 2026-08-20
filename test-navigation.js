@@ -118,11 +118,27 @@ globalThis.URL = class {
 };
 
 // Chrome API mock
+// runtime.sendMessage carries two things: popup notifications, and the channel
+// writes background.js performs. Both are delivered as the browser does, so a
+// test exercises the real service-worker path rather than a stand-in.
+let mockWorkerListeners = [];
 globalThis.chrome = {
   runtime: {
     id: 'test-extension-id',
     sendMessage(message) {
       mockSentMessages.push(message);
+      for (const fn of mockWorkerListeners) {
+        let response;
+        const handled = fn(message, {}, r => { response = r; });
+        if (!handled) continue;
+        return new Promise(resolve => {
+          const settle = () => {
+            if (response === undefined) { setTimeout(settle, 1); return; }
+            resolve(response);
+          };
+          settle();
+        });
+      }
       return Promise.resolve();
     },
     onMessage: {
@@ -198,6 +214,20 @@ mockStorage['autoLoudnessFallback:UCboot:video'] = 0.62;
 mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCboot' };
 
 vm.runInThisContext(fs.readFileSync('./utils.js', 'utf8'), { filename: 'utils.js' });
+
+// background.js pulls utils.js in with importScripts, which this context has
+// already evaluated. Its listener registers on the worker side of sendMessage.
+globalThis.importScripts = () => {};
+const workerChrome = {
+  runtime: { onMessage: { addListener(fn) { mockWorkerListeners.push(fn); } } }
+};
+(function loadWorker() {
+  const realChrome = globalThis.chrome;
+  globalThis.chrome = { ...realChrome, runtime: { ...realChrome.runtime, ...workerChrome.runtime } };
+  vm.runInThisContext(fs.readFileSync('./background.js', 'utf8'), { filename: 'background.js' });
+  globalThis.chrome = realChrome;
+})();
+
 vm.runInThisContext(fs.readFileSync('./content.js', 'utf8'), { filename: 'content.js' });
 
 const ytcv = globalThis.__YTCV__;
@@ -1244,6 +1274,86 @@ async function runTests() {
     'Auto stores its calculated gain on an inherited channel');
   assert(!('autoApplyLoudnessVideo' in inheritedEntry),
     'storing the gain does not pin the inherited default');
+
+  section('Single writer: overlapping saves keep both channels');
+  mockStorage['channelVolumes'] = {};
+  const realGetForOverlap = chrome.storage.local.get;
+  let releaseReads;
+  const readsHeld = new Promise(resolve => { releaseReads = resolve; });
+  chrome.storage.local.get = key => readsHeld.then(() => realGetForOverlap(key));
+  const writeA = chrome.runtime.sendMessage({
+    type: 'store:saveChannelGain',
+    channelId: 'UCoverlapA', name: 'Overlap A', gain: 0.5, videoType: 'video', url: ''
+  });
+  const writeB = chrome.runtime.sendMessage({
+    type: 'store:saveChannelGain',
+    channelId: 'UCoverlapB', name: 'Overlap B', gain: 0.7, videoType: 'live', url: ''
+  });
+  await tick();
+  releaseReads();
+  const [replyA, replyB] = await Promise.all([writeA, writeB]);
+  chrome.storage.local.get = realGetForOverlap;
+  assert(replyA?.ok === true && replyB?.ok === true, 'both saves are accepted');
+  assert(mockStorage['channelVolumes']['UCoverlapA']?.gainVideo === 0.5,
+    'the first channel survives a save that overlapped it');
+  assert(mockStorage['channelVolumes']['UCoverlapB']?.gainLive === 0.7,
+    'the second channel survives too');
+
+  section('Sync failure: a throwing apply answers every manual handler');
+  mockStorage['channelVolumes'] = {
+    'UCthrows': { name: 'Throws Ch', gainVideo: 0.5, autoApplyLoudnessVideo: false }
+  };
+  ytcv._set('currentChannel', { id: 'UCthrows', name: 'Throws Ch', url: '' });
+  ytcv._set('currentVideoType', 'video');
+  ytcv._set('currentLoudnessDb', -6);
+  ytcv._set('targetLufs', -18);
+  ytcv._set('currentAutoApplyLoudnessVideo', false);
+  await ytcv.applyPreferredGain();
+  const gainBeforeThrows = ytcv.state.currentGain;
+  const throwingCtx = ytcv.state.audioCtx;
+  const realCreateForThrows = throwingCtx.createMediaElementSource;
+  throwingCtx.createMediaElementSource = () => {
+    throw new Error('InvalidStateError: already connected');
+  };
+  const videoBeforeThrows = mockVideoEl;
+  mockVideoEl = { id: 'owned-by-another-extension' };
+  for (const message of [
+    { type: 'applyLoudness' },
+    { type: 'setGain', channelId: 'UCthrows', gain: 0.3 },
+    { type: 'setGainLive', gain: 0.3 }
+  ]) {
+    const reply = await simulateRuntimeMessage(message);
+    assert(reply?.ok === false, `${message.type} answers when the apply throws`);
+  }
+  throwingCtx.createMediaElementSource = realCreateForThrows;
+  mockVideoEl = videoBeforeThrows;
+  assert(mockStorage['channelVolumes']['UCthrows'].gainVideo === 0.5,
+    'nothing was stored for a manual save whose apply threw');
+
+  section('Storage failure: playback and storage do not diverge');
+  mockStorage['channelVolumes'] = {
+    'UCagree': { name: 'Agree Ch', gainVideo: 0.5, autoApplyLoudnessVideo: false }
+  };
+  ytcv._set('currentChannel', { id: 'UCagree', name: 'Agree Ch', url: '' });
+  ytcv._set('currentVideoType', 'video');
+  ytcv._set('currentLoudnessDb', null);
+  ytcv._set('currentAutoApplyLoudnessVideo', false);
+  await ytcv.applyPreferredGain();
+  assert(ytcv.state.currentGain === 0.5, 'the saved gain is playing');
+  const realSetForAgree = chrome.storage.local.set;
+  chrome.storage.local.set = () => Promise.reject(new Error('storage write failed'));
+  const rejectedSave = await simulateRuntimeMessage({
+    type: 'setGain', channelId: 'UCagree', gain: 0.3
+  });
+  chrome.storage.local.set = realSetForAgree;
+  assert(rejectedSave?.ok === false, 'the rejected save is reported');
+  assert(ytcv.state.currentGain === 0.5,
+    'playback returns to the level storage still holds');
+  assert(ytcv.state.gainNode.gain.value === 0.5, 'the GainNode returns with it');
+  assert(ytcv.getState().gain === 0.5,
+    'the popup reads the level that is actually stored');
+  assert(mockStorage['channelVolumes']['UCagree'].gainVideo === 0.5,
+    'the stored gain is unchanged');
 
   section('Storage failure: a rejected write is answered, not dropped');
   mockStorage['channelVolumes'] = { 'UCwritefail': { name: 'Write Fail', gainVideo: 0.5 } };

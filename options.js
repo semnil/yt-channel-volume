@@ -59,6 +59,14 @@
     });
   }
 
+  // The service worker performs every channel write; see background.js.
+  async function requestChannelWrite(type, payload = {}) {
+    const response = await chrome.runtime.sendMessage({
+      type: 'store:' + type, ...payload
+    });
+    if (!response?.ok) throw new Error(response?.reason || 'channel write failed');
+  }
+
   function resolveAutoApply(entry, videoType) {
     const defaultValue = videoType === 'live'
       ? defaultAutoApplyLive
@@ -124,7 +132,11 @@
     channelListEl.querySelectorAll('.ch-del').forEach(btn => {
       btn.addEventListener('click', async () => {
         const id = btn.dataset.id;
-        await updateChannelVolumes(all => { delete all[id]; });
+        try {
+          await requestChannelWrite('deleteChannel', { channelId: id });
+        } catch (err) {
+          console.error('[YTCV] channel not deleted', err);
+        }
         renderChannels();
       });
     });
@@ -177,9 +189,11 @@
 
   clearAllBtn.addEventListener('click', async () => {
     if (!confirm(msg('clearAllConfirm'))) return;
-    await updateChannelVolumes(all => {
-      for (const id of Object.keys(all)) delete all[id];
-    });
+    try {
+      await requestChannelWrite('clearChannels');
+    } catch (err) {
+      console.error('[YTCV] channels not cleared', err);
+    }
     renderChannels();
   });
 
@@ -236,7 +250,7 @@
     });
   }
 
-  migrateLegacyAutoGains()
+  requestChannelWrite('migrateLegacyGains')
     // The table below reads channelVolumes either way; an un-folded profile
     // shows `Auto (—)` for the types whose gain is still in a legacy key.
     .catch(err => console.error('[YTCV] legacy auto gains not folded in', err))

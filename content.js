@@ -101,26 +101,26 @@
     return all[channelId] || null;
   }
 
-  // A name equal to the channel ID is a placeholder the bridge falls back to
-  // before the author is known. Auto saves a gain for every video, so such a
-  // placeholder must never replace a name already stored for the channel.
-  function applyChannelIdentity(entry, channelId, name, url) {
-    if (name && name !== channelId) entry.name = name;
-    else if (!entry.name) entry.name = channelId;
-    if (url) entry.url = url;
+  // Channel writes go to the service worker, the one context that performs
+  // them. A read-modify-write done here would race the other tabs, which all
+  // hold the same channel map.
+  async function requestChannelWrite(type, payload) {
+    if (!isContextValid()) return;
+    const response = await chrome.runtime.sendMessage({
+      type: 'store:' + type, ...payload
+    });
+    if (!response?.ok) {
+      throw new Error(response?.reason || 'channel write failed');
+    }
   }
 
   // `autoApply` pins the Auto state that was in effect for a manual save, so
   // an all-channel default cannot later take over a gain the user chose. Auto
   // writes its own gain without it and keeps following the default.
   function saveChannelGain(channelId, name, gain, videoType, url, autoApply) {
-    if (!channelId || !isContextValid()) return Promise.resolve();
-    return updateChannelVolumes(all => {
-      const entry = all[channelId] || {};
-      applyChannelIdentity(entry, channelId, name, url);
-      setChannelGain(entry, videoType, gain);
-      if (autoApply !== undefined) setChannelAutoApply(entry, videoType, autoApply);
-      all[channelId] = entry;
+    if (!channelId) return Promise.resolve();
+    return requestChannelWrite('saveChannelGain', {
+      channelId, name, gain, videoType, url, autoApply
     });
   }
 
@@ -131,20 +131,15 @@
   }
 
   function saveChannelAutoApply(channelId, name, enabled, videoType, url) {
-    if (!channelId || !isContextValid()) return Promise.resolve();
-    return updateChannelVolumes(all => {
-      const entry = all[channelId] || {};
-      applyChannelIdentity(entry, channelId, name, url);
-      // Store both true and false so an explicit per-channel choice can
-      // override the all-channel default without modifying any saved gain.
-      setChannelAutoApply(entry, videoType, enabled);
-      all[channelId] = entry;
+    if (!channelId) return Promise.resolve();
+    return requestChannelWrite('saveChannelAutoApply', {
+      channelId, name, enabled, videoType, url
     });
   }
 
   function deleteChannelGain(channelId) {
-    if (!channelId || !isContextValid()) return Promise.resolve();
-    return updateChannelVolumes(all => { delete all[channelId]; });
+    if (!channelId) return Promise.resolve();
+    return requestChannelWrite('deleteChannel', { channelId });
   }
 
   // ── Loudness from page-bridge.js (MAIN world) ─────────────────────
@@ -229,21 +224,12 @@
       // corruption on SPA navigation.
       if (event.data.author && isContextValid()) {
         const authorName = event.data.author;
-        // Queued with the gain writes: Auto stores a gain for this channel from
-        // the same message, and whichever wrote second used to drop the other.
-        // Enqueued first, so the adoption is decided before that gain lands.
-        updateChannelVolumes(all => {
-          if (all[bridgeChId]) return;
-          const match = Object.entries(all).find(([k, v]) =>
-            k.startsWith('@') && v.name === authorName
-          );
-          if (!match) return;
-          const [oldKey, val] = match;
-          all[bridgeChId] = {
-            ...val,
-            url: 'https://www.youtube.com/channel/' + bridgeChId
-          };
-          delete all[oldKey];
+        // Sent before Auto's own save for this message, so the worker decides
+        // the adoption against a map that does not hold that gain yet.
+        requestChannelWrite('adoptHandleEntry', {
+          channelId: bridgeChId,
+          authorName,
+          url: 'https://www.youtube.com/channel/' + bridgeChId
         }).catch(err => reportFailure('handle entry not adopted', err));
       }
     }
@@ -642,7 +628,7 @@
   // Fold any pre-unification Auto gains into channelVolumes before the first
   // apply reads them. A concurrent tab writing the same result is harmless.
   if (isContextValid()) {
-    migrateLegacyAutoGains()
+    requestChannelWrite('migrateLegacyGains', {})
       // Applying a saved gain still beats leaving playback unattenuated, so a
       // failed fold is logged and the apply proceeds on the old shape.
       .catch(err => reportFailure('legacy auto gains not folded in', err))
@@ -711,7 +697,39 @@
 
   // ── Message handler (from popup) ───────────────────────────────────
 
+  // A manual gain is only a gain once it is stored: leaving playback on a
+  // value storage refused would show the user a level that reverts at the
+  // next navigation.
+  function restoreGainAfterFailedSave(previousGain) {
+    try {
+      commitGain(previousGain);
+    } catch (err) {
+      reportFailure('gain not restored after a failed save', err);
+    }
+  }
+
+  function respondOnce(sendResponse) {
+    let answered = false;
+    return payload => {
+      if (answered) return;
+      answered = true;
+      sendResponse(payload);
+    };
+  }
+
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+    const reply = respondOnce(sendResponse);
+    try {
+      return handleMessage(msg, reply);
+    } catch (err) {
+      // commitGain and the DOM reads around it run synchronously here.
+      reportFailure((msg?.type || 'message') + ' failed', err);
+      reply({ ok: false, reason: 'request failed' });
+      return true;
+    }
+  });
+
+  function handleMessage(msg, sendResponse) {
     if (msg.type === 'getState') {
       sendResponse(getState());
       return true;
@@ -730,12 +748,14 @@
       // current name is still empty or a channel-ID placeholder.
       fillCurrentChannelNameFromDomFallback();
       const gain = calcGainFromLoudness(currentLoudnessDb);
+      const gainBeforeApply = currentGain;
       commitGain(gain);
       saveManualChannelGain(currentChannel.id, currentChannel.name, gain, currentVideoType, currentChannel.url).then(() => {
         notifyPopup();
         sendResponse({ ok: true, gain });
       }).catch(err => {
         reportFailure('applyLoudness failed', err);
+        restoreGainAfterFailedSave(gainBeforeApply);
         sendResponse({ ok: false, reason: 'request failed' });
       });
       return true;
@@ -758,12 +778,14 @@
       }
       const { channelId, gain } = msg;
       fillCurrentChannelNameFromDomFallback();
+      const gainBeforeSave = currentGain;
       commitGain(gain);
       saveManualChannelGain(channelId, currentChannel.name, gain, currentVideoType, currentChannel.url).then(() => {
         notifyPopup();
         sendResponse({ ok: true });
       }).catch(err => {
         reportFailure('setGain failed', err);
+        restoreGainAfterFailedSave(gainBeforeSave);
         sendResponse({ ok: false, reason: 'request failed' });
       });
       return true;
@@ -873,7 +895,7 @@
       }
       return true;
     }
-  });
+  }
 
   // Test-only: expose internals for state transition testing
   if (typeof globalThis.__TEST_YTCV__ !== 'undefined') {

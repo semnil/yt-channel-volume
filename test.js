@@ -159,9 +159,42 @@ assert(optionsHtml.includes('body.initializing .toggle-switch .slider'),
   'options toggle transitions are disabled during initialization');
 assert(optionsSrc.includes('.finally(revealOptions);'),
   'options reveal after initialization succeeds or fails');
-assert(optionsSrc.indexOf('migrateLegacyAutoGains()') !== -1 &&
-  optionsSrc.indexOf('migrateLegacyAutoGains()') < optionsSrc.indexOf('.then(renderChannels)'),
-  'options fold legacy Auto gains in before listing saved channels');
+assert(optionsSrc.indexOf("requestChannelWrite('migrateLegacyGains')") !== -1 &&
+  optionsSrc.indexOf("requestChannelWrite('migrateLegacyGains')") <
+    optionsSrc.indexOf('.then(renderChannels)'),
+  'options ask the worker to fold legacy Auto gains in before listing channels');
+
+section('packaging');
+const packSrc = fs.readFileSync('./pack.py', 'utf8');
+const excludeBlock = packSrc.slice(packSrc.indexOf('EXCLUDE = {'), packSrc.indexOf('}', packSrc.indexOf('EXCLUDE = {')));
+const excluded = new Set(Array.from(excludeBlock.matchAll(/'([^']+)'/g), m => m[1]));
+const manifestFiles = [
+  ...(manifest.content_scripts || []).flatMap(script => script.js || []),
+  manifest.background?.service_worker,
+  manifest.options_page,
+  manifest.action?.default_popup,
+  ...Object.values(manifest.action?.default_icon || {}),
+  ...Object.values(manifest.icons || {})
+].filter(Boolean);
+for (const file of manifestFiles) {
+  assert(!excluded.has(file.split('/')[0]) && !excluded.has(file),
+    `${file} is referenced by the manifest and must be packed`);
+  assert(fs.existsSync('./' + file), `${file} exists`);
+}
+
+section('service worker is the single writer');
+const backgroundSrc = fs.readFileSync('./background.js', 'utf8');
+const contentSrc = fs.readFileSync('./content.js', 'utf8');
+assert(manifest.background?.service_worker === 'background.js',
+  'the worker is registered so channel writes have one owner');
+assert(backgroundSrc.includes("importScripts('utils.js')"),
+  'the worker shares the channel write definitions with the pages');
+assert(!/updateChannelVolumes\(/.test(contentSrc) && !/updateChannelVolumes\(/.test(optionsSrc),
+  'no page performs a channel read-modify-write of its own');
+for (const write of Object.keys(CHANNEL_WRITES)) {
+  assert(contentSrc.includes(`'${write}'`) || optionsSrc.includes(`'${write}'`),
+    `channel write ${write} is requested by a page`);
+}
 
 // ── calcGain ─────────────────────────────────────────────────────────
 

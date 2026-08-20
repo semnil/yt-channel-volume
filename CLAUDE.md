@@ -14,6 +14,12 @@ page-bridge.js (MAIN world content script, document_start)
 ├── isLiveContent: videoDetails.isLiveContent を抽出
 └── postMessage → content.js へ loudnessDb + isLiveContent + channelId + author を中継
 
+background.js (service worker)
+├── importScripts('utils.js')
+└── `store:<op>` メッセージを受けて channelVolumes を書く唯一のコンテキスト
+    (saveChannelGain / saveChannelAutoApply / deleteChannel / clearChannels /
+     adoptHandleEntry / migrateLegacyGains)
+
 utils.js → content.js (ISOLATED world content scripts, document_idle)
 ├── postMessage listener: page-bridge.js から loudnessDb 受信
 ├── requestLoudnessWithRetry: on-demand で page-bridge.js にリトライ要求
@@ -41,7 +47,7 @@ utils.js → content.js (ISOLATED world content scripts, document_idle)
 utils.js (shared, content/popup/options で読み込み + test.js)
 ├── Constants: storage keys, YT_REFERENCE_LUFS, DEFAULT_TARGET_LUFS
 ├── Gain utilities: gainToPercent, percentToGain, gainToDb, formatGain, formatAutoGain, calcGain
-├── Storage utilities: isContextValid, updateChannelVolumes, getChannelGain, setChannelGain, normalizeStoredGain, migrateLegacyAutoGains
+├── Storage utilities: isContextValid, updateChannelVolumes, CHANNEL_WRITES, getChannelGain, setChannelGain, applyChannelIdentity, normalizeStoredGain, migrateLegacyAutoGains
 ├── Auto state: resolveAutoApplySetting, setChannelAutoApply, hasExplicitAutoApply, isManualGainLocked
 ├── i18n: msg()
 └── HTML escape: esc()
@@ -84,6 +90,7 @@ options.html / options.js (設定画面、別タブで表示)
 | File | Role |
 |------|------|
 | `manifest.json` | MV3 manifest. permissions: storage, activeTab. host: youtube.com |
+| `background.js` | Service worker. channelVolumes への書き込みを一手に引き受ける (`store:<op>`) |
 | `page-bridge.js` | MAIN world. loudnessDb 抽出 (define/fetch/ytplayer) → postMessage |
 | `content.js` | ISOLATED world. ゲイン管理、Audio chain、チャンネル検出、Storage |
 | `utils.js` | 共通定数・ユーティリティ (popup/options で共有) |
@@ -119,12 +126,13 @@ options.html / options.js (設定画面、別タブで表示)
 - **Channel ID formats**: `UC...` (canonical) が正規 ID。`detectChannel()` は `@handle` を拒否し UC のみ返す。DOM に UC がない場合は bridge の `videoDetails.channelId` を待つ
 - **notifyPopup 重複抑制**: state key 比較で no-op 送信を防止。key には `isLiveNow` を含み、待機→配信開始の遷移でも popup へ通知が発火する
 - **クロスタブ同期**: `chrome.storage.onChanged` で `channelVolumes` 変更を受信。チャンネル・種別別の自動適用フラグと種別別ゲインを即時反映し、リモート削除時は 1.0 にリセット
-- **channelVolumes への書き込み直列化**: `channelVolumes` へ書く経路は全て utils.js の `updateChannelVolumes()` を通す (content.js のゲイン保存・削除・@handle backfill、options.js の削除・全消去、マイグレーション)。read-modify-write を1本のPromiseチェーンに並べ、Autoが動画ごとに保存することで生じる同一ドキュメント内の書き込み重複でエントリが消えるのを防ぐ。マイグレーションもキュー内でマップを読み直すため、実行中に保存されたゲインを巻き戻さない
+- **channelVolumes の書き手は service worker だけ**: content.js / options.js は `chrome.runtime.sendMessage({ type: 'store:<op>' })` で background.js に依頼し、自分では read-modify-write しない。`channelVolumes` は 1 キーにマップ全体が入るため、複数タブが同時に読んで書き戻すと後勝ちで他チャンネルのエントリが消える (Autoが動画ごとに保存するので重なりは日常的に起きる)。worker 側は `updateChannelVolumes()` の Promise チェーンで直列化し、マイグレーションもキュー内でマップを読み直すため実行中に保存されたゲインを巻き戻さない
 - **NaN/Infinity ガード**: ゲイン計算結果が非有限値なら 1.0 にフォールバック
 - **遅延オーディオチェーン**: ゲインが 1.0 (パススルー) の場合は `createMediaElementSource` を呼ばない → Live Caption のちらつきを回避。`connectedVideo` (audio chain) と `_lastProcessedVideo` (検出済み video) を分離管理
 - **triggerApply 設計**: `setTimeout` デバウンスを廃止し、async mutex (`_applyRunning`) で同時実行を防止。`yt-navigate-finish` / `popstate` / `visibilitychange` / observer / 初回ロード の全トリガーから直接呼び出し。バックグラウンドタブの throttle やライブチャットの高頻度 DOM 更新の影響を受けない
 - **ゲインオーバーレイ**: `.ytp-volume-area` にゲイン値を表示。SPA ナビでの DOM 再構築にも対応 (`document.contains` で detach 検知)
-- **失敗を握り潰さない**: popup からのメッセージ処理は保存の reject も本体 (`applyPreferredGain` → `createMediaElementSource` 等) の throw も `.catch` で受け、`reportFailure()` で console へ出した上で `{ ok: false }` を返す (無応答だと popup のトグルが無効のまま固まり、storage と表示が食い違う)。Autoのゲイン保存失敗は再生中のゲインを変えないため、`applyPreferredGain` の中で捕らえて呼び出し元 (`forceDetect` の応答経路) を巻き込まない
+- **失敗を握り潰さない**: メッセージ処理は `handleMessage()` を try/catch で包み、`respondOnce()` で必ず 1 回だけ応答する。`commitGain()` は Promise チェーンより前に同期実行され、他拡張が `<video>` を専有していると `createMediaElementSource` が throw するため、catch が Promise だけを見ていると応答が届かない。失敗は `reportFailure()` で console へ出す。Autoのゲイン保存失敗は再生中のゲインを変えないため、`applyPreferredGain` の中で捕らえて呼び出し元 (`forceDetect` の応答経路) を巻き込まない
+- **手動ゲインは保存できて初めてゲイン**: `setGain` / `applyLoudness` は保存失敗時に `restoreGainAfterFailedSave()` で直前のゲインへ戻す。戻さないと再生中の音量と保存値が食い違い、popup は失敗後に読み直した値 (未保存の新値) を表示して保存済みに見せ、次のナビゲーションで元へ戻る
 - **コンテキスト無効化の表示**: 拡張機能 (本体または別拡張) のリロードで content.js の `chrome.runtime` が無効化されると、popup からの `chrome.tabs.sendMessage` は `Receiving end does not exist` で reject される。Web Audio API と DOM オーバーレイは chrome.* に依存しないため、過去に適用したゲイン表示だけが残り続けて誤解を招く。popup の catch 節は「チャンネル未検出」ではなく `#reloadNeeded` (ja: 「拡張機能と接続できません。ページを再読み込みしてください (F5)」) を表示し、ユーザーに F5 を促す
 
 ## Commands
@@ -155,7 +163,7 @@ python pack.py
 - Channel detection order (UC 限定): `link[rel="canonical"][href*="/channel/"]` → `#owner a[href*="/channel/"]` / `ytd-video-owner-renderer a[href*="/channel/"]` → `meta[itemprop="channelId"]` → page-bridge `videoDetails.channelId`。`@handle` リンクは SPA 遷移中に stale になるため identifier として拒否
 - Display name: bridge `videoDetails.author` が権威ソース。DOM `#owner #channel-name a` はフォールバック
 - SPA ナビ検知: `yt-navigate-finish` + `popstate` + `visibilitychange` + MutationObserver (video 要素変更 + URL video ID 変更)
-- テスト: `node test.js` (utils) + `node test-navigation.js` (navigation P01-P18 + bridge + guard + detectChannel + data integrity + cross-tab sync + per-channel auto LUFS)
+- テスト: `node test.js` (utils + packaging + single-writer 契約) + `node test-navigation.js` (navigation P01-P18 + bridge + guard + detectChannel + data integrity + cross-tab sync + per-channel auto LUFS + storage 失敗経路)。navigation 側は background.js を同じ VM に読み込み、`chrome.runtime.sendMessage` を worker のリスナーへ配線して実際の書き込み経路を通す
 - テスト用 export: `__TEST_YTCV__` フラグで content.js 内部を `globalThis.__YTCV__` に露出。本番では無効
 - Storage keys: `autoLoudnessSettings` (target LUFS, display unit, Video/Live auto defaults), `channelVolumes` (saved channel gains, per-channel auto overrides, URL), `unifiedGains` (マイグレーション済みの印)。legacy `autoLoudnessFallback:<channelId>:<type>` / `autoLoudnessFallbacks` は起動時に畳み込んで削除
 - Storage format: `channelVolumes.{id}` = `{ name, gainLive, gainVideo, autoApplyLoudnessLive, autoApplyLoudnessVideo, url }` (種別ごとの個別自動適用フラグがない場合に全チャンネル既定値を継承。旧 `autoApplyLoudness` は両種別同値、旧 `{ name, gain, url }` は両ゲインとして読み替え)

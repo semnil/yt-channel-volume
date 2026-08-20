@@ -71,6 +71,15 @@ function normalizeStoredGain(value) {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
+// A name equal to the channel ID is the placeholder the bridge falls back to
+// before the author is known. Auto saves a gain for every video, so such a
+// placeholder must never replace a name already stored for the channel.
+function applyChannelIdentity(entry, channelId, name, url) {
+  if (name && name !== channelId) entry.name = name;
+  else if (!entry.name) entry.name = channelId;
+  if (url) entry.url = url;
+}
+
 function gainKeyFor(videoType) {
   return videoType === 'live' ? 'gainLive' : 'gainVideo';
 }
@@ -111,6 +120,58 @@ function hasExplicitAutoApply(entry, videoType) {
   if (!entry) return false;
   return autoApplyKeyFor(videoType) in entry || 'autoApplyLoudness' in entry;
 }
+
+// Every channelVolumes mutation the extension performs. The service worker is
+// the only context that runs them, so two tabs cannot read the map and write
+// back over each other's channel.
+const CHANNEL_WRITES = {
+  saveChannelGain(msg) {
+    return updateChannelVolumes(all => {
+      const entry = all[msg.channelId] || {};
+      applyChannelIdentity(entry, msg.channelId, msg.name, msg.url);
+      setChannelGain(entry, msg.videoType, msg.gain);
+      if (msg.autoApply !== undefined) {
+        setChannelAutoApply(entry, msg.videoType, msg.autoApply);
+      }
+      all[msg.channelId] = entry;
+    });
+  },
+  saveChannelAutoApply(msg) {
+    return updateChannelVolumes(all => {
+      const entry = all[msg.channelId] || {};
+      applyChannelIdentity(entry, msg.channelId, msg.name, msg.url);
+      // Store both true and false so an explicit per-channel choice can
+      // override the all-channel default without modifying any saved gain.
+      setChannelAutoApply(entry, msg.videoType, msg.enabled);
+      all[msg.channelId] = entry;
+    });
+  },
+  deleteChannel(msg) {
+    return updateChannelVolumes(all => { delete all[msg.channelId]; });
+  },
+  clearChannels() {
+    return updateChannelVolumes(all => {
+      for (const channelId of Object.keys(all)) delete all[channelId];
+    });
+  },
+  // Adopts an entry saved under a bare @handle once the player response names
+  // the channel. The name match is what prevents adopting another channel's.
+  adoptHandleEntry(msg) {
+    return updateChannelVolumes(all => {
+      if (all[msg.channelId]) return;
+      const match = Object.entries(all).find(([key, value]) =>
+        key.startsWith('@') && value.name === msg.authorName
+      );
+      if (!match) return;
+      const [handleKey, entry] = match;
+      all[msg.channelId] = { ...entry, url: msg.url };
+      delete all[handleKey];
+    });
+  },
+  migrateLegacyGains() {
+    return migrateLegacyAutoGains();
+  }
+};
 
 function resolveAutoApplySetting(entry, videoType, defaultValue) {
   if (!entry) return !!defaultValue;

@@ -6,6 +6,9 @@
   "default_locale": "ja",
   "permissions": ["storage", "activeTab"],
   "host_permissions": ["*://*.youtube.com/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
   "content_scripts": [
     {
       "matches": ["*://*.youtube.com/*"],
