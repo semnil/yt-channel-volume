@@ -50,7 +50,7 @@ utils.js (shared, content/popup/options で読み込み + test.js)
 popup.html / popup.js
 ├── Loudness / Suggested / Current 表示 (読み取り専用)
 ├── Auto有効・LUFS未検出時はCurrentにFallbackバッジを表示
-├── Video Type バッジ (LIVE / VIDEO)
+├── ライブ配信中のみ表示する LIVE バッジ
 ├── 「チャンネルに適用」ボタン (loudnessDb からゲイン算出・種別ごとに保存)
 ├── 現在視聴中の種別だけ表示する、チャンネル × Video/Live 別「LUFS 自動適用」トグル
 ├── Manual Volume: スライダー (0–600%) + プリセット。Auto有効・LUFS検出済みでは無効、LUFS未検出時はフォールバック調整に使用
