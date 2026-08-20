@@ -124,10 +124,7 @@
     channelListEl.querySelectorAll('.ch-del').forEach(btn => {
       btn.addEventListener('click', async () => {
         const id = btn.dataset.id;
-        const d = await chrome.storage.local.get(CHANNEL_VOLUMES_KEY);
-        const obj = d[CHANNEL_VOLUMES_KEY] || {};
-        delete obj[id];
-        await chrome.storage.local.set({ [CHANNEL_VOLUMES_KEY]: obj });
+        await updateChannelVolumes(all => { delete all[id]; });
         renderChannels();
       });
     });
@@ -180,7 +177,9 @@
 
   clearAllBtn.addEventListener('click', async () => {
     if (!confirm(msg('clearAllConfirm'))) return;
-    await chrome.storage.local.set({ [CHANNEL_VOLUMES_KEY]: {} });
+    await updateChannelVolumes(all => {
+      for (const id of Object.keys(all)) delete all[id];
+    });
     renderChannels();
   });
 
@@ -238,7 +237,9 @@
   }
 
   migrateLegacyAutoGains()
-    .catch(() => {})
+    // The table below reads channelVolumes either way; an un-folded profile
+    // shows `Auto (—)` for the types whose gain is still in a legacy key.
+    .catch(err => console.error('[YTCV] legacy auto gains not folded in', err))
     .then(loadSettings)
     .then(renderChannels)
     .finally(revealOptions);

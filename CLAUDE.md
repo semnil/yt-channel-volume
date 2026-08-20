@@ -34,13 +34,14 @@ utils.js → content.js (ISOLATED world content scripts, document_idle)
 ├── videoType: 'live' (配信/アーカイブ) or 'video' (動画/ショート) で別ゲイン管理
 ├── Cross-tab sync: chrome.storage.onChanged で channelVolumes 変更を受信し、現在チャンネル × videoType のゲインを即適用 (ポーリングなし、自タブ dedup は currentGain 比較)
 └── Storage
-    ├── autoLoudnessSettings: { targetLufs, displayUnit, showGainOverlay, autoApplyLoudnessVideoDefault, autoApplyLoudnessLiveDefault, unifiedGains }
-    └── channelVolumes: { [channelId]: { name, gainLive, gainVideo, autoApplyLoudnessLive, autoApplyLoudnessVideo, url } }
+    ├── autoLoudnessSettings: { targetLufs, displayUnit, showGainOverlay, autoApplyLoudnessVideoDefault, autoApplyLoudnessLiveDefault }
+    ├── channelVolumes: { [channelId]: { name, gainLive, gainVideo, autoApplyLoudnessLive, autoApplyLoudnessVideo, url } }
+    └── unifiedGains: マイグレーション済みの印 (top-level key)
 
 utils.js (shared, content/popup/options で読み込み + test.js)
 ├── Constants: storage keys, YT_REFERENCE_LUFS, DEFAULT_TARGET_LUFS
 ├── Gain utilities: gainToPercent, percentToGain, gainToDb, formatGain, formatAutoGain, calcGain
-├── Storage utilities: getChannelGain, setChannelGain, normalizeStoredGain, migrateLegacyAutoGains
+├── Storage utilities: isContextValid, updateChannelVolumes, getChannelGain, setChannelGain, normalizeStoredGain, migrateLegacyAutoGains
 ├── Auto state: resolveAutoApplySetting, setChannelAutoApply, hasExplicitAutoApply, isManualGainLocked
 ├── i18n: msg()
 └── HTML escape: esc()
@@ -109,7 +110,7 @@ options.html / options.js (設定画面、別タブで表示)
 - **watch ページ限定**: MutationObserver / scheduleApply / AudioContext 生成は `/watch` のみ
 - **チャンネル × 種別保存**: `gainLive` (配信/アーカイブ) と `gainVideo` (動画/ショート/プレミア公開) を別管理。videoType は `videoDetails.isLiveContent` のみで判定し (`isLiveContent ? 'live' : 'video'`)、loudnessDb は判定に使わない。ライブ配信とそのアーカイブは `isLiveContent=true` で live、プレミア公開は `isLiveContent=false` のため video 扱い
 - **YouTube loudness normalization 考慮**: loudnessDb > 0 の場合、YouTube が -14 LUFS に減衰済み → effectiveLufs = -14。loudnessDb <= 0 の場合はそのまま
-- **Storage migration**: 旧形式 `{ gain }` → `{ gainLive, gainVideo }` への自動マイグレーション。`migrateLegacyAutoGains()` が起動時に 1 プロファイル 1 回だけ走り、フラグのない保存済みゲインに明示OFFを記録して旧判定 (保存済みゲイン=暗黙OFF) を保存する。旧 `autoLoudnessFallback:<channelId>:<type>` / `autoLoudnessFallbacks` があればAuto有効な種別の学習値をゲインへ畳み込んで削除する。実行済みの印は `autoLoudnessSettings.unifiedGains` の有無 (Autoもフラグなしでゲインを書くため、2回目が走るとAutoの学習値を明示OFFに固定してしまう)。orphan `@handle` エントリは author 名一致による backfill で UC に統合 (id 形状ベースのマイグレーションは SPA 遷移で cross-channel corruption を引き起こすため廃止)
+- **Storage migration**: 旧形式 `{ gain }` → `{ gainLive, gainVideo }` への自動マイグレーション。`migrateLegacyAutoGains()` が起動時に 1 プロファイル 1 回だけ走り、フラグのない保存済みゲインに明示OFFを記録して旧判定 (保存済みゲイン=暗黙OFF) を保存する。旧 `autoLoudnessFallback:<channelId>:<type>` / `autoLoudnessFallbacks` があればAuto有効な種別の学習値をゲインへ畳み込んで削除する。実行済みの印は top-level の `unifiedGains` キー (Autoもフラグなしでゲインを書くため、2回目が走るとAutoの学習値を明示OFFに固定してしまう。設定オブジェクト内に置くと、マイグレーション前に読んだ設定書き込みが印を消す)。orphan `@handle` エントリは author 名一致による backfill で UC に統合 (id 形状ベースのマイグレーションは SPA 遷移で cross-channel corruption を引き起こすため廃止)
 - **Channel ID 統一**: `detectChannel()` は UC 形式のみ返す。DOM の `@handle` リンクは SPA 遷移中に stale (前チャンネルを指す) になるため identifier として拒否。page-bridge.js の `videoDetails.channelId` (UC 形式) がフォールバック
 - **チャンネル表示名の選択**: bridge の `videoDetails.author` を権威ソースとする (現在の動画の player response 由来で SPA 遷移後も正確)。DOM `getChannelDisplayName()` はフォールバックのみ (stale 可能性あり)
 - **YouTube reference = -14 LUFS**: `contentLUFS = -14 + loudnessDb`
@@ -118,11 +119,12 @@ options.html / options.js (設定画面、別タブで表示)
 - **Channel ID formats**: `UC...` (canonical) が正規 ID。`detectChannel()` は `@handle` を拒否し UC のみ返す。DOM に UC がない場合は bridge の `videoDetails.channelId` を待つ
 - **notifyPopup 重複抑制**: state key 比較で no-op 送信を防止。key には `isLiveNow` を含み、待機→配信開始の遷移でも popup へ通知が発火する
 - **クロスタブ同期**: `chrome.storage.onChanged` で `channelVolumes` 変更を受信。チャンネル・種別別の自動適用フラグと種別別ゲインを即時反映し、リモート削除時は 1.0 にリセット
-- **channelVolumes への書き込み直列化**: `updateChannelVolumes()` が read-modify-write を1本のPromiseチェーンに並べる。Autoが動画ごとにゲインを保存するため、同一ドキュメント内の書き込み重複でエントリが消えるのを防ぐ
+- **channelVolumes への書き込み直列化**: `channelVolumes` へ書く経路は全て utils.js の `updateChannelVolumes()` を通す (content.js のゲイン保存・削除・@handle backfill、options.js の削除・全消去、マイグレーション)。read-modify-write を1本のPromiseチェーンに並べ、Autoが動画ごとに保存することで生じる同一ドキュメント内の書き込み重複でエントリが消えるのを防ぐ。マイグレーションもキュー内でマップを読み直すため、実行中に保存されたゲインを巻き戻さない
 - **NaN/Infinity ガード**: ゲイン計算結果が非有限値なら 1.0 にフォールバック
 - **遅延オーディオチェーン**: ゲインが 1.0 (パススルー) の場合は `createMediaElementSource` を呼ばない → Live Caption のちらつきを回避。`connectedVideo` (audio chain) と `_lastProcessedVideo` (検出済み video) を分離管理
 - **triggerApply 設計**: `setTimeout` デバウンスを廃止し、async mutex (`_applyRunning`) で同時実行を防止。`yt-navigate-finish` / `popstate` / `visibilitychange` / observer / 初回ロード の全トリガーから直接呼び出し。バックグラウンドタブの throttle やライブチャットの高頻度 DOM 更新の影響を受けない
 - **ゲインオーバーレイ**: `.ytp-volume-area` にゲイン値を表示。SPA ナビでの DOM 再構築にも対応 (`document.contains` で detach 検知)
+- **保存失敗を握り潰さない**: `chrome.storage` の書き込みが reject したら `reportStorageFailure()` が console へ出し、popup へのメッセージ応答は `{ ok: false }` を返す (無応答だと popup のトグルが無効のまま固まる)。Autoのゲイン保存失敗は再生中のゲインを変えないため、`applyPreferredGain` の中で捕らえて呼び出し元 (`forceDetect` の応答経路) を巻き込まない
 - **コンテキスト無効化の表示**: 拡張機能 (本体または別拡張) のリロードで content.js の `chrome.runtime` が無効化されると、popup からの `chrome.tabs.sendMessage` は `Receiving end does not exist` で reject される。Web Audio API と DOM オーバーレイは chrome.* に依存しないため、過去に適用したゲイン表示だけが残り続けて誤解を招く。popup の catch 節は「チャンネル未検出」ではなく `#reloadNeeded` (ja: 「拡張機能と接続できません。ページを再読み込みしてください (F5)」) を表示し、ユーザーに F5 を促す
 
 ## Commands
@@ -155,7 +157,7 @@ python pack.py
 - SPA ナビ検知: `yt-navigate-finish` + `popstate` + `visibilitychange` + MutationObserver (video 要素変更 + URL video ID 変更)
 - テスト: `node test.js` (utils) + `node test-navigation.js` (navigation P01-P18 + bridge + guard + detectChannel + data integrity + cross-tab sync + per-channel auto LUFS)
 - テスト用 export: `__TEST_YTCV__` フラグで content.js 内部を `globalThis.__YTCV__` に露出。本番では無効
-- Storage keys: `autoLoudnessSettings` (target LUFS, display unit, Video/Live auto defaults, `unifiedGains` マイグレーション済み印), `channelVolumes` (saved channel gains, per-channel auto overrides, URL)。legacy `autoLoudnessFallback:<channelId>:<type>` / `autoLoudnessFallbacks` は起動時に畳み込んで削除
+- Storage keys: `autoLoudnessSettings` (target LUFS, display unit, Video/Live auto defaults), `channelVolumes` (saved channel gains, per-channel auto overrides, URL), `unifiedGains` (マイグレーション済みの印)。legacy `autoLoudnessFallback:<channelId>:<type>` / `autoLoudnessFallbacks` は起動時に畳み込んで削除
 - Storage format: `channelVolumes.{id}` = `{ name, gainLive, gainVideo, autoApplyLoudnessLive, autoApplyLoudnessVideo, url }` (種別ごとの個別自動適用フラグがない場合に全チャンネル既定値を継承。旧 `autoApplyLoudness` は両種別同値、旧 `{ name, gain, url }` は両ゲインとして読み替え)
 - slider `input` event = リアルタイムゲイン変更 (storage 書き込みなし)、`change` event = storage 保存。Auto有効・LUFS検出済みでは両操作を拒否する
 - videoType 判定: page-bridge.js が `videoDetails.isLiveContent` を返す。content.js で `isLiveContent` が `true` なら 'live'、`false` なら 'video' (loudnessDb は判定に使わない)。プレミア公開は `isLiveContent=false` のため 'video' 扱い。初回ロード時はデフォルト 'video' で、bridge から isLiveContent を受信後に正しい種別のゲインに切替

@@ -5,8 +5,12 @@
 (() => {
   'use strict';
 
-  function isContextValid() {
-    try { return !!chrome.runtime?.id; } catch (_) { return false; }
+  // A rejected storage write leaves the GainNode at a level nothing recorded.
+  // Extension reload is the documented cause and needs no console noise; any
+  // other cause has to be visible, because the gain silently reverts later.
+  function reportStorageFailure(what, err) {
+    if (!isContextValid()) return;
+    console.error('[YTCV] ' + what, err);
   }
 
   /** @type {AudioContext | null} */
@@ -95,27 +99,6 @@
     const data = await chrome.storage.local.get(CHANNEL_VOLUMES_KEY);
     const all = data[CHANNEL_VOLUMES_KEY] || {};
     return all[channelId] || null;
-  }
-
-  // Serializes the read-modify-write cycle on the channel map. Auto now stores
-  // the gain it calculates for every video, so two writes started in the same
-  // document overlap often enough to drop one another's entry.
-  let channelVolumesWrite = Promise.resolve();
-
-  function updateChannelVolumes(mutate) {
-    const write = channelVolumesWrite.then(async () => {
-      if (!isContextValid()) return;
-      const data = await chrome.storage.local.get(CHANNEL_VOLUMES_KEY);
-      const all = data[CHANNEL_VOLUMES_KEY] || {};
-      const before = JSON.stringify(all);
-      mutate(all);
-      // Auto re-applies on every navigation and tab activation. Skipping an
-      // identical write keeps other tabs and the options page from redrawing.
-      if (JSON.stringify(all) === before) return;
-      await chrome.storage.local.set({ [CHANNEL_VOLUMES_KEY]: all });
-    });
-    channelVolumesWrite = write.catch(() => {});
-    return write;
   }
 
   // A name equal to the channel ID is a placeholder the bridge falls back to
@@ -246,8 +229,10 @@
       // corruption on SPA navigation.
       if (event.data.author && isContextValid()) {
         const authorName = event.data.author;
-        chrome.storage.local.get(CHANNEL_VOLUMES_KEY).then(data => {
-          const all = data[CHANNEL_VOLUMES_KEY] || {};
+        // Queued with the gain writes: Auto stores a gain for this channel from
+        // the same message, and whichever wrote second used to drop the other.
+        // Enqueued first, so the adoption is decided before that gain lands.
+        updateChannelVolumes(all => {
           if (all[bridgeChId]) return;
           const match = Object.entries(all).find(([k, v]) =>
             k.startsWith('@') && v.name === authorName
@@ -259,8 +244,7 @@
             url: 'https://www.youtube.com/channel/' + bridgeChId
           };
           delete all[oldKey];
-          chrome.storage.local.set({ [CHANNEL_VOLUMES_KEY]: all });
-        });
+        }).catch(err => reportStorageFailure('handle entry not adopted', err));
       }
     }
     if (applyAutomaticLoudnessGain()) {
@@ -321,7 +305,7 @@
     // of the same channel without Content Loudness keeps the same level.
     saveChannelGain(
       channelId, currentChannel.name, gain, videoType, currentChannel.url
-    ).catch(() => {});
+    ).catch(err => reportStorageFailure('auto gain not stored', err));
     return true;
   }
 
@@ -347,10 +331,12 @@
       : getChannelGain(entry, requestedVideoType) ?? 1.0;
     commitGain(gain);
     if (autoEnabled && hasLoudness) {
+      // The gain is already playing. A failed write must not abort the caller —
+      // `forceDetect` answers the popup from this path.
       await saveChannelGain(
         requestedChannelId, currentChannel.name, gain,
         requestedVideoType, currentChannel.url
-      );
+      ).catch(err => reportStorageFailure('auto gain not stored', err));
     }
   }
 
@@ -624,6 +610,8 @@
     _applyRunning = true;
     try {
       await applyVideoVolume();
+    } catch (err) {
+      reportStorageFailure('apply failed', err);
     } finally {
       _applyRunning = false;
     }
@@ -655,7 +643,9 @@
   // apply reads them. A concurrent tab writing the same result is harmless.
   if (isContextValid()) {
     migrateLegacyAutoGains()
-      .catch(() => {})
+      // Applying a saved gain still beats leaving playback unattenuated, so a
+      // failed fold is logged and the apply proceeds on the old shape.
+      .catch(err => reportStorageFailure('legacy auto gains not folded in', err))
       .then(() => { if (isWatchPage()) triggerApply(); });
   } else if (isWatchPage()) {
     triggerApply();
@@ -744,6 +734,9 @@
       saveManualChannelGain(currentChannel.id, currentChannel.name, gain, currentVideoType, currentChannel.url).then(() => {
         notifyPopup();
         sendResponse({ ok: true, gain });
+      }, err => {
+        reportStorageFailure('channel gain not saved', err);
+        sendResponse({ ok: false, reason: 'storage write failed' });
       });
       return true;
     }
@@ -769,6 +762,9 @@
       saveManualChannelGain(channelId, currentChannel.name, gain, currentVideoType, currentChannel.url).then(() => {
         notifyPopup();
         sendResponse({ ok: true });
+      }, err => {
+        reportStorageFailure('channel gain not saved', err);
+        sendResponse({ ok: false, reason: 'storage write failed' });
       });
       return true;
     }
@@ -781,6 +777,9 @@
         commitGain(1.0);
         notifyPopup();
         sendResponse({ ok: true });
+      }, err => {
+        reportStorageFailure('channel not deleted', err);
+        sendResponse({ ok: false, reason: 'storage write failed' });
       });
       return true;
     }
@@ -802,6 +801,9 @@
         await applyPreferredGain();
         notifyPopup();
         sendResponse({ ok: true, ...getState() });
+      }, err => {
+        reportStorageFailure('auto apply setting not saved', err);
+        sendResponse({ ok: false, reason: 'storage write failed' });
       });
       return true;
     }

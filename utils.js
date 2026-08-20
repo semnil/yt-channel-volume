@@ -8,10 +8,38 @@ const LEGACY_AUTO_FALLBACK_KEY_PREFIX = 'autoLoudnessFallback:';
 const YT_REFERENCE_LUFS = -14;
 const DEFAULT_TARGET_LUFS = -18;
 const DEFAULT_AUTO_APPLY_LOUDNESS = false;
-// Presence marks a profile whose gains already went through the unification
-// below. Auto stores gains without an Auto flag, which is the same shape the
-// migration reads as "saved manually", so it must run at most once.
+// Marks a profile whose gains already went through the unification below. Auto
+// stores gains without an Auto flag, which is the same shape the migration
+// reads as "saved manually", so it must run at most once. It is a top-level
+// key because every settings writer merges into a snapshot of the settings
+// object, and one whose read predates the migration would drop the mark.
 const UNIFIED_GAINS_KEY = 'unifiedGains';
+
+function isContextValid() {
+  try { return !!chrome.runtime?.id; } catch (_) { return false; }
+}
+
+// Every channel-map write goes through here. The map lives under one storage
+// key, so a read-modify-write started before another one's set lands drops its
+// entry; Auto stores a gain for every video, which makes that overlap routine.
+// Serializing per document keeps the writers in this context in order.
+let channelVolumesWrite = Promise.resolve();
+
+function updateChannelVolumes(mutate, extraKeys) {
+  const write = channelVolumesWrite.then(async () => {
+    if (!isContextValid()) return;
+    const data = await chrome.storage.local.get(CHANNEL_VOLUMES_KEY);
+    const all = data[CHANNEL_VOLUMES_KEY] || {};
+    const before = JSON.stringify(all);
+    mutate(all);
+    // Auto re-applies on every navigation and tab activation. Skipping an
+    // identical write keeps other tabs and the options page from redrawing.
+    if (JSON.stringify(all) === before && !extraKeys) return;
+    await chrome.storage.local.set({ [CHANNEL_VOLUMES_KEY]: all, ...extraKeys });
+  });
+  channelVolumesWrite = write.catch(() => {});
+  return write;
+}
 
 function gainToPercent(gain) { return Math.round(gain * 100); }
 function percentToGain(pct) { return pct / 100; }
@@ -32,7 +60,10 @@ function formatGain(gain, displayUnit) {
 }
 
 function formatAutoGain(gain, displayUnit, autoLabel = 'Auto') {
-  const formatted = formatGain(gain ?? 1.0, displayUnit);
+  // Auto has stored no gain for this type yet. Naming a number here would
+  // claim a level that nothing is playing at.
+  if (gain === null || gain === undefined) return `${autoLabel} (—)`;
+  const formatted = formatGain(gain, displayUnit);
   return `${autoLabel} (${formatted.text}${formatted.unit})`;
 }
 
@@ -94,10 +125,9 @@ function resolveAutoApplySetting(entry, videoType, defaultValue) {
 // gain. Fold the learned values into the single per-channel gain, and record
 // the Auto state that a saved gain used to imply, then drop the old keys.
 // Channels saved before Auto existed carry a gain and no flag, so this runs
-// for them as well — the marker, not the presence of legacy keys, decides.
+// for them as well — the mark, not the presence of legacy keys, decides.
 async function migrateLegacyAutoGains() {
   const stored = await chrome.storage.local.get(null);
-  const settings = stored[SETTINGS_KEY] || {};
   const legacyKeys = Object.keys(stored).filter(
     key => key.startsWith(LEGACY_AUTO_FALLBACK_KEY_PREFIX)
   );
@@ -106,47 +136,47 @@ async function migrateLegacyAutoGains() {
   const removeKeys = hasLegacyAggregate
     ? legacyKeys.concat(LEGACY_AUTO_FALLBACKS_KEY)
     : legacyKeys;
-  if (UNIFIED_GAINS_KEY in settings) {
+  if (stored[UNIFIED_GAINS_KEY]) {
     // Reached when an earlier run stored the unified gains but did not finish
     // clearing. Nothing reads these keys any more.
     if (removeKeys.length) await chrome.storage.local.remove(removeKeys);
     return false;
   }
 
-  const all = stored[CHANNEL_VOLUMES_KEY] || {};
+  const settings = stored[SETTINGS_KEY] || {};
   const defaults = {
     video: settings.autoApplyLoudnessVideoDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS,
     live: settings.autoApplyLoudnessLiveDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS
   };
-
-  for (const entry of Object.values(all)) {
-    for (const videoType of ['video', 'live']) {
-      if (hasExplicitAutoApply(entry, videoType)) continue;
-      if (getChannelGain(entry, videoType) === null) continue;
-      setChannelAutoApply(entry, videoType, false);
-    }
-  }
-
   const legacyAggregate = stored[LEGACY_AUTO_FALLBACKS_KEY] || {};
-  for (const [channelId, entry] of Object.entries(all)) {
-    for (const videoType of ['video', 'live']) {
-      if (!resolveAutoApplySetting(entry, videoType, defaults[videoType])) continue;
-      const granularKey =
-        `${LEGACY_AUTO_FALLBACK_KEY_PREFIX}${channelId}:${videoType}`;
-      const learned = Object.prototype.hasOwnProperty.call(stored, granularKey)
-        ? normalizeStoredGain(stored[granularKey])
-        : normalizeStoredGain(legacyAggregate[channelId]?.[gainKeyFor(videoType)]);
-      if (learned === null) continue;
-      setChannelGain(entry, videoType, learned);
-    }
-  }
 
-  // One write, so a profile can never end up with the gains unified and the
-  // marker missing — the next run would then pin Auto's own gains OFF.
-  await chrome.storage.local.set({
-    [CHANNEL_VOLUMES_KEY]: all,
-    [SETTINGS_KEY]: { ...settings, [UNIFIED_GAINS_KEY]: true }
-  });
+  // Queued like every other channel-map write, and carrying the mark in the
+  // same set: a profile can never end up with the gains unified and the mark
+  // missing, because the next run would then pin Auto's own gains OFF. The
+  // channel map is re-read inside the queue, so a gain saved while the legacy
+  // keys were being read is folded rather than rolled back.
+  await updateChannelVolumes(all => {
+    for (const entry of Object.values(all)) {
+      for (const videoType of ['video', 'live']) {
+        if (hasExplicitAutoApply(entry, videoType)) continue;
+        if (getChannelGain(entry, videoType) === null) continue;
+        setChannelAutoApply(entry, videoType, false);
+      }
+    }
+
+    for (const [channelId, entry] of Object.entries(all)) {
+      for (const videoType of ['video', 'live']) {
+        if (!resolveAutoApplySetting(entry, videoType, defaults[videoType])) continue;
+        const granularKey =
+          `${LEGACY_AUTO_FALLBACK_KEY_PREFIX}${channelId}:${videoType}`;
+        const learned = Object.prototype.hasOwnProperty.call(stored, granularKey)
+          ? normalizeStoredGain(stored[granularKey])
+          : normalizeStoredGain(legacyAggregate[channelId]?.[gainKeyFor(videoType)]);
+        if (learned === null) continue;
+        setChannelGain(entry, videoType, learned);
+      }
+    }
+  }, { [UNIFIED_GAINS_KEY]: true });
   if (removeKeys.length) await chrome.storage.local.remove(removeKeys);
   return true;
 }
