@@ -103,7 +103,7 @@ options.html / options.js (設定画面、別タブで表示)
 | `docs/screenshots/` | README 埋め込み・ストア掲載用スクリーンショット (ja, en)。`gen_screenshots.py` の出力 |
 | `gen_icons.py` | アイコン生成スクリプト (Python pillow) |
 | `pack.py` | Chrome Web Store 用 zip 生成 |
-| `gen_screenshots.py` | スクリーンショット生成 (`docs/screenshots/` へ出力。日本語対応フォントを Meiryo → Hiragino Sans → Noto Sans JP の順で選ぶ) |
+| `gen_screenshots.py` | スクリーンショット生成 (`docs/screenshots/` へ出力。日本語対応フォントを Meiryo → Hiragino Sans → Noto Sans JP の順で選ぶ。`--check` は書き込まずコミット済み画像と画素比較し、描けない環境では exit 3) |
 | `test.js` | ユニットテスト (node test.js) |
 | `test-navigation.js` | ナビゲーション・状態遷移テスト (node test-navigation.js) |
 
@@ -154,6 +154,9 @@ python3 gen_icons.py
 
 # Regenerate screenshots (README + store) into docs/screenshots/
 python3 gen_screenshots.py
+
+# Compare the committed screenshots with what the code draws (no writes)
+python3 gen_screenshots.py --check
 
 # Run tests
 node test.js

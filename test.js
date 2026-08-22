@@ -204,18 +204,24 @@ for (const image of readmeImages) {
 // together. A rename on either side has to break something.
 const genSrc = fs.readFileSync('./gen_screenshots.py', 'utf8');
 const outDirDecl = genSrc.match(/OUT_DIR = os\.path\.join\(ROOT, '([^']+)', '([^']+)'\)/);
-const langLoop = genSrc.match(/for lang in \(([^)]+)\):/);
+const sheetTable = genSrc.match(/SHEETS = \{([^}]+)\}/);
+const langTuple = genSrc.match(/LANGS = \(([^)]+)\)/);
 assert(outDirDecl, 'gen_screenshots.py declares OUT_DIR as os.path.join(ROOT, ...)');
-assert(langLoop, 'gen_screenshots.py renders each language in a for loop');
-if (outDirDecl && langLoop) {
+assert(sheetTable, 'gen_screenshots.py lists its sheets in SHEETS');
+assert(langTuple, 'gen_screenshots.py lists its languages in LANGS');
+if (outDirDecl && sheetTable && langTuple) {
   const outDir = `${outDirDecl[1]}/${outDirDecl[2]}`;
-  const langs = Array.from(langLoop[1].matchAll(/'([^']+)'/g), m => m[1]);
+  const langs = Array.from(langTuple[1].matchAll(/'([^']+)'/g), m => m[1]);
+  const sheets = Array.from(sheetTable[1].matchAll(/'([^']+)':/g), m => m[1]);
   const generated = new Set(
-    Array.from(genSrc.matchAll(/save\(img, f'([^']+)'\)/g), m => m[1])
-      .flatMap(name => langs.map(lang => `${outDir}/${name.replace('{lang}', lang)}`)));
+    sheets.flatMap(sheet => langs.map(lang => `${outDir}/${sheet}_${lang}.png`)));
   assert(generated.size > 0, 'gen_screenshots.py writes screenshots');
   for (const file of generated) {
     assert(fs.existsSync('./' + file), `${file} is generated and must be committed`);
+  }
+  for (const name of fs.readdirSync('./' + outDir)) {
+    assert(generated.has(`${outDir}/${name}`),
+      `${outDir}/${name} is committed but nothing draws it`);
   }
 
   const embedded = readmeImages.filter(image => image.startsWith(outDir + '/'));
@@ -251,6 +257,18 @@ if (outDirDecl && langLoop) {
   }
 
   assert(excluded.has(outDir.split('/')[0]), 'the screenshots stay out of the store zip');
+
+  // Whether the committed images are the ones this code draws can only be
+  // answered by drawing them, which needs pillow and a Japanese font. The
+  // generator answers 3 where it cannot run — the CI image is such a machine.
+  const drawn = require('child_process').spawnSync(
+    'python3', ['gen_screenshots.py', '--check'], { encoding: 'utf8' });
+  if (drawn.error || drawn.status === 3) {
+    console.log(`  (pixel check skipped: ${(drawn.error || drawn.stderr || '').toString().trim()})`);
+  } else {
+    assert(drawn.status === 0,
+      `the committed screenshots are what gen_screenshots.py draws — ${(drawn.stderr || '').trim()}`);
+  }
 }
 assert(excluded.has('screenshots'),
   'a screenshots/ left over from before the move stays out of the store zip');

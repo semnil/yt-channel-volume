@@ -93,6 +93,9 @@ python3 gen_icons.py
 # スクリーンショット再生成 (docs/screenshots/)
 python3 gen_screenshots.py
 
+# コミット済みスクリーンショットが生成コードと一致するか確認 (書き込みなし)
+python3 gen_screenshots.py --check
+
 # Chrome Web Store 用 zip
 python3 pack.py
 # → yt-channel-volume-<version>.zip

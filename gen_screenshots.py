@@ -1,8 +1,21 @@
-"""Generate store / README screenshot mockups (640x400) into docs/screenshots, ja + en."""
+"""Generate store / README screenshot mockups (640x400) into docs/screenshots, ja + en.
+
+`--check` renders into a temporary directory and compares with what is committed
+instead of writing. Exit 1 means the two differ, exit 3 that this machine cannot
+draw them.
+"""
 import math
 import os
+import sys
+import tempfile
 
-from PIL import Image, ImageDraw, ImageFont
+UNAVAILABLE = 3
+
+try:
+    from PIL import Image, ImageChops, ImageDraw, ImageFont
+except ImportError as err:
+    print(f'{err}. Install pillow to draw the screenshots.', file=sys.stderr)
+    sys.exit(UNAVAILABLE)
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 OUT_DIR = os.path.join(ROOT, 'docs', 'screenshots')
@@ -38,8 +51,9 @@ def pick_family():
         except OSError:
             continue
         return name, regular, bold
-    raise SystemExit('No Japanese-capable font found. Install one of: '
-                     + ', '.join(f[0] for f in FONT_FAMILIES))
+    print('No Japanese-capable font found. Install one of: '
+          + ', '.join(f[0] for f in FONT_FAMILIES), file=sys.stderr)
+    sys.exit(UNAVAILABLE)
 
 
 FAMILY, REGULAR, BOLD = pick_family()
@@ -54,12 +68,6 @@ FONT_XS = ImageFont.truetype(REGULAR, 9)
 
 def rr(draw, box, radius, fill):
     draw.rounded_rectangle(box, radius=radius, fill=fill)
-
-
-def save(img, name):
-    path = os.path.join(OUT_DIR, name)
-    img.save(path)
-    print(f'Generated {os.path.relpath(path, ROOT)}')
 
 
 # Icons are drawn, not typed: the symbol glyphs for a gear and a fullscreen box
@@ -220,7 +228,7 @@ def screenshot_popup(lang):
         draw.text((bx + (bw-ptw)/2, sy+27), p, fill=GRAY, font=FONT_SM)
         bx += bw + 4
 
-    save(img, f'popup_{lang}.png')
+    return img
 
 
 def screenshot_settings(lang):
@@ -288,7 +296,7 @@ def screenshot_settings(lang):
         draw.text((570, ry-4), '\u00d7', fill=DIM, font=FONT_LG)
         ry += 26
 
-    save(img, f'settings_{lang}.png')
+    return img
 
 
 def screenshot_overlay(lang):
@@ -329,12 +337,63 @@ def screenshot_overlay(lang):
     draw.text((20, 20), s['video_title'], fill=WHITE, font=FONT_LG)
     draw.text((20, 48), s['video_channel'], fill=GRAY, font=FONT)
 
-    save(img, f'overlay_{lang}.png')
+    return img
 
 
-os.makedirs(OUT_DIR, exist_ok=True)
+SHEETS = {
+    'popup': screenshot_popup,
+    'settings': screenshot_settings,
+    'overlay': screenshot_overlay,
+}
+LANGS = ('ja', 'en')
+
+
+def render_all():
+    return {f'{sheet}_{lang}.png': render(lang)
+            for lang in LANGS for sheet, render in SHEETS.items()}
+
+
+def write(images, target):
+    os.makedirs(target, exist_ok=True)
+    for name, img in images.items():
+        img.save(os.path.join(target, name))
+        print(f'Generated {os.path.relpath(os.path.join(target, name), ROOT)}')
+
+
+def check(images):
+    """Compare what the code draws now with what is committed, pixel by pixel."""
+    stale = []
+    scratch = tempfile.mkdtemp()
+    try:
+        for name, img in images.items():
+            fresh = os.path.join(scratch, name)
+            img.save(fresh)
+            committed = os.path.join(OUT_DIR, name)
+            if not os.path.exists(committed):
+                stale.append(f'{name}: not committed')
+            elif ImageChops.difference(Image.open(fresh).convert('RGB'),
+                                       Image.open(committed).convert('RGB')).getbbox():
+                stale.append(f'{name}: differs from what the code draws now')
+    finally:
+        for name in os.listdir(scratch):
+            os.remove(os.path.join(scratch, name))
+        os.rmdir(scratch)
+
+    for name in sorted(os.listdir(OUT_DIR)):
+        if name not in images:
+            stale.append(f'{name}: in {os.path.relpath(OUT_DIR, ROOT)} but drawn by nothing')
+
+    for line in stale:
+        print(line, file=sys.stderr)
+    if stale:
+        print(f'Run `python3 {os.path.basename(__file__)}` and commit the result.',
+              file=sys.stderr)
+        return 1
+    print(f'{len(images)} screenshots match the code that draws them.')
+    return 0
+
+
 print(f'Font: {FAMILY}')
-for lang in ('ja', 'en'):
-    screenshot_popup(lang)
-    screenshot_settings(lang)
-    screenshot_overlay(lang)
+if '--check' in sys.argv[1:]:
+    sys.exit(check(render_all()))
+write(render_all(), OUT_DIR)
