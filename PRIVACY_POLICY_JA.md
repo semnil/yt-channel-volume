@@ -1,5 +1,7 @@
 # プライバシーポリシー — YT Channel Volume
 
+[English version here](PRIVACY_POLICY.md)
+
 最終更新日: 2026-04-11
 
 ## 概要
