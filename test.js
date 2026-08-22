@@ -218,6 +218,21 @@ assert(optionsSrc.indexOf("requestChannelWrite('migrateLegacyGains')") !== -1 &&
     optionsSrc.indexOf('.then(renderChannels)'),
   'options ask the worker to fold legacy Auto gains in before listing channels');
 
+section('destructive actions wait for the list');
+// Delete all empties channelVolumes. Offered before the list has been read, a
+// load that failed presents an empty page over a full profile, and the button
+// next to it works.
+assert(/<button[^>]+id="clearAllBtn"[^>]*\bdisabled\b/.test(optionsHtml),
+  'options ship Delete all disabled');
+assert(/\.clear-all-btn:disabled\s*\{[^}]*opacity:/.test(optionsHtml),
+  'the disabled Delete all does not look live');
+assert(/\.clear-all-btn:hover:not\(:disabled\)\s*\{/.test(optionsHtml),
+  'hover does not paint the disabled Delete all');
+assert(optionsSrc.indexOf('.then(renderChannels)') !== -1 &&
+  optionsSrc.indexOf('.then(renderChannels)') <
+    optionsSrc.indexOf('clearAllBtn.disabled = false'),
+  'options enable Delete all only after the channels have been rendered');
+
 section('packaging');
 const packSrc = fs.readFileSync('./pack.py', 'utf8');
 const excludeBlock = packSrc.slice(packSrc.indexOf('EXCLUDE = {'), packSrc.indexOf('}', packSrc.indexOf('EXCLUDE = {')));
