@@ -190,6 +190,22 @@ for (const file of manifestFiles) {
   assert(fs.existsSync('./' + file), `${file} exists`);
 }
 
+section('README screenshots');
+const readmeSrc = fs.readFileSync('./README.md', 'utf8');
+const readmeImages = Array.from(readmeSrc.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g), m => m[1]);
+assert(readmeImages.length > 0, 'the README embeds screenshots');
+for (const image of readmeImages) {
+  assert(fs.existsSync('./' + image), `${image} is embedded in the README and must exist`);
+}
+const genSrc = fs.readFileSync('./gen_screenshots.py', 'utf8');
+const outDir = Array.from(genSrc.match(/OUT_DIR = os\.path\.join\(ROOT, (.+)\)/)[1].matchAll(/'([^']+)'/g),
+  m => m[1]).join('/');
+for (const image of readmeImages) {
+  assert(image.startsWith(outDir + '/'), `${image} lives where gen_screenshots.py writes`);
+}
+assert(excluded.has(outDir.split('/')[0]),
+  'the screenshots stay out of the store zip');
+
 // options.js has no DOM harness here, so its half of the cross-context
 // contract is asserted against the source.
 section('options adopt a fold another context finished');

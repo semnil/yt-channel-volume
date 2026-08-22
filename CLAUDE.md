@@ -100,9 +100,10 @@ options.html / options.js (設定画面、別タブで表示)
 | `options.js` | 設定 logic. Target LUFS、表示単位、チャンネル管理 |
 | `_locales/` | i18n (ja, en) |
 | `icons/` | Extension icons (16/48/128 px) — 3-bar loudness meter |
+| `docs/screenshots/` | README 埋め込み・ストア掲載用スクリーンショット (ja, en)。`gen_screenshots.py` の出力 |
 | `gen_icons.py` | アイコン生成スクリプト (Python pillow) |
 | `pack.py` | Chrome Web Store 用 zip 生成 |
-| `gen_screenshots.py` | ストア掲載用スクリーンショット生成 |
+| `gen_screenshots.py` | スクリーンショット生成 (`docs/screenshots/` へ出力。日本語対応フォントを Meiryo → Hiragino Sans → Noto Sans JP の順で選ぶ) |
 | `test.js` | ユニットテスト (node test.js) |
 | `test-navigation.js` | ナビゲーション・状態遷移テスト (node test-navigation.js) |
 
@@ -151,7 +152,7 @@ options.html / options.js (設定画面、別タブで表示)
 # Regenerate icons
 python3 gen_icons.py
 
-# Regenerate store screenshots
+# Regenerate screenshots (README + store) into docs/screenshots/
 python3 gen_screenshots.py
 
 # Run tests

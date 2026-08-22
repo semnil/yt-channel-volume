@@ -15,6 +15,22 @@ YouTube チャンネルごとに音量を記憶し、動画を開いた時に自
 - **日本語/英語**: ブラウザ言語設定で自動切替
 - **外部依存ゼロ**: npm パッケージ・CDN なし。全コード自作
 
+## スクリーンショット
+
+**ポップアップ** — Loudness / Suggested / Current の表示、チャンネルへの適用、手動ボリューム
+
+![ポップアップ。Loudness -18.2 LUFS、Suggested 63%、Current 63% のカードと、チャンネルに適用ボタン、手動ボリュームのスライダー](docs/screenshots/popup_ja.png)
+
+**設定画面** — Target LUFS、表示単位、保存済みチャンネルの一覧
+
+![設定画面。Target LUFS -18、表示単位 %、保存済みチャンネルを Video / Live の 2 列で並べた表](docs/screenshots/settings_ja.png)
+
+**ゲイン表示** — プレイヤーの音量バー横に適用中のゲインを表示 (設定で ON)
+
+![YouTube プレイヤーのコントロール。音量バーの右隣に 63% のゲインが表示されている](docs/screenshots/overlay_ja.png)
+
+英語 UI の画像は同じディレクトリの `*_en.png`。
+
 ## セットアップ
 
 ### 1. 拡張をインストール
@@ -72,10 +88,13 @@ node test.js
 node test-navigation.js
 
 # アイコン再生成
-python gen_icons.py
+python3 gen_icons.py
+
+# スクリーンショット再生成 (docs/screenshots/)
+python3 gen_screenshots.py
 
 # Chrome Web Store 用 zip
-python pack.py
+python3 pack.py
 # → yt-channel-volume-<version>.zip
 ```
 
@@ -92,10 +111,11 @@ yt-channel-volume/
 ├── options.html/js       # 設定画面
 ├── _locales/             # i18n (ja, en)
 ├── icons/                # 拡張アイコン (16/48/128 px)
+├── docs/screenshots/     # README・ストア掲載用スクリーンショット (ja, en)
 ├── test.js               # utils ユニットテスト
 ├── test-navigation.js    # ナビゲーション・データ整合性テスト
 ├── gen_icons.py          # アイコン生成 (Python pillow)
-├── gen_screenshots.py    # ストア掲載用スクリーンショット生成
+├── gen_screenshots.py    # スクリーンショット生成 (docs/screenshots/ へ出力)
 ├── pack.py               # zip パッケージング
 ├── PRIVACY_POLICY.md     # プライバシーポリシー (EN)
 ├── PRIVACY_POLICY_JA.md  # プライバシーポリシー (JA)

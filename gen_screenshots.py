@@ -1,7 +1,11 @@
-"""Generate Chrome Web Store screenshot mockups (640x400), ja + en."""
+"""Generate store / README screenshot mockups (640x400) into docs/screenshots, ja + en."""
 import math
+import os
 
 from PIL import Image, ImageDraw, ImageFont
+
+ROOT = os.path.dirname(os.path.abspath(__file__))
+OUT_DIR = os.path.join(ROOT, 'docs', 'screenshots')
 
 W, H = 640, 400
 BG = (15, 15, 35)
@@ -50,6 +54,12 @@ FONT_XS = ImageFont.truetype(REGULAR, 9)
 
 def rr(draw, box, radius, fill):
     draw.rounded_rectangle(box, radius=radius, fill=fill)
+
+
+def save(img, name):
+    path = os.path.join(OUT_DIR, name)
+    img.save(path)
+    print(f'Generated {os.path.relpath(path, ROOT)}')
 
 
 # Icons are drawn, not typed: the symbol glyphs for a gear and a fullscreen box
@@ -183,8 +193,7 @@ def screenshot_popup(lang):
         draw.text((bx + (bw-ptw)/2, sy+27), p, fill=GRAY, font=FONT_SM)
         bx += bw + 4
 
-    img.save(f'screenshots/popup_{lang}.png')
-    print(f'Generated screenshots/popup_{lang}.png')
+    save(img, f'popup_{lang}.png')
 
 
 def screenshot_settings(lang):
@@ -235,8 +244,7 @@ def screenshot_settings(lang):
         draw.text((570, ry), '\u00d7', fill=DIM, font=FONT_LG)
         ry += 36
 
-    img.save(f'screenshots/settings_{lang}.png')
-    print(f'Generated screenshots/settings_{lang}.png')
+    save(img, f'settings_{lang}.png')
 
 
 def screenshot_overlay(lang):
@@ -277,10 +285,10 @@ def screenshot_overlay(lang):
     draw.text((20, 20), s['video_title'], fill=WHITE, font=FONT_LG)
     draw.text((20, 48), s['video_channel'], fill=GRAY, font=FONT)
 
-    img.save(f'screenshots/overlay_{lang}.png')
-    print(f'Generated screenshots/overlay_{lang}.png')
+    save(img, f'overlay_{lang}.png')
 
 
+os.makedirs(OUT_DIR, exist_ok=True)
 print(f'Font: {FAMILY}')
 for lang in ('ja', 'en'):
     screenshot_popup(lang)
