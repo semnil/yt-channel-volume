@@ -173,11 +173,16 @@ const CHANNEL_WRITES = {
   }
 };
 
-function resolveAutoApplySetting(entry, videoType, defaultValue) {
+// `unmigrated` is for a profile whose legacy fold has not run yet: there a
+// stored gain still carries its old meaning — the channel opted out of the
+// all-channel default — and reading it under the current rule would hand the
+// channel to Auto, which overwrites that gain with a calculated one.
+function resolveAutoApplySetting(entry, videoType, defaultValue, unmigrated) {
   if (!entry) return !!defaultValue;
   const autoKey = autoApplyKeyFor(videoType);
   if (autoKey in entry) return !!entry[autoKey];
   if ('autoApplyLoudness' in entry) return !!entry.autoApplyLoudness;
+  if (unmigrated && getChannelGain(entry, videoType) !== null) return false;
   return !!defaultValue;
 }
 

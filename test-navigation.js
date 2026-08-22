@@ -1433,6 +1433,53 @@ async function runTests() {
   assert(ytcv.state.currentGain === 0.5, 'and it is what plays');
   mockDOMElements['canonical'] = null;
 
+  section('Legacy fold: a failed fold keeps the old rule instead of Auto');
+  mockStorage = {
+    autoLoudnessSettings: { targetLufs: -18, autoApplyLoudnessVideoDefault: true },
+    channelVolumes: { 'UCfoldfail': { name: 'Fold Fail', gainVideo: 0.5, url: '' } }
+  };
+  mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCfoldfail' };
+  setURL('/watch', 'FOLDFAIL001');
+  ytcv._set('currentChannel', { id: 'UCfoldfail', name: 'Fold Fail', url: '' });
+  ytcv._set('currentVideoType', 'video');
+  ytcv._set('currentLoudnessDb', -6);
+  ytcv._set('currentLoudnessVideoId', 'FOLDFAIL001');
+  ytcv._set('targetLufs', -18);
+  ytcv._set('defaultAutoApplyLoudnessVideo', true);
+  ytcv._set('currentGain', 0.5);
+  ytcv._set('storageMigrated', false);
+  const realSetForFold = chrome.storage.local.set;
+  let foldWriteFailed = false;
+  chrome.storage.local.set = obj => {
+    if (!foldWriteFailed && 'unifiedGains' in obj) {
+      foldWriteFailed = true;
+      return Promise.reject(new Error('fold write failed'));
+    }
+    return realSetForFold(obj);
+  };
+  ytcv._set('_lastProcessedVideo', null);
+  await ytcv.triggerApply();
+  await tick();
+  assert(foldWriteFailed === true, 'the fold write was the one that failed');
+  assert(!('unifiedGains' in mockStorage), 'a failed fold leaves the profile unmarked');
+  assert(mockStorage['channelVolumes']['UCfoldfail'].gainVideo === 0.5,
+    'the gain saved before Auto existed is not overwritten by a calculated one');
+  assert(ytcv.state.currentAutoApplyLoudnessVideo === false,
+    'an unfolded profile still reads a saved gain as Auto off');
+  assert(ytcv.state.currentGain === 0.5, 'and plays the gain the user saved');
+
+  // The next apply retries the fold, which now succeeds.
+  chrome.storage.local.set = realSetForFold;
+  ytcv._set('_lastProcessedVideo', null);
+  await ytcv.triggerApply();
+  await tick();
+  assert(mockStorage['unifiedGains'] === true, 'the retry marks the profile');
+  assert(mockStorage['channelVolumes']['UCfoldfail'].autoApplyLoudnessVideo === false,
+    'the retry records the pin the old rule stood for');
+  assert(mockStorage['channelVolumes']['UCfoldfail'].gainVideo === 0.5,
+    'and the saved gain is still the stored one');
+  mockDOMElements['canonical'] = null;
+
   section('Storage failure: a rejected write is answered, not dropped');
   mockStorage['channelVolumes'] = { 'UCwritefail': { name: 'Write Fail', gainVideo: 0.5 } };
   ytcv._set('currentChannel', { id: 'UCwritefail', name: 'Write Fail', url: '' });

@@ -132,6 +132,14 @@ assert(resolveAutoApplySetting({ name: 'Unconfigured' }, 'video', true) === true
   'channel type without an explicit choice inherits the default');
 assert(resolveAutoApplySetting({ gainVideo: 0.5 }, 'video', true) === true,
   'a stored gain no longer decides Auto — Auto writes that gain too');
+assert(resolveAutoApplySetting({ gainVideo: 0.5 }, 'video', true, true) === false,
+  'before the fold a stored gain still means the channel opted out');
+assert(resolveAutoApplySetting({ gain: 0.6 }, 'live', true, true) === false,
+  'the legacy single gain opts both types out before the fold');
+assert(resolveAutoApplySetting({ autoApplyLoudnessVideo: true, gainVideo: 0.5 },
+  'video', false, true) === true, 'an explicit choice still wins before the fold');
+assert(resolveAutoApplySetting({ name: 'No gain' }, 'video', true, true) === true,
+  'a channel with no gain still inherits the default before the fold');
 
 section('isManualGainLocked');
 assert(isManualGainLocked(true, true) === true,

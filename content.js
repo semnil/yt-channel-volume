@@ -41,12 +41,14 @@
   // already been applied. Without this, an older read can undo a cross-tab
   // gain update after storage.onChanged commits it.
   let storageRevision = 0;
-  // Resolves once the legacy fold has run. Until then the channel map still
-  // holds the pre-unification shape, where a gain without an Auto flag meant
-  // Auto was off — resolving it under the current rule hands the channel to
-  // Auto and overwrites the gain the user saved.
+  // Resolves once the legacy fold has been attempted; `storageMigrated` says
+  // whether it succeeded. Until it has, the channel map still holds the
+  // pre-unification shape, where a gain without an Auto flag meant Auto was
+  // off — resolving it under the current rule hands the channel to Auto and
+  // overwrites the gain the user saved.
   let storageReady = Promise.resolve();
   let storageSettled = true;
+  let storageMigrated = false;
 
   // ── Storage helpers ────────────────────────────────────────────────
 
@@ -79,7 +81,7 @@
     const defaultValue = videoType === 'live'
       ? defaultAutoApplyLoudnessLive
       : defaultAutoApplyLoudnessVideo;
-    return resolveAutoApplySetting(entry, videoType, defaultValue);
+    return resolveAutoApplySetting(entry, videoType, defaultValue, !storageMigrated);
   }
 
   function setCurrentAutoApplyFromEntry(entry) {
@@ -602,6 +604,9 @@
     if (!isContextValid()) { observer.disconnect(); return; }
     if (!isWatchPage()) return;
     if (_applyRunning) return;
+    // A fold that failed leaves the profile on the old rule, so retry it on
+    // every apply until it lands rather than waiting for the next page load.
+    if (!storageMigrated) await foldLegacyGains();
     _applyRunning = true;
     try {
       await applyVideoVolume();
@@ -610,6 +615,19 @@
     } finally {
       _applyRunning = false;
     }
+  }
+
+  // A failed fold is not fatal: the profile stays on the pre-unification rule,
+  // where a saved gain means Auto is off, so playback still uses what the user
+  // saved and Auto cannot overwrite it.
+  function foldLegacyGains() {
+    if (storageMigrated) return storageReady;
+    storageSettled = false;
+    storageReady = requestChannelWrite('migrateLegacyGains', {})
+      .then(() => { storageMigrated = true; })
+      .catch(err => reportFailure('legacy auto gains not folded in', err))
+      .then(() => { storageSettled = true; });
+    return storageReady;
   }
 
   document.addEventListener('yt-navigate-finish', triggerApply);
@@ -637,13 +655,7 @@
   // Fold any pre-unification Auto gains into channelVolumes before the first
   // apply reads them. A concurrent tab writing the same result is harmless.
   if (isContextValid()) {
-    storageSettled = false;
-    storageReady = requestChannelWrite('migrateLegacyGains', {})
-      // Applying a saved gain still beats leaving playback unattenuated, so a
-      // failed fold is logged and the apply proceeds on the old shape.
-      .catch(err => reportFailure('legacy auto gains not folded in', err))
-      .then(() => { storageSettled = true; });
-    storageReady.then(() => { if (isWatchPage()) triggerApply(); });
+    foldLegacyGains().then(() => { if (isWatchPage()) triggerApply(); });
   } else if (isWatchPage()) {
     triggerApply();
   }
@@ -919,7 +931,8 @@
           currentChannel, currentChannelVideoId,
           currentGain, currentLoudnessDb, currentLoudnessVideoId,
           currentVideoType, currentVideoTypeDetected, currentIsLiveNow, showGainOverlay,
-          currentAutoApplyLoudnessVideo, currentAutoApplyLoudnessLive, storageSettled,
+          currentAutoApplyLoudnessVideo, currentAutoApplyLoudnessLive,
+          storageSettled, storageMigrated,
           _lastVideoId, _lastProcessedVideo, _applyRunning, connectedVideo,
           targetLufs, defaultAutoApplyLoudnessVideo,
           defaultAutoApplyLoudnessLive, gainNode, audioCtx
@@ -959,6 +972,7 @@
           case 'currentLoudnessDb': currentLoudnessDb = val; break;
           case 'storageReady': storageReady = val; break;
           case 'storageSettled': storageSettled = val; break;
+          case 'storageMigrated': storageMigrated = val; break;
           case 'currentLoudnessVideoId': currentLoudnessVideoId = val; break;
         }
       }

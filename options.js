@@ -21,6 +21,9 @@
   let targetLufs = DEFAULT_TARGET_LUFS;
   let defaultAutoApplyVideo = DEFAULT_AUTO_APPLY_LOUDNESS;
   let defaultAutoApplyLive = DEFAULT_AUTO_APPLY_LOUDNESS;
+  // Until the fold lands, the table has to read the map the way the content
+  // script does, or it shows Auto for channels that are still manual.
+  let storageMigrated = false;
 
   function fmtGain(gain) {
     const f = formatGain(gain, displayUnit);
@@ -71,7 +74,7 @@
     const defaultValue = videoType === 'live'
       ? defaultAutoApplyLive
       : defaultAutoApplyVideo;
-    return resolveAutoApplySetting(entry, videoType, defaultValue);
+    return resolveAutoApplySetting(entry, videoType, defaultValue, !storageMigrated);
   }
 
   // ── Channel list ───────────────────────────────────────────────────
@@ -251,6 +254,7 @@
   }
 
   requestChannelWrite('migrateLegacyGains')
+    .then(() => { storageMigrated = true; })
     // The table below reads channelVolumes either way; an un-folded profile
     // shows `Auto (—)` for the types whose gain is still in a legacy key.
     .catch(err => console.error('[YTCV] legacy auto gains not folded in', err))
