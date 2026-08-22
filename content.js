@@ -673,6 +673,19 @@
   if (isContextValid()) {
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area !== 'local') return;
+      // Another context may have folded the profile while this one's own fold
+      // failed. The mark is the canonical state, so adopt it here rather than
+      // waiting for the next apply — this event's channel data is already in
+      // the folded shape and must be read under the current rule.
+      if (changes[UNIFIED_GAINS_KEY]?.newValue === true && !storageMigrated) {
+        storageMigrated = true;
+        storageSettled = true;
+        foldInFlight = null;
+        storageRevision++;
+        if (!changes[CHANNEL_VOLUMES_KEY]) {
+          applyPreferredGain().then(notifyPopup);
+        }
+      }
       if (changes[SETTINGS_KEY] || changes[CHANNEL_VOLUMES_KEY]) {
         storageRevision++;
       }

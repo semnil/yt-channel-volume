@@ -1517,6 +1517,66 @@ async function runTests() {
     'the next run sweeps it');
   mockDOMElements['canonical'] = null;
 
+  section('Legacy fold: another tab finishing it is adopted here');
+  mockStorage = {
+    autoLoudnessSettings: { targetLufs: -18, autoApplyLoudnessVideoDefault: true },
+    channelVolumes: { 'UCshared': { name: 'Shared Ch', gainVideo: 0.5, url: '' } }
+  };
+  ytcv._set('currentChannel', { id: 'UCshared', name: 'Shared Ch', url: '' });
+  ytcv._set('currentVideoType', 'video');
+  ytcv._set('currentLoudnessDb', -6);
+  ytcv._set('targetLufs', -18);
+  ytcv._set('defaultAutoApplyLoudnessVideo', true);
+  ytcv._set('storageMigrated', false);
+  ytcv._set('storageSettled', true);
+  ytcv._set('currentGain', 0.5);
+  await ytcv.applyPreferredGain();
+  assert(ytcv.state.currentAutoApplyLoudnessVideo === false,
+    'this tab still reads the saved gain as Auto off');
+
+  // The other tab folds the profile and stores its Auto gain in one write.
+  const foldedEntry = { name: 'Shared Ch', gainVideo: expectedAutoGain, url: '' };
+  mockStorage['unifiedGains'] = true;
+  mockStorage['channelVolumes'] = { 'UCshared': foldedEntry };
+  simulateStorageChange({
+    unifiedGains: { newValue: true },
+    channelVolumes: {
+      oldValue: { 'UCshared': { name: 'Shared Ch', gainVideo: 0.5, url: '' } },
+      newValue: { 'UCshared': foldedEntry }
+    }
+  });
+  await tick();
+  assert(ytcv.state.storageMigrated === true,
+    'the mark another tab stored is adopted here');
+  assert(ytcv.state.currentAutoApplyLoudnessVideo === true,
+    'and the same event re-resolves the channel under the current rule');
+  assert(Math.abs(ytcv.state.currentGain - expectedAutoGain) < 0.001,
+    'the gain that tab stored is what plays');
+
+  // A manual save from this tab must not pin a channel that is on Auto.
+  ytcv._set('currentLoudnessDb', null);
+  await simulateRuntimeMessage({ type: 'setGain', channelId: 'UCshared', gain: 0.7 });
+  assert(mockStorage['channelVolumes']['UCshared'].autoApplyLoudnessVideo === true,
+    'a save made after adopting the mark records Auto as on, not off');
+
+  section('Legacy fold: the mark alone re-resolves this tab');
+  mockStorage = {
+    autoLoudnessSettings: { targetLufs: -18, autoApplyLoudnessVideoDefault: true },
+    channelVolumes: { 'UCmarkonly': { name: 'Mark Only', gainVideo: 0.5, url: '' } }
+  };
+  ytcv._set('currentChannel', { id: 'UCmarkonly', name: 'Mark Only', url: '' });
+  ytcv._set('currentLoudnessDb', -6);
+  ytcv._set('storageMigrated', false);
+  ytcv._set('currentGain', 0.5);
+  await ytcv.applyPreferredGain();
+  assert(ytcv.state.currentGain === 0.5, 'the saved gain is playing before the mark');
+  mockStorage['unifiedGains'] = true;
+  simulateStorageChange({ unifiedGains: { newValue: true } });
+  await tick();
+  assert(ytcv.state.storageMigrated === true, 'the mark is adopted');
+  assert(Math.abs(ytcv.state.currentGain - expectedAutoGain) < 0.001,
+    'the channel is re-resolved even when only the mark changed');
+
   section('Legacy fold: the apply mutex covers the wait for it');
   ytcv._set('storageMigrated', false);
   ytcv._set('_lastProcessedVideo', null);

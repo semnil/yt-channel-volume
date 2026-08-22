@@ -190,6 +190,17 @@ for (const file of manifestFiles) {
   assert(fs.existsSync('./' + file), `${file} exists`);
 }
 
+// options.js has no DOM harness here, so its half of the cross-context
+// contract is asserted against the source.
+section('options adopt a fold another context finished');
+const optionsListener = optionsSrc.slice(optionsSrc.indexOf('chrome.storage.onChanged.addListener'));
+assert(optionsListener.includes('UNIFIED_GAINS_KEY'),
+  'the options listener watches the migration mark');
+assert(/UNIFIED_GAINS_KEY[\s\S]{0,160}storageMigrated = true[\s\S]{0,80}renderChannels\(\)/.test(optionsListener),
+  'and adopting it re-renders the table under the current rule');
+assert(/resolveAutoApplySetting\([^)]*!storageMigrated\)/.test(optionsSrc),
+  'the table resolves with the pre-unification rule until the fold has landed');
+
 section('service worker is the single writer');
 const backgroundSrc = fs.readFileSync('./background.js', 'utf8');
 const contentSrc = fs.readFileSync('./content.js', 'utf8');

@@ -214,6 +214,12 @@
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local') return;
+    // Another context may have folded the profile; the table has to stop
+    // reading the map under the pre-unification rule.
+    if (changes[UNIFIED_GAINS_KEY]?.newValue === true && !storageMigrated) {
+      storageMigrated = true;
+      renderChannels();
+    }
     if (changes[CHANNEL_VOLUMES_KEY]) {
       renderChannels();
     }
