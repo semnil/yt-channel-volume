@@ -253,6 +253,8 @@
   // ── Init ───────────────────────────────────────────────────────────
 
   function revealOptions() {
+    // Commit the loaded settings while transitions are disabled, then reveal
+    // the fully initialized page on the next frame.
     void document.body.offsetWidth;
     requestAnimationFrame(() => {
       document.body.classList.remove('initializing');
