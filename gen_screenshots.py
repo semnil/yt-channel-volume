@@ -43,6 +43,8 @@ for _face in (REGULAR, BOLD):
     if not os.path.exists(_face):
         print(f'{os.path.relpath(_face, ROOT)} is missing from this checkout.', file=sys.stderr)
         sys.exit(UNAVAILABLE)
+
+
 def face(path, size):
     """Basic layout on every machine: pillow reaches for raqm where it is
     installed, and the two engines place these strings differently."""
