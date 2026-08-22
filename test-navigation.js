@@ -864,6 +864,8 @@ async function runTests() {
     return originalStorageGet(key);
   };
   const staleApply = ytcv.applyPreferredGain();
+  // The apply waits for the legacy fold before it reads storage.
+  await tick();
   const newerLearnedGain = 0.8;
   const newerLiveEntry = {
     name: 'Shared Live Channel',
@@ -910,6 +912,8 @@ async function runTests() {
     return storageGetBeforeHiddenType(key);
   };
   const hiddenTypeApply = ytcv.applyPreferredGain();
+  // The apply waits for the legacy fold before it reads storage.
+  await tick();
   const hiddenTypeUpdated = { ...hiddenTypeEntry, gainVideo: 0.5 };
   mockStorage['channelVolumes'] = { [hiddenTypeChannelId]: hiddenTypeUpdated };
   simulateStorageChange({
@@ -1330,6 +1334,31 @@ async function runTests() {
   assert(mockStorage['channelVolumes']['UCthrows'].gainVideo === 0.5,
     'nothing was stored for a manual save whose apply threw');
 
+  section('Sync failure: forceDetect answers when its apply throws');
+  mockStorage['channelVolumes'] = {
+    'UCdetect': { name: 'Detect Ch', autoApplyLoudnessVideo: true }
+  };
+  ytcv._set('currentChannel', { id: 'UCdetect', name: 'Detect Ch', url: '' });
+  ytcv._set('currentVideoType', 'video');
+  ytcv._set('currentLoudnessDb', -6);
+  ytcv._set('targetLufs', -18);
+  ytcv._set('currentAutoApplyLoudnessVideo', true);
+  const detectCtx = ytcv.state.audioCtx;
+  const realCreateForDetect = detectCtx.createMediaElementSource;
+  detectCtx.createMediaElementSource = () => {
+    throw new Error('InvalidStateError: already connected');
+  };
+  const videoBeforeDetect = mockVideoEl;
+  mockVideoEl = { id: 'owned-during-detect' };
+  const detectReply = await simulateRuntimeMessage({ type: 'forceDetect' });
+  detectCtx.createMediaElementSource = realCreateForDetect;
+  mockVideoEl = videoBeforeDetect;
+  assert(detectReply !== undefined,
+    'forceDetect answers instead of leaving the popup initializing');
+  assert(detectReply?.ok === false, 'and it answers with the failure');
+  ytcv._set('currentLoudnessDb', null);
+  ytcv._set('currentAutoApplyLoudnessVideo', false);
+
   section('Storage failure: playback and storage do not diverge');
   mockStorage['channelVolumes'] = {
     'UCagree': { name: 'Agree Ch', gainVideo: 0.5, autoApplyLoudnessVideo: false }
@@ -1342,6 +1371,10 @@ async function runTests() {
   assert(ytcv.state.currentGain === 0.5, 'the saved gain is playing');
   const realSetForAgree = chrome.storage.local.set;
   chrome.storage.local.set = () => Promise.reject(new Error('storage write failed'));
+  // The slider previews the new level through setGainLive before the change
+  // event stores it, so "the level before this save" is already the preview.
+  await simulateRuntimeMessage({ type: 'setGainLive', gain: 0.3 });
+  assert(ytcv.state.currentGain === 0.3, 'the preview is playing');
   const rejectedSave = await simulateRuntimeMessage({
     type: 'setGain', channelId: 'UCagree', gain: 0.3
   });
@@ -1354,6 +1387,51 @@ async function runTests() {
     'the popup reads the level that is actually stored');
   assert(mockStorage['channelVolumes']['UCagree'].gainVideo === 0.5,
     'the stored gain is unchanged');
+
+  section('Legacy fold: nothing resolves channel state until it has run');
+  mockStorage = {
+    autoLoudnessSettings: { targetLufs: -18, autoApplyLoudnessVideoDefault: true },
+    channelVolumes: { 'UCpremigration': { name: 'Pre Ch', gainVideo: 0.5, url: '' } }
+  };
+  mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCpremigration' };
+  setURL('/watch', 'PREMIG00001');
+  ytcv._set('currentChannel', { id: 'UCpremigration', name: 'Pre Ch', url: '' });
+  ytcv._set('currentLoudnessVideoId', 'PREMIG00001');
+  ytcv._set('currentVideoType', 'video');
+  ytcv._set('currentLoudnessDb', -6);
+  ytcv._set('targetLufs', -18);
+  ytcv._set('defaultAutoApplyLoudnessVideo', true);
+  ytcv._set('currentGain', 0.5);
+  // Storage still holds the pre-unification shape: a gain with no Auto flag,
+  // which the current rule reads as "follows the all-channel default".
+  // A flag left over from an earlier resolution must not let the bridge's
+  // fast path store a gain before the fold either.
+  ytcv._set('currentAutoApplyLoudnessVideo', true);
+  let releaseFold;
+  ytcv._set('storageSettled', false);
+  ytcv._set('storageReady', new Promise(resolve => { releaseFold = resolve; }));
+  const applyDuringFold = ytcv.applyPreferredGain();
+  simulateBridgeMessage({
+    videoId: 'PREMIG00001', loudnessDb: -6, isLiveContent: false,
+    channelId: 'UCpremigration', author: 'Pre Ch'
+  });
+  await tick();
+  await tick();
+  await tick();
+  assert(ytcv.state.currentGain === 0.5, 'no gain is applied before the fold has run');
+  assert(mockStorage['channelVolumes']['UCpremigration'].gainVideo === 0.5,
+    'no gain is stored before the fold has run');
+  await chrome.runtime.sendMessage({ type: 'store:migrateLegacyGains' });
+  releaseFold();
+  ytcv._set('storageSettled', true);
+  await applyDuringFold;
+  await tick();
+  assert(mockStorage['channelVolumes']['UCpremigration'].autoApplyLoudnessVideo === false,
+    'the fold pins the saved gain as the migration intends');
+  assert(mockStorage['channelVolumes']['UCpremigration'].gainVideo === 0.5,
+    'the gain saved before Auto existed is still the stored one');
+  assert(ytcv.state.currentGain === 0.5, 'and it is what plays');
+  mockDOMElements['canonical'] = null;
 
   section('Storage failure: a rejected write is answered, not dropped');
   mockStorage['channelVolumes'] = { 'UCwritefail': { name: 'Write Fail', gainVideo: 0.5 } };

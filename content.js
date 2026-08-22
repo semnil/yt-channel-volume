@@ -41,6 +41,12 @@
   // already been applied. Without this, an older read can undo a cross-tab
   // gain update after storage.onChanged commits it.
   let storageRevision = 0;
+  // Resolves once the legacy fold has run. Until then the channel map still
+  // holds the pre-unification shape, where a gain without an Auto flag meant
+  // Auto was off — resolving it under the current rule hands the channel to
+  // Auto and overwrites the gain the user saved.
+  let storageReady = Promise.resolve();
+  let storageSettled = true;
 
   // ── Storage helpers ────────────────────────────────────────────────
 
@@ -282,6 +288,8 @@
   }
 
   function applyAutomaticLoudnessGain() {
+    // Before the fold, fall through to applyPreferredGain, which waits for it.
+    if (!storageSettled) return false;
     if (!isCurrentAutoApplyEnabled() || currentLoudnessDb === null) return false;
     const gain = calcGainFromLoudness(currentLoudnessDb);
     const channelId = currentChannel.id;
@@ -296,6 +304,7 @@
   }
 
   async function applyPreferredGain() {
+    await storageReady;
     const requestedVideoId = getUrlVideoId();
     const requestedChannelId = currentChannel.id;
     const requestedVideoType = currentVideoType;
@@ -628,11 +637,13 @@
   // Fold any pre-unification Auto gains into channelVolumes before the first
   // apply reads them. A concurrent tab writing the same result is harmless.
   if (isContextValid()) {
-    requestChannelWrite('migrateLegacyGains', {})
+    storageSettled = false;
+    storageReady = requestChannelWrite('migrateLegacyGains', {})
       // Applying a saved gain still beats leaving playback unattenuated, so a
       // failed fold is logged and the apply proceeds on the old shape.
       .catch(err => reportFailure('legacy auto gains not folded in', err))
-      .then(() => { if (isWatchPage()) triggerApply(); });
+      .then(() => { storageSettled = true; });
+    storageReady.then(() => { if (isWatchPage()) triggerApply(); });
   } else if (isWatchPage()) {
     triggerApply();
   }
@@ -699,13 +710,11 @@
 
   // A manual gain is only a gain once it is stored: leaving playback on a
   // value storage refused would show the user a level that reverts at the
-  // next navigation.
-  function restoreGainAfterFailedSave(previousGain) {
-    try {
-      commitGain(previousGain);
-    } catch (err) {
-      reportFailure('gain not restored after a failed save', err);
-    }
+  // next navigation. The slider's live preview has already moved the gain by
+  // then, so the level to go back to is the one storage still holds.
+  function restoreGainAfterFailedSave() {
+    return applyPreferredGain().catch(err =>
+      reportFailure('gain not restored after a failed save', err));
   }
 
   function respondOnce(sendResponse) {
@@ -748,15 +757,16 @@
       // current name is still empty or a channel-ID placeholder.
       fillCurrentChannelNameFromDomFallback();
       const gain = calcGainFromLoudness(currentLoudnessDb);
-      const gainBeforeApply = currentGain;
       commitGain(gain);
       saveManualChannelGain(currentChannel.id, currentChannel.name, gain, currentVideoType, currentChannel.url).then(() => {
         notifyPopup();
         sendResponse({ ok: true, gain });
       }).catch(err => {
         reportFailure('applyLoudness failed', err);
-        restoreGainAfterFailedSave(gainBeforeApply);
-        sendResponse({ ok: false, reason: 'request failed' });
+        // Answer after the restore, so the state the popup reads back is the
+        // level that is playing.
+        restoreGainAfterFailedSave().then(() =>
+          sendResponse({ ok: false, reason: 'request failed' }));
       });
       return true;
     }
@@ -778,15 +788,14 @@
       }
       const { channelId, gain } = msg;
       fillCurrentChannelNameFromDomFallback();
-      const gainBeforeSave = currentGain;
       commitGain(gain);
       saveManualChannelGain(channelId, currentChannel.name, gain, currentVideoType, currentChannel.url).then(() => {
         notifyPopup();
         sendResponse({ ok: true });
       }).catch(err => {
         reportFailure('setGain failed', err);
-        restoreGainAfterFailedSave(gainBeforeSave);
-        sendResponse({ ok: false, reason: 'request failed' });
+        restoreGainAfterFailedSave().then(() =>
+          sendResponse({ ok: false, reason: 'request failed' }));
       });
       return true;
     }
@@ -836,6 +845,9 @@
         applyAutomaticLoudnessGain();
         notifyPopup();
         sendResponse({ ok: true });
+      }).catch(err => {
+        reportFailure('setTargetLufs failed', err);
+        sendResponse({ ok: false, reason: 'request failed' });
       });
       return true;
     }
@@ -888,11 +900,13 @@
         sendResponse(getState());
       }
 
-      if (stale && !_applyRunning) {
-        triggerApply().then(sendDetectedState);
-      } else {
-        sendDetectedState();
-      }
+      const detected = stale && !_applyRunning
+        ? triggerApply().then(sendDetectedState)
+        : Promise.resolve().then(sendDetectedState);
+      detected.catch(err => {
+        reportFailure('forceDetect failed', err);
+        sendResponse({ ok: false, reason: 'request failed' });
+      });
       return true;
     }
   }
@@ -905,7 +919,7 @@
           currentChannel, currentChannelVideoId,
           currentGain, currentLoudnessDb, currentLoudnessVideoId,
           currentVideoType, currentVideoTypeDetected, currentIsLiveNow, showGainOverlay,
-          currentAutoApplyLoudnessVideo, currentAutoApplyLoudnessLive,
+          currentAutoApplyLoudnessVideo, currentAutoApplyLoudnessLive, storageSettled,
           _lastVideoId, _lastProcessedVideo, _applyRunning, connectedVideo,
           targetLufs, defaultAutoApplyLoudnessVideo,
           defaultAutoApplyLoudnessLive, gainNode, audioCtx
@@ -943,6 +957,8 @@
           case 'currentAutoApplyLoudnessVideo': currentAutoApplyLoudnessVideo = val; break;
           case 'currentAutoApplyLoudnessLive': currentAutoApplyLoudnessLive = val; break;
           case 'currentLoudnessDb': currentLoudnessDb = val; break;
+          case 'storageReady': storageReady = val; break;
+          case 'storageSettled': storageSettled = val; break;
           case 'currentLoudnessVideoId': currentLoudnessVideoId = val; break;
         }
       }
