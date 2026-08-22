@@ -14,7 +14,7 @@ YT Channel Volume is a Chrome extension that remembers and auto-applies volume s
 
 - **What**: YouTube channel IDs, display names, channel URLs, the volume (gain) values you set for each kind (video / live), the loudness auto-apply switch for each kind, and the gain the extension works out for itself while that switch is on.
 - **Purpose**: Used to automatically apply your preferred volume when you visit a video from a saved channel.
-- **Storage**: Saved locally in `chrome.storage.local` on your device, and never transmitted to any external server. The gain you set is written when you set it; the gain the extension works out is written every time auto-apply adjusts a video, without any action from you.
+- **Storage**: Saved locally in `chrome.storage.local` on your device, and never transmitted to any external server. The gain you set is written when you set it. While auto-apply is on and a Content Loudness value has been read for the video, the gain the extension works out from it is written too, with no action from you.
 
 ### Extension Preferences
 
