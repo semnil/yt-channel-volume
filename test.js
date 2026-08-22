@@ -281,6 +281,20 @@ if (outDirDecl && sheetTable && langTuple) {
     }
     assert(excluded.has(fontDir[1]), 'the vendored font stays out of the store zip');
   }
+
+  // CI redraws into an empty directory and uploads that one, so the artifact
+  // holds what the runner drew and nothing else that sits in docs/screenshots.
+  assert(genSrc.includes("'--out'"), 'gen_screenshots.py takes --out');
+  const ciYaml = fs.readFileSync('./.github/workflows/ci.yaml', 'utf8');
+  const redrawInto = ciYaml.match(/gen_screenshots\.py --out (.+)/);
+  const uploads = ciYaml.match(/path: (.+)\n\s+if-no-files-found/);
+  assert(redrawInto, 'the CI redraw names a directory to write into');
+  assert(uploads, 'the CI upload names a path');
+  if (redrawInto && uploads) {
+    const dir = text => text.trim().replace(/\/$/, '');
+    assert(dir(uploads[1]) === dir(redrawInto[1]), 'CI uploads the directory it redrew into');
+    assert(!redrawInto[1].includes(outDir), 'the CI redraw does not write over the committed images');
+  }
 }
 assert(excluded.has('screenshots'),
   'a screenshots/ left over from before the move stays out of the store zip');

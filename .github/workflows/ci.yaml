@@ -48,12 +48,12 @@ jobs:
       - name: Draw Them Again For Inspection 🖼️
         id: redraw
         if: failure() && steps.screenshots.conclusion == 'failure'
-        run: python3 gen_screenshots.py
+        run: python3 gen_screenshots.py --out ${{ runner.temp }}/screenshots-from-ci
 
       - name: Upload What The Runner Drew 📡
         if: failure() && steps.redraw.conclusion == 'success'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: screenshots-from-ci
-          path: docs/screenshots/
+          path: ${{ runner.temp }}/screenshots-from-ci/
           if-no-files-found: error

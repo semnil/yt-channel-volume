@@ -2,7 +2,7 @@
 
 `--check` renders into a temporary directory and compares with what is committed
 instead of writing. Exit 1 means the two differ, exit 3 that this machine cannot
-draw them.
+draw them. `--out <dir>` writes the six there instead of into docs/screenshots.
 """
 import math
 import os
@@ -350,11 +350,24 @@ def render_all():
             for lang in LANGS for sheet, render in SHEETS.items()}
 
 
+def target_dir(args):
+    """Where to write: docs/screenshots, or the directory after --out."""
+    if '--out' not in args:
+        return OUT_DIR
+    after = args.index('--out') + 1
+    if after >= len(args):
+        print('--out needs a directory to write into', file=sys.stderr)
+        sys.exit(2)
+    return os.path.abspath(args[after])
+
+
 def write(images, target):
     os.makedirs(target, exist_ok=True)
+    inside = os.path.commonpath([ROOT, os.path.abspath(target)]) == ROOT
     for name, img in images.items():
-        img.save(os.path.join(target, name))
-        print(f'Generated {os.path.relpath(os.path.join(target, name), ROOT)}')
+        path = os.path.join(target, name)
+        img.save(path)
+        print(f'Generated {os.path.relpath(path, ROOT) if inside else path}')
 
 
 def check(images):
@@ -403,4 +416,4 @@ print(f'Font: {FAMILY} | pillow {PIL_VERSION} | freetype {features.version("free
       f'| raqm {features.check("raqm")}')
 if '--check' in sys.argv[1:]:
     sys.exit(check(render_all()))
-write(render_all(), OUT_DIR)
+write(render_all(), target_dir(sys.argv[1:]))
