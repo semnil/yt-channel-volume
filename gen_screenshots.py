@@ -12,7 +12,7 @@ import tempfile
 UNAVAILABLE = 3
 
 try:
-    from PIL import Image, ImageChops, ImageDraw, ImageFont
+    from PIL import Image, ImageChops, ImageDraw, ImageFont, __version__ as PIL_VERSION, features
 except ImportError as err:
     print(f'{err}. Install pillow to draw the screenshots.', file=sys.stderr)
     sys.exit(UNAVAILABLE)
@@ -388,7 +388,8 @@ def check(images):
     return 0
 
 
-print(f'Font: {FAMILY}')
+print(f'Font: {FAMILY} | pillow {PIL_VERSION} | freetype {features.version("freetype2")} '
+      f'| raqm {features.check("raqm")}')
 if '--check' in sys.argv[1:]:
     sys.exit(check(render_all()))
 write(render_all(), OUT_DIR)
