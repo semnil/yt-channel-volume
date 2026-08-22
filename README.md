@@ -53,6 +53,11 @@ content.js (ISOLATED world, document_idle)
   → チャンネルの LUFS 自動適用が ON なら動画ごとのゲインを算出・適用
   → OFF または LUFS 未検出なら保存済みチャンネルゲインを適用
   → Web Audio API GainNode で音量を制御
+  → 保存はすべて service worker に依頼
+
+background.js (service worker)
+  → チャンネルごとの設定を書き込む唯一のコンテキスト
+  → 複数タブが同じ保存領域を読んで書き戻す取りこぼしを防ぐ
 ```
 
 - YouTube のボリュームスライダーには一切触れない
