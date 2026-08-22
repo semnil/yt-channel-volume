@@ -382,15 +382,21 @@ def check(images):
             os.remove(os.path.join(scratch, name))
         os.rmdir(scratch)
 
-    for name in sorted(os.listdir(OUT_DIR)):
-        if name not in images:
-            stale.append(f'{name}: in {os.path.relpath(OUT_DIR, ROOT)} but drawn by nothing')
+    here = os.path.relpath(OUT_DIR, ROOT)
+    orphans = [f'{here}/{name}' for name in sorted(os.listdir(OUT_DIR)) if name not in images]
 
     for line in stale:
         print(line, file=sys.stderr)
     if stale:
         print(f'Run `python3 {os.path.basename(__file__)}` and commit the result.',
               file=sys.stderr)
+    for path in orphans:
+        print(f'{path}: drawn by nothing', file=sys.stderr)
+    if orphans:
+        # Generating writes the files it draws and touches nothing else, so
+        # these have to go by hand.
+        print('Delete: ' + ' '.join(orphans), file=sys.stderr)
+    if stale or orphans:
         return 1
     print(f'{len(images)} screenshots match the code that draws them.')
     return 0
