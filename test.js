@@ -192,19 +192,55 @@ for (const file of manifestFiles) {
 
 section('README screenshots');
 const readmeSrc = fs.readFileSync('./README.md', 'utf8');
-const readmeImages = Array.from(readmeSrc.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g), m => m[1]);
-assert(readmeImages.length > 0, 'the README embeds screenshots');
+const readmeImages = Array.from(
+  readmeSrc.matchAll(/!\[[^\]]*\]\(\s*([^)\s]+)(?:\s+"[^"]*")?\s*\)/g), m => m[1])
+  .filter(image => !/^https?:/.test(image));
 for (const image of readmeImages) {
   assert(fs.existsSync('./' + image), `${image} is embedded in the README and must exist`);
 }
+
+// The generator's own source says where it writes and what it names the files;
+// reading it here is what ties the README, the committed images and the zip
+// together. A rename on either side has to break something.
 const genSrc = fs.readFileSync('./gen_screenshots.py', 'utf8');
-const outDir = Array.from(genSrc.match(/OUT_DIR = os\.path\.join\(ROOT, (.+)\)/)[1].matchAll(/'([^']+)'/g),
-  m => m[1]).join('/');
-for (const image of readmeImages) {
-  assert(image.startsWith(outDir + '/'), `${image} lives where gen_screenshots.py writes`);
+const outDirDecl = genSrc.match(/OUT_DIR = os\.path\.join\(ROOT, '([^']+)', '([^']+)'\)/);
+const langLoop = genSrc.match(/for lang in \(([^)]+)\):/);
+assert(outDirDecl, 'gen_screenshots.py declares OUT_DIR as os.path.join(ROOT, ...)');
+assert(langLoop, 'gen_screenshots.py renders each language in a for loop');
+if (outDirDecl && langLoop) {
+  const outDir = `${outDirDecl[1]}/${outDirDecl[2]}`;
+  const langs = Array.from(langLoop[1].matchAll(/'([^']+)'/g), m => m[1]);
+  const generated = new Set(
+    Array.from(genSrc.matchAll(/save\(img, f'([^']+)'\)/g), m => m[1])
+      .flatMap(name => langs.map(lang => `${outDir}/${name.replace('{lang}', lang)}`)));
+  assert(generated.size > 0, 'gen_screenshots.py writes screenshots');
+  for (const file of generated) {
+    assert(fs.existsSync('./' + file), `${file} is generated and must be committed`);
+  }
+
+  const embedded = readmeImages.filter(image => image.startsWith(outDir + '/'));
+  assert(embedded.length > 0, 'the README embeds screenshots');
+  for (const image of embedded) {
+    assert(generated.has(image), `${image} is one of the files gen_screenshots.py writes`);
+  }
+
+  // The mockups spell out UI text that lives in _locales, so it can drift.
+  const drawnLabels = { target_desc: 'targetLufsDesc', unit_label: 'displayUnit', unit_desc: 'displayUnitDesc' };
+  for (const lang of langs) {
+    const start = genSrc.indexOf(`'${lang}': {`);
+    const block = start === -1 ? '' : genSrc.slice(start, genSrc.indexOf('video_title', start));
+    const messages = JSON.parse(fs.readFileSync(`./_locales/${lang}/messages.json`, 'utf8'));
+    for (const [drawn, messageKey] of Object.entries(drawnLabels)) {
+      const value = block.match(new RegExp(`'${drawn}': '([^']*)'`));
+      assert(value && value[1] === messages[messageKey].message,
+        `gen_screenshots.py draws ${lang} ${drawn} exactly as ${messageKey}`);
+    }
+  }
+
+  assert(excluded.has(outDir.split('/')[0]), 'the screenshots stay out of the store zip');
 }
-assert(excluded.has(outDir.split('/')[0]),
-  'the screenshots stay out of the store zip');
+assert(excluded.has('screenshots'),
+  'a screenshots/ left over from before the move stays out of the store zip');
 
 // options.js has no DOM harness here, so its half of the cross-context
 // contract is asserted against the source.
