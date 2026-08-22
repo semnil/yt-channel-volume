@@ -279,8 +279,11 @@ def screenshot_settings(lang):
     cy = sy + 200
     rr(draw, [30, cy, 610, cy+134], 10, CARD_BG)
     draw.text((50, cy+12), 'SAVED CHANNELS', fill=GRAY, font=FONT_SM)
+
+    # .clear-all-btn at rest: grey on a bordered 4px-radius box, 4px 10px padding
     clear_w = draw.textlength(s['clear_all'], font=FONT_SM)
-    draw.text((590-clear_w, cy+12), s['clear_all'], fill=PINK, font=FONT_SM)
+    draw.rounded_rectangle([590-clear_w-20, cy+6, 590, cy+28], radius=4, outline=BORDER)
+    draw.text((590-clear_w-10, cy+11), s['clear_all'], fill=GRAY, font=FONT_SM)
 
     hy = cy + 34
     draw.text((50, hy), 'CHANNEL', fill=DIM, font=FONT_SM)
