@@ -43,13 +43,19 @@ for _face in (REGULAR, BOLD):
     if not os.path.exists(_face):
         print(f'{os.path.relpath(_face, ROOT)} is missing from this checkout.', file=sys.stderr)
         sys.exit(UNAVAILABLE)
-FONT = ImageFont.truetype(REGULAR, 14)
-FONT_SM = ImageFont.truetype(REGULAR, 11)
-FONT_LG = ImageFont.truetype(REGULAR, 18)
-FONT_XL = ImageFont.truetype(BOLD, 22)
-FONT_TITLE = ImageFont.truetype(BOLD, 15)
-FONT_BOLD = ImageFont.truetype(BOLD, 14)
-FONT_XS = ImageFont.truetype(REGULAR, 9)
+def face(path, size):
+    """Basic layout on every machine: pillow reaches for raqm where it is
+    installed, and the two engines place these strings differently."""
+    return ImageFont.truetype(path, size, layout_engine=ImageFont.Layout.BASIC)
+
+
+FONT = face(REGULAR, 14)
+FONT_SM = face(REGULAR, 11)
+FONT_LG = face(REGULAR, 18)
+FONT_XL = face(BOLD, 22)
+FONT_TITLE = face(BOLD, 15)
+FONT_BOLD = face(BOLD, 14)
+FONT_XS = face(REGULAR, 9)
 
 
 def rr(draw, box, radius, fill):
@@ -88,7 +94,7 @@ def toggle(draw, x, y, on):
 def fit_value_font(draw, cards, max_w):
     """Largest bold size at which every card's value + unit still fits its card."""
     for size in (22, 20, 18, 17, 16, 15, 14):
-        font = ImageFont.truetype(BOLD, size)
+        font = face(BOLD, size)
         if all(draw.textlength(val, font=font) + draw.textlength(unit, font=FONT_XS) <= max_w
                for _, val, unit, _ in cards):
             return font
