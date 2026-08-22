@@ -53,7 +53,7 @@ content.js (ISOLATED world, document_idle)
   → チャンネルの LUFS 自動適用が ON なら動画ごとのゲインを算出・適用
   → OFF または LUFS 未検出なら保存済みチャンネルゲインを適用
   → Web Audio API GainNode で音量を制御
-  → 保存はすべて service worker に依頼
+  → チャンネル設定の保存は service worker に依頼
 
 background.js (service worker)
   → チャンネルごとの設定を書き込む唯一のコンテキスト
@@ -76,7 +76,7 @@ python gen_icons.py
 
 # Chrome Web Store 用 zip
 python pack.py
-# → yt-channel-volume-1.0.0.zip
+# → yt-channel-volume-<version>.zip
 ```
 
 ## ファイル構成
@@ -86,7 +86,8 @@ yt-channel-volume/
 ├── manifest.json         # Manifest V3 設定
 ├── page-bridge.js        # MAIN world — loudnessDb 抽出
 ├── content.js            # ISOLATED world — ゲイン管理・チャンネル検出
-├── utils.js              # 共通定数・ユーティリティ (popup/options 共有)
+├── background.js         # service worker — チャンネル設定の単一 writer
+├── utils.js              # 共通定数・ユーティリティ (content/popup/options/service worker 共有)
 ├── popup.html/js         # ツールバーポップアップ
 ├── options.html/js       # 設定画面
 ├── _locales/             # i18n (ja, en)
@@ -94,6 +95,7 @@ yt-channel-volume/
 ├── test.js               # utils ユニットテスト
 ├── test-navigation.js    # ナビゲーション・データ整合性テスト
 ├── gen_icons.py          # アイコン生成 (Python pillow)
+├── gen_screenshots.py    # ストア掲載用スクリーンショット生成
 ├── pack.py               # zip パッケージング
 ├── PRIVACY_POLICY.md     # プライバシーポリシー (EN)
 ├── PRIVACY_POLICY_JA.md  # プライバシーポリシー (JA)
