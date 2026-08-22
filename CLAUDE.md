@@ -44,7 +44,7 @@ utils.js → content.js (ISOLATED world content scripts, document_idle)
     ├── channelVolumes: { [channelId]: { name, gainLive, gainVideo, autoApplyLoudnessLive, autoApplyLoudnessVideo, url } }
     └── unifiedGains: マイグレーション済みの印 (top-level key)
 
-utils.js (shared, content/popup/options で読み込み + test.js)
+utils.js (shared, content / popup / options / background で読み込み + tests)
 ├── Constants: storage keys, YT_REFERENCE_LUFS, DEFAULT_TARGET_LUFS
 ├── Gain utilities: gainToPercent, percentToGain, gainToDb, formatGain, formatAutoGain, calcGain
 ├── Storage utilities: isContextValid, updateChannelVolumes, CHANNEL_WRITES, getChannelGain, setChannelGain, applyChannelIdentity, normalizeStoredGain, migrateLegacyAutoGains
@@ -93,7 +93,7 @@ options.html / options.js (設定画面、別タブで表示)
 | `background.js` | Service worker. channelVolumes への書き込みを一手に引き受ける (`store:<op>`) |
 | `page-bridge.js` | MAIN world. loudnessDb 抽出 (define/fetch/ytplayer) → postMessage |
 | `content.js` | ISOLATED world. ゲイン管理、Audio chain、チャンネル検出、Storage |
-| `utils.js` | 共通定数・ユーティリティ (popup/options で共有) |
+| `utils.js` | 共通定数・ユーティリティ (content / popup / options / service worker で共有) |
 | `popup.html` | Popup UI |
 | `popup.js` | Popup logic. 情報表示、適用操作、手動ボリューム |
 | `options.html` | 設定画面 UI |
@@ -102,7 +102,9 @@ options.html / options.js (設定画面、別タブで表示)
 | `icons/` | Extension icons (16/48/128 px) — 3-bar loudness meter |
 | `gen_icons.py` | アイコン生成スクリプト (Python pillow) |
 | `pack.py` | Chrome Web Store 用 zip 生成 |
+| `gen_screenshots.py` | ストア掲載用スクリーンショット生成 |
 | `test.js` | ユニットテスト (node test.js) |
+| `test-navigation.js` | ナビゲーション・状態遷移テスト (node test-navigation.js) |
 
 ## Key design decisions
 
