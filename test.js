@@ -158,15 +158,38 @@ assert(JSON.stringify(isolatedContentScript?.js) ===
   JSON.stringify(['utils.js', 'content.js']),
   'shared utilities load before the isolated content script');
 
-section('options initialization');
+section('initialization reveal');
+// A control whose transition survives initialization animates from its markup
+// default into its stored value after the surface is already on screen. Only a
+// universal `transition: none !important` under body.initializing covers every
+// control, including ones added later.
+function suppressesAllTransitions(html) {
+  const style = html.slice(html.indexOf('<style>'), html.indexOf('</style>'));
+  for (const rule of style.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    if (!/transition\s*:\s*none\s*!important/.test(rule[2])) continue;
+    const selectors = rule[1].split(',').map(s => s.trim().replace(/\s+/g, ' '));
+    if (['*', '*::before', '*::after']
+      .every(u => selectors.includes('body.initializing ' + u))) return true;
+  }
+  return false;
+}
 const optionsHtml = fs.readFileSync('./options.html', 'utf8');
 const optionsSrc = fs.readFileSync('./options.js', 'utf8');
-assert(optionsHtml.includes('<body class="initializing">'),
-  'options remain hidden while asynchronous settings load');
-assert(optionsHtml.includes('body.initializing .toggle-switch .slider'),
-  'options toggle transitions are disabled during initialization');
-assert(optionsSrc.includes('.finally(revealOptions);'),
-  'options reveal after initialization succeeds or fails');
+const popupHtml = fs.readFileSync('./popup.html', 'utf8');
+const popupSrc = fs.readFileSync('./popup.js', 'utf8');
+for (const [name, html, src, reveal] of [
+  ['options', optionsHtml, optionsSrc, /\.finally\(revealOptions\);/],
+  ['popup', popupHtml, popupSrc, /finally\s*\{\s*revealPopup\(\);/],
+]) {
+  assert(html.includes('<body class="initializing">'),
+    `${name} remains hidden while asynchronous settings load`);
+  assert(/body\.initializing\s*\{\s*visibility:\s*hidden;\s*\}/.test(html),
+    `${name} hides the surface through the initializing class`);
+  assert(suppressesAllTransitions(html),
+    `${name} stops every transition while initializing`);
+  assert(reveal.test(src),
+    `${name} reveals after initialization succeeds or fails`);
+}
 assert(optionsSrc.indexOf("requestChannelWrite('migrateLegacyGains')") !== -1 &&
   optionsSrc.indexOf("requestChannelWrite('migrateLegacyGains')") <
     optionsSrc.indexOf('.then(renderChannels)'),
