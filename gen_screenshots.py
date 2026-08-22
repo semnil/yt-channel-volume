@@ -93,8 +93,6 @@ STRINGS = {
         'target_desc': 'Loudness から算出するゲインの基準値',
         'unit_label': '表示単位',
         'unit_desc': 'ゲイン値の表示形式',
-        'overlay_label': 'ゲイン表示',
-        'overlay_desc': 'プレイヤーの音量バー横にゲインを表示',
         'video_title': 'Sample Ch. - ピアノカバー集',
         'video_channel': 'Sample Ch.',
         'channels': [
@@ -106,11 +104,9 @@ STRINGS = {
     'en': {
         'apply': 'Apply 63% to channel (Video)',
         'manual': 'MANUAL VOLUME',
-        'target_desc': 'Reference level for gain from Loudness',
+        'target_desc': 'Reference level for gain calculation from Loudness',
         'unit_label': 'Display unit',
         'unit_desc': 'Format for gain values',
-        'overlay_label': 'Gain overlay',
-        'overlay_desc': 'Show gain next to volume bar',
         'video_title': 'Sample Ch. - Piano Cover Collection',
         'video_channel': 'Sample Ch.',
         'channels': [
@@ -226,9 +222,9 @@ def screenshot_settings(lang):
     draw.text((50, cy+16), 'SAVED CHANNELS', fill=GRAY, font=FONT_SM)
 
     hy = cy + 40
-    draw.text((50, hy), 'Channel', fill=DIM, font=FONT_SM)
-    draw.text((380, hy), 'Video', fill=DIM, font=FONT_SM)
-    draw.text((470, hy), 'Live', fill=DIM, font=FONT_SM)
+    draw.text((50, hy), 'CHANNEL', fill=DIM, font=FONT_SM)
+    draw.text((380, hy), 'VIDEO', fill=DIM, font=FONT_SM)
+    draw.text((470, hy), 'LIVE', fill=DIM, font=FONT_SM)
     draw.line([(50, hy+18), (590, hy+18)], fill=BORDER)
 
     ry = hy + 24
@@ -272,7 +268,7 @@ def screenshot_overlay(lang):
     draw.text((vx+88, cy-8), '63%', fill=TEAL, font=FONT_BOLD)
 
     # Annotation
-    label = '\u2191 Gain overlay' if lang == 'en' else '\u2191 \u30b2\u30a4\u30f3\u8868\u793a'
+    label = '\u2193 Gain overlay' if lang == 'en' else '\u2193 \u30b2\u30a4\u30f3\u8868\u793a'
     draw.text((vx+78, cy-34), label, fill=TEAL, font=FONT_BOLD)
 
     gear(draw, W-93, cy, 8, WHITE)
