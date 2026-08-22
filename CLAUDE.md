@@ -44,7 +44,7 @@ utils.js → content.js (ISOLATED world content scripts, document_idle)
     ├── channelVolumes: { [channelId]: { name, gainLive, gainVideo, autoApplyLoudnessLive, autoApplyLoudnessVideo, url } }
     └── unifiedGains: マイグレーション済みの印 (top-level key)
 
-utils.js (shared, content / popup / options / background で読み込み + test.js)
+utils.js (shared, content / popup / options / background で読み込み + tests)
 ├── Constants: storage keys, YT_REFERENCE_LUFS, DEFAULT_TARGET_LUFS
 ├── Gain utilities: gainToPercent, percentToGain, gainToDb, formatGain, formatAutoGain, calcGain
 ├── Storage utilities: isContextValid, updateChannelVolumes, CHANNEL_WRITES, getChannelGain, setChannelGain, applyChannelIdentity, normalizeStoredGain, migrateLegacyAutoGains
