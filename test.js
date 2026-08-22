@@ -227,12 +227,15 @@ if (outDirDecl && langLoop) {
   // The mockups spell out UI text that lives in _locales, so it can drift.
   const drawnLabels = { target_desc: 'targetLufsDesc', unit_label: 'displayUnit', unit_desc: 'displayUnitDesc' };
   for (const lang of langs) {
+    const localeFile = `./_locales/${lang}/messages.json`;
+    assert(fs.existsSync(localeFile), `${localeFile} exists for the language the mockups draw`);
+    if (!fs.existsSync(localeFile)) { continue; }
     const start = genSrc.indexOf(`'${lang}': {`);
     const block = start === -1 ? '' : genSrc.slice(start, genSrc.indexOf('video_title', start));
-    const messages = JSON.parse(fs.readFileSync(`./_locales/${lang}/messages.json`, 'utf8'));
+    const messages = JSON.parse(fs.readFileSync(localeFile, 'utf8'));
     for (const [drawn, messageKey] of Object.entries(drawnLabels)) {
       const value = block.match(new RegExp(`'${drawn}': '([^']*)'`));
-      assert(value && value[1] === messages[messageKey].message,
+      assert(value && messages[messageKey] && value[1] === messages[messageKey].message,
         `gen_screenshots.py draws ${lang} ${drawn} exactly as ${messageKey}`);
     }
   }
