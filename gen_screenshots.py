@@ -1,4 +1,6 @@
 """Generate Chrome Web Store screenshot mockups (640x400), ja + en."""
+import math
+
 from PIL import Image, ImageDraw, ImageFont
 
 W, H = 640, 400
@@ -13,18 +15,73 @@ GRAY = (136, 136, 136)
 DIM = (85, 85, 85)
 BORDER = (42, 42, 74)
 
-# Fonts with Japanese support
-FONT = ImageFont.truetype('meiryo.ttc', 14)
-FONT_SM = ImageFont.truetype('meiryo.ttc', 11)
-FONT_LG = ImageFont.truetype('meiryo.ttc', 18)
-FONT_XL = ImageFont.truetype('meiryob.ttc', 22)
-FONT_TITLE = ImageFont.truetype('meiryob.ttc', 15)
-FONT_BOLD = ImageFont.truetype('meiryob.ttc', 14)
-FONT_XS = ImageFont.truetype('meiryo.ttc', 9)
+# Japanese-capable UI faces, tried in order. The first family whose regular and
+# bold both load is used for every string in the mockups.
+FONT_FAMILIES = [
+    ('Meiryo', 'meiryo.ttc', 'meiryob.ttc'),
+    ('Hiragino Sans',
+     '/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc',
+     '/System/Library/Fonts/ヒラギノ角ゴシック W6.ttc'),
+    ('Noto Sans JP', 'NotoSansJP-Regular.otf', 'NotoSansJP-Bold.otf'),
+]
+
+
+def pick_family():
+    for name, regular, bold in FONT_FAMILIES:
+        try:
+            ImageFont.truetype(regular, 12)
+            ImageFont.truetype(bold, 12)
+        except OSError:
+            continue
+        return name, regular, bold
+    raise SystemExit('No Japanese-capable font found. Install one of: '
+                     + ', '.join(f[0] for f in FONT_FAMILIES))
+
+
+FAMILY, REGULAR, BOLD = pick_family()
+FONT = ImageFont.truetype(REGULAR, 14)
+FONT_SM = ImageFont.truetype(REGULAR, 11)
+FONT_LG = ImageFont.truetype(REGULAR, 18)
+FONT_XL = ImageFont.truetype(BOLD, 22)
+FONT_TITLE = ImageFont.truetype(BOLD, 15)
+FONT_BOLD = ImageFont.truetype(BOLD, 14)
+FONT_XS = ImageFont.truetype(REGULAR, 9)
 
 
 def rr(draw, box, radius, fill):
     draw.rounded_rectangle(box, radius=radius, fill=fill)
+
+
+# Icons are drawn, not typed: the symbol glyphs for a gear and a fullscreen box
+# are missing from some of the font families above and would land as tofu.
+
+def gear(draw, cx, cy, r, color):
+    ring = r * 0.72
+    for i in range(8):
+        a = i * math.pi / 4
+        draw.line([(cx + math.cos(a) * ring, cy + math.sin(a) * ring),
+                   (cx + math.cos(a) * r, cy + math.sin(a) * r)], fill=color, width=3)
+    draw.ellipse([cx - ring, cy - ring, cx + ring, cy + ring], outline=color, width=3)
+
+
+def fullscreen(draw, cx, cy, size, color):
+    h = size / 2
+    arm = size / 3
+    for sx in (-1, 1):
+        for sy in (-1, 1):
+            x, y = cx + h * sx, cy + h * sy
+            draw.line([(x, y), (x - arm * sx, y)], fill=color, width=2)
+            draw.line([(x, y), (x, y - arm * sy)], fill=color, width=2)
+
+
+def fit_value_font(draw, cards, max_w):
+    """Largest bold size at which every card's value + unit still fits its card."""
+    for size in (22, 20, 18, 17, 16, 15, 14):
+        font = ImageFont.truetype(BOLD, size)
+        if all(draw.textlength(val, font=font) + draw.textlength(unit, font=FONT_XS) <= max_w
+               for _, val, unit, _ in cards):
+            return font
+    return ImageFont.truetype(BOLD, 14)
 
 
 # ── Localized strings ────────────────────────────────────────────────
@@ -76,7 +133,7 @@ def screenshot_popup(lang):
 
     # Header
     draw.text((px+16, py+12), 'YT Channel Volume', fill=TEAL, font=FONT_TITLE)
-    draw.text((px+pw-30, py+12), '\u2699', fill=GRAY, font=FONT_LG)
+    gear(draw, px+pw-24, py+22, 8, GRAY)
     draw.line([(px, py+38), (px+pw, py+38)], fill=BORDER)
 
     # Info section
@@ -90,13 +147,17 @@ def screenshot_popup(lang):
         ('SUGGESTED', '63', '%', YELLOW),
         ('CURRENT', '63', '%', PINK),
     ]
-    cx = px + 14
+    card_w, gap = 88, 6
+    value_font = fit_value_font(draw, cards, card_w - 14)
+    unit_dy = value_font.getmetrics()[0] - FONT_XS.getmetrics()[0]
+    cx = px + 12
     for label, val, unit, color in cards:
-        rr(draw, [cx, iy+38, cx+85, iy+88], 6, CARD_BG)
+        rr(draw, [cx, iy+38, cx+card_w, iy+88], 6, CARD_BG)
         draw.text((cx+8, iy+42), label, fill=GRAY, font=FONT_XS)
-        draw.text((cx+8, iy+56), val, fill=color, font=FONT_XL)
-        draw.text((cx+8+draw.textlength(val, font=FONT_XL), iy+62), unit, fill=GRAY, font=FONT_SM)
-        cx += 92
+        draw.text((cx+8, iy+56), val, fill=color, font=value_font)
+        draw.text((cx+8+draw.textlength(val, font=value_font), iy+56+unit_dy), unit,
+                  fill=GRAY, font=FONT_XS)
+        cx += card_w + gap
 
     draw.line([(px, iy+100), (px+pw, iy+100)], fill=BORDER)
 
@@ -214,7 +275,8 @@ def screenshot_overlay(lang):
     label = '\u2191 Gain overlay' if lang == 'en' else '\u2191 \u30b2\u30a4\u30f3\u8868\u793a'
     draw.text((vx+78, cy-34), label, fill=TEAL, font=FONT_BOLD)
 
-    draw.text((W-100, cy-7), '\u2699  \u2b1c', fill=WHITE, font=FONT)
+    gear(draw, W-93, cy, 8, WHITE)
+    fullscreen(draw, W-63, cy, 15, WHITE)
 
     draw.text((20, 20), s['video_title'], fill=WHITE, font=FONT_LG)
     draw.text((20, 48), s['video_channel'], fill=GRAY, font=FONT)
@@ -223,6 +285,7 @@ def screenshot_overlay(lang):
     print(f'Generated screenshots/overlay_{lang}.png')
 
 
+print(f'Font: {FAMILY}')
 for lang in ('ja', 'en'):
     screenshot_popup(lang)
     screenshot_settings(lang)
