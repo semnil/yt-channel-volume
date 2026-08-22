@@ -196,6 +196,24 @@
     }).catch(() => {});
   });
 
+  function resyncFromContent(toggle, videoType) {
+    sendMsg({ type: 'getState' }).then(state => {
+      if (state) {
+        updateUI(state);
+        return;
+      }
+      toggle.checked = videoType === 'live'
+        ? autoApplyLoudnessLive
+        : autoApplyLoudnessVideo;
+      toggle.disabled = !currentChannel.id || currentVideoType !== videoType;
+    }).catch(() => {
+      toggle.checked = videoType === 'live'
+        ? autoApplyLoudnessLive
+        : autoApplyLoudnessVideo;
+      toggle.disabled = !currentChannel.id || currentVideoType !== videoType;
+    });
+  }
+
   function handleAutoApplyChange(toggle, videoType) {
     if (!currentChannel.id || videoType !== currentVideoType) return;
     const enabled = toggle.checked;
@@ -209,16 +227,12 @@
       if (resp?.ok) {
         updateUI(resp);
       } else {
-        toggle.checked = videoType === 'live'
-          ? autoApplyLoudnessLive
-          : autoApplyLoudnessVideo;
-        toggle.disabled = !currentChannel.id || currentVideoType !== videoType;
+        // The write may have landed before the failure, so show what the page
+        // holds rather than assuming the toggle never moved.
+        resyncFromContent(toggle, videoType);
       }
     }).catch(() => {
-      toggle.checked = videoType === 'live'
-        ? autoApplyLoudnessLive
-        : autoApplyLoudnessVideo;
-      toggle.disabled = !currentChannel.id || currentVideoType !== videoType;
+      resyncFromContent(toggle, videoType);
     });
   }
 

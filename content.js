@@ -5,8 +5,12 @@
 (() => {
   'use strict';
 
-  function isContextValid() {
-    try { return !!chrome.runtime?.id; } catch (_) { return false; }
+  // A failed save leaves the GainNode at a level nothing recorded, and a failed
+  // apply leaves the popup waiting. Extension reload is the documented cause
+  // and needs no console noise; any other cause has to be visible.
+  function reportFailure(what, err) {
+    if (!isContextValid()) return;
+    console.error('[YTCV] ' + what, err);
   }
 
   /** @type {AudioContext | null} */
@@ -28,8 +32,6 @@
   let defaultAutoApplyLoudnessLive = DEFAULT_AUTO_APPLY_LOUDNESS;
   let currentAutoApplyLoudnessVideo = false;
   let currentAutoApplyLoudnessLive = false;
-  let currentAutoFallbackVideo = null;
-  let currentAutoFallbackLive = null;
   /** 'live' (live stream / archive) or 'video' (regular video / shorts) */
   let currentVideoType = 'video';
   let currentVideoTypeDetected = false;
@@ -37,12 +39,17 @@
   let showGainOverlay = false;
   // Invalidates asynchronous preference reads when a newer storage change has
   // already been applied. Without this, an older read can undo a cross-tab
-  // fallback update after storage.onChanged commits it.
+  // gain update after storage.onChanged commits it.
   let storageRevision = 0;
-  // Track fallback reads independently so a hidden Video/Live update neither
-  // cancels the current type's apply nor gets overwritten by its stale result.
-  let autoFallbackRevisionVideo = 0;
-  let autoFallbackRevisionLive = 0;
+  // Resolves once the legacy fold has been attempted; `storageMigrated` says
+  // whether it succeeded. Until it has, the channel map still holds the
+  // pre-unification shape, where a gain without an Auto flag meant Auto was
+  // off — resolving it under the current rule hands the channel to Auto and
+  // overwrites the gain the user saved.
+  let storageReady = Promise.resolve();
+  let storageSettled = true;
+  let storageMigrated = false;
+  let foldInFlight = null;
 
   // ── Storage helpers ────────────────────────────────────────────────
 
@@ -71,33 +78,11 @@
     await chrome.storage.local.set({ [SETTINGS_KEY]: merged });
   }
 
-  function extractAutoFallbackForType(entry, videoType) {
-    if (!entry) return null;
-    const key = videoType === 'live' ? 'gainLive' : 'gainVideo';
-    return entry[key] ?? null;
-  }
-
-  function setCurrentAutoFallbacksFromEntry(entry) {
-    currentAutoFallbackVideo = extractAutoFallbackForType(entry, 'video');
-    currentAutoFallbackLive = extractAutoFallbackForType(entry, 'live');
-  }
-
-  function getCurrentAutoFallback(videoType = currentVideoType) {
-    return videoType === 'live'
-      ? currentAutoFallbackLive
-      : currentAutoFallbackVideo;
-  }
-
-  function setCurrentAutoFallback(gain, videoType = currentVideoType) {
-    if (videoType === 'live') currentAutoFallbackLive = gain;
-    else currentAutoFallbackVideo = gain;
-  }
-
   function resolveAutoApplyForType(entry, videoType) {
     const defaultValue = videoType === 'live'
       ? defaultAutoApplyLoudnessLive
       : defaultAutoApplyLoudnessVideo;
-    return resolveAutoApplySetting(entry, videoType, defaultValue);
+    return resolveAutoApplySetting(entry, videoType, defaultValue, !storageMigrated);
   }
 
   function setCurrentAutoApplyFromEntry(entry) {
@@ -125,91 +110,45 @@
     return all[channelId] || null;
   }
 
-  async function loadChannelGain(channelId, videoType) {
-    const entry = await loadChannelEntry(channelId);
-    return getChannelGain(entry, videoType);
-  }
-
-  async function loadAutoFallbackEntry(channelId) {
-    if (!channelId || !isContextValid()) return null;
-    const data = await chrome.storage.local.get([
-      AUTO_FALLBACKS_KEY,
-      autoFallbackStorageKey(channelId, 'video'),
-      autoFallbackStorageKey(channelId, 'live')
-    ]);
-    const gainVideo = getStoredAutoFallbackGain(data, channelId, 'video');
-    const gainLive = getStoredAutoFallbackGain(data, channelId, 'live');
-    return gainVideo === null && gainLive === null
-      ? null
-      : { gainVideo, gainLive };
-  }
-
-  async function saveAutoFallbackGain(channelId, gain, videoType) {
-    if (!channelId || !isContextValid()) return;
-    const storageKey = autoFallbackStorageKey(channelId, videoType);
-    await chrome.storage.local.set({ [storageKey]: gain });
-  }
-
-  async function saveChannelGain(channelId, name, gain, videoType, url) {
-    if (!channelId || !isContextValid()) return;
-    const data = await chrome.storage.local.get(CHANNEL_VOLUMES_KEY);
-    const all = data[CHANNEL_VOLUMES_KEY] || {};
-    const entry = all[channelId] || { name: name || channelId };
-    if (name) entry.name = name;
-    if (url) entry.url = url;
-    // Migrate old format
-    if ('gain' in entry && !('gainLive' in entry) && !('gainVideo' in entry)) {
-      entry.gainLive = entry.gain;
-      entry.gainVideo = entry.gain;
-      delete entry.gain;
+  // Channel writes go to the service worker, the one context that performs
+  // them. A read-modify-write done here would race the other tabs, which all
+  // hold the same channel map.
+  async function requestChannelWrite(type, payload) {
+    if (!isContextValid()) return;
+    const response = await chrome.runtime.sendMessage({
+      type: 'store:' + type, ...payload
+    });
+    if (!response?.ok) {
+      throw new Error(response?.reason || 'channel write failed');
     }
-    const key = videoType === 'live' ? 'gainLive' : 'gainVideo';
-    entry[key] = gain;
-    all[channelId] = entry;
+  }
 
-    // A null granular value is a tombstone for any legacy aggregate fallback.
-    // Manual gain then remains the baseline until Auto learns a new value.
-    await chrome.storage.local.set({
-      [CHANNEL_VOLUMES_KEY]: all,
-      [autoFallbackStorageKey(channelId, videoType)]: null
+  // `autoApply` pins the Auto state that was in effect for a manual save, so
+  // an all-channel default cannot later take over a gain the user chose. Auto
+  // writes its own gain without it and keeps following the default.
+  function saveChannelGain(channelId, name, gain, videoType, url, autoApply) {
+    if (!channelId) return Promise.resolve();
+    return requestChannelWrite('saveChannelGain', {
+      channelId, name, gain, videoType, url, autoApply
     });
   }
 
-  async function saveChannelAutoApply(channelId, name, enabled, videoType, url) {
-    if (!channelId || !isContextValid()) return;
-    const data = await chrome.storage.local.get(CHANNEL_VOLUMES_KEY);
-    const all = data[CHANNEL_VOLUMES_KEY] || {};
-    const entry = all[channelId] || { name: name || channelId };
-    if (name) entry.name = name;
-    if (url) entry.url = url;
-
-    // Expand the legacy all-types flag before updating one type.
-    if ('autoApplyLoudness' in entry) {
-      entry.autoApplyLoudnessVideo = !!entry.autoApplyLoudness;
-      entry.autoApplyLoudnessLive = !!entry.autoApplyLoudness;
-      delete entry.autoApplyLoudness;
-    }
-
-    const key = videoType === 'live'
-      ? 'autoApplyLoudnessLive'
-      : 'autoApplyLoudnessVideo';
-    // Store both true and false so an explicit per-channel choice can override
-    // the all-channel default without modifying any saved gain.
-    entry[key] = !!enabled;
-    all[channelId] = entry;
-    await chrome.storage.local.set({ [CHANNEL_VOLUMES_KEY]: all });
+  function saveManualChannelGain(channelId, name, gain, videoType, url) {
+    return saveChannelGain(
+      channelId, name, gain, videoType, url, isCurrentAutoApplyEnabled(videoType)
+    );
   }
 
-  async function deleteChannelGain(channelId) {
-    if (!channelId || !isContextValid()) return;
-    const data = await chrome.storage.local.get(CHANNEL_VOLUMES_KEY);
-    const all = data[CHANNEL_VOLUMES_KEY] || {};
-    delete all[channelId];
-    await chrome.storage.local.set({
-      [CHANNEL_VOLUMES_KEY]: all,
-      [autoFallbackStorageKey(channelId, 'video')]: null,
-      [autoFallbackStorageKey(channelId, 'live')]: null
+  function saveChannelAutoApply(channelId, name, enabled, videoType, url) {
+    if (!channelId) return Promise.resolve();
+    return requestChannelWrite('saveChannelAutoApply', {
+      channelId, name, enabled, videoType, url
     });
+  }
+
+  function deleteChannelGain(channelId) {
+    if (!channelId) return Promise.resolve();
+    return requestChannelWrite('deleteChannel', { channelId });
   }
 
   // ── Loudness from page-bridge.js (MAIN world) ─────────────────────
@@ -246,7 +185,7 @@
       bridgeVideoId !== currentLoudnessVideoId;
     if (loudnessVideoChanged) {
       // `null` is meaningful for a new video: it clears the previous video's
-      // LUFS so Auto uses the saved fallback instead of stale loudness data.
+      // LUFS so Auto uses the saved channel gain instead of stale loudness.
       currentLoudnessVideoId = bridgeVideoId;
       currentLoudnessDb = hasLoudness ? db : null;
     } else if (hasLoudness) {
@@ -273,8 +212,6 @@
         currentChannel.url = 'https://www.youtube.com/channel/' + bridgeChId;
         currentAutoApplyLoudnessVideo = false;
         currentAutoApplyLoudnessLive = false;
-        currentAutoFallbackVideo = null;
-        currentAutoFallbackLive = null;
         // Bridge author comes from the current video's player response — it is
         // authoritative for bridgeChId. Prefer it over DOM, which may lag the
         // SPA navigation and still describe the previous channel.
@@ -296,21 +233,13 @@
       // corruption on SPA navigation.
       if (event.data.author && isContextValid()) {
         const authorName = event.data.author;
-        chrome.storage.local.get(CHANNEL_VOLUMES_KEY).then(data => {
-          const all = data[CHANNEL_VOLUMES_KEY] || {};
-          if (all[bridgeChId]) return;
-          const match = Object.entries(all).find(([k, v]) =>
-            k.startsWith('@') && v.name === authorName
-          );
-          if (!match) return;
-          const [oldKey, val] = match;
-          all[bridgeChId] = {
-            ...val,
-            url: 'https://www.youtube.com/channel/' + bridgeChId
-          };
-          delete all[oldKey];
-          chrome.storage.local.set({ [CHANNEL_VOLUMES_KEY]: all });
-        });
+        // Sent before Auto's own save for this message, so the worker decides
+        // the adoption against a map that does not hold that gain yet.
+        requestChannelWrite('adoptHandleEntry', {
+          channelId: bridgeChId,
+          authorName,
+          url: 'https://www.youtube.com/channel/' + bridgeChId
+        }).catch(err => reportFailure('handle entry not adopted', err));
       }
     }
     if (applyAutomaticLoudnessGain()) {
@@ -362,27 +291,32 @@
   }
 
   function applyAutomaticLoudnessGain() {
+    // Before the fold, fall through to applyPreferredGain, which waits for it.
+    if (!storageSettled) return false;
     if (!isCurrentAutoApplyEnabled() || currentLoudnessDb === null) return false;
     const gain = calcGainFromLoudness(currentLoudnessDb);
     const channelId = currentChannel.id;
     const videoType = currentVideoType;
-    setCurrentAutoFallback(gain, videoType);
     commitGain(gain);
-    saveAutoFallbackGain(channelId, gain, videoType).catch(() => {});
+    // The calculated gain becomes the channel's stored gain, so a later video
+    // of the same channel without Content Loudness keeps the same level. Not
+    // before the fold, though: a flagless gain is what a pre-unification
+    // manual save looks like, and the fold would pin this channel Auto-off.
+    if (storageMigrated) {
+      saveChannelGain(
+        channelId, currentChannel.name, gain, videoType, currentChannel.url
+      ).catch(err => reportFailure('auto gain not stored', err));
+    }
     return true;
   }
 
   async function applyPreferredGain() {
+    await storageReady;
     const requestedVideoId = getUrlVideoId();
     const requestedChannelId = currentChannel.id;
     const requestedVideoType = currentVideoType;
     const requestedStorageRevision = storageRevision;
-    const requestedFallbackRevisionVideo = autoFallbackRevisionVideo;
-    const requestedFallbackRevisionLive = autoFallbackRevisionLive;
-    const [entry, fallbackEntry] = await Promise.all([
-      loadChannelEntry(requestedChannelId),
-      loadAutoFallbackEntry(requestedChannelId)
-    ]);
+    const entry = await loadChannelEntry(requestedChannelId);
 
     // Ignore a storage result that belongs to state superseded by SPA
     // navigation, bridge metadata, or a settings change.
@@ -392,26 +326,19 @@
         requestedStorageRevision !== storageRevision) return;
 
     setCurrentAutoApplyFromEntry(entry);
-    if (requestedFallbackRevisionVideo === autoFallbackRevisionVideo) {
-      currentAutoFallbackVideo = extractAutoFallbackForType(fallbackEntry, 'video');
-    }
-    if (requestedFallbackRevisionLive === autoFallbackRevisionLive) {
-      currentAutoFallbackLive = extractAutoFallbackForType(fallbackEntry, 'live');
-    }
     const autoEnabled = isCurrentAutoApplyEnabled(requestedVideoType);
     const hasLoudness = currentLoudnessDb !== null;
     const gain = autoEnabled && hasLoudness
       ? calcGainFromLoudness(currentLoudnessDb)
-      : autoEnabled
-        ? getCurrentAutoFallback(requestedVideoType) ??
-          getChannelGain(entry, requestedVideoType) ?? 1.0
-        : getChannelGain(entry, requestedVideoType) ?? 1.0;
-    if (autoEnabled && hasLoudness) {
-      setCurrentAutoFallback(gain, requestedVideoType);
-    }
+      : getChannelGain(entry, requestedVideoType) ?? 1.0;
     commitGain(gain);
-    if (autoEnabled && hasLoudness) {
-      await saveAutoFallbackGain(requestedChannelId, gain, requestedVideoType);
+    if (autoEnabled && hasLoudness && storageMigrated) {
+      // The gain is already playing. A failed write must not abort the caller —
+      // `forceDetect` answers the popup from this path.
+      await saveChannelGain(
+        requestedChannelId, currentChannel.name, gain,
+        requestedVideoType, currentChannel.url
+      ).catch(err => reportFailure('auto gain not stored', err));
     }
   }
 
@@ -601,8 +528,6 @@
       currentChannelVideoId = '';
       currentAutoApplyLoudnessVideo = false;
       currentAutoApplyLoudnessLive = false;
-      currentAutoFallbackVideo = null;
-      currentAutoFallbackLive = null;
     }
 
     const ch = detectChannel();
@@ -683,13 +608,35 @@
   async function triggerApply() {
     if (!isContextValid()) { observer.disconnect(); return; }
     if (!isWatchPage()) return;
+    // Taken before the fold is awaited: a second call that arrives during that
+    // wait would otherwise pass this check and run a second apply.
     if (_applyRunning) return;
     _applyRunning = true;
     try {
+      // A fold that failed leaves the profile on the old rule, so retry it on
+      // every apply until it lands rather than waiting for the next page load.
+      if (!storageMigrated) await foldLegacyGains();
       await applyVideoVolume();
+    } catch (err) {
+      reportFailure('apply failed', err);
     } finally {
       _applyRunning = false;
     }
+  }
+
+  // A failed fold is not fatal: the profile stays on the pre-unification rule,
+  // where a saved gain means Auto is off, so playback still uses what the user
+  // saved and Auto cannot overwrite it.
+  function foldLegacyGains() {
+    if (storageMigrated) return storageReady;
+    if (foldInFlight) return foldInFlight;
+    storageSettled = false;
+    foldInFlight = requestChannelWrite('migrateLegacyGains', {})
+      .then(() => { storageMigrated = true; })
+      .catch(err => reportFailure('legacy auto gains not folded in', err))
+      .then(() => { storageSettled = true; foldInFlight = null; });
+    storageReady = foldInFlight;
+    return storageReady;
   }
 
   document.addEventListener('yt-navigate-finish', triggerApply);
@@ -714,56 +661,32 @@
   });
   observer.observe(document.documentElement, { childList: true, subtree: true });
 
-  if (isWatchPage()) triggerApply();
-
-  function applyCurrentFallbackAfterStorageChange() {
-    if (!isCurrentAutoApplyEnabled() || currentLoudnessDb !== null) return;
-    const learnedGain = getCurrentAutoFallback();
-    if (learnedGain !== null) {
-      if (learnedGain !== currentGain) commitGain(learnedGain);
-      else notifyPopup();
-      return;
-    }
-
-    const requestedChannelId = currentChannel.id;
-    const requestedVideoType = currentVideoType;
-    const requestedStorageRevision = storageRevision;
-    loadChannelGain(requestedChannelId, requestedVideoType).then(savedGain => {
-      if (requestedChannelId !== currentChannel.id ||
-          requestedVideoType !== currentVideoType ||
-          requestedStorageRevision !== storageRevision ||
-          !isCurrentAutoApplyEnabled() || currentLoudnessDb !== null) return;
-      commitGain(savedGain ?? 1.0);
-    });
+  // Fold any pre-unification Auto gains into channelVolumes before the first
+  // apply reads them. A concurrent tab writing the same result is harmless.
+  if (isContextValid()) {
+    foldLegacyGains().then(() => { if (isWatchPage()) triggerApply(); });
+  } else if (isWatchPage()) {
+    triggerApply();
   }
 
   // React to settings changes (e.g. overlay toggle from options page)
   if (isContextValid()) {
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area !== 'local') return;
-      const fallbackVideoKey = currentChannel.id
-        ? autoFallbackStorageKey(currentChannel.id, 'video')
-        : '';
-      const fallbackLiveKey = currentChannel.id
-        ? autoFallbackStorageKey(currentChannel.id, 'live')
-        : '';
-      const fallbackVideoChange = fallbackVideoKey ? changes[fallbackVideoKey] : null;
-      const fallbackLiveChange = fallbackLiveKey ? changes[fallbackLiveKey] : null;
-      const legacyFallbackChange = changes[AUTO_FALLBACKS_KEY];
-      const currentFallbackChanged = !!(
-        legacyFallbackChange || fallbackVideoChange || fallbackLiveChange
-      );
-      const currentTypeFallbackChange = currentVideoType === 'live'
-        ? fallbackLiveChange
-        : fallbackVideoChange;
-      if (legacyFallbackChange || fallbackVideoChange) {
-        autoFallbackRevisionVideo++;
+      // Another context may have folded the profile while this one's own fold
+      // failed. The mark is the canonical state, so adopt it here rather than
+      // waiting for the next apply — this event's channel data is already in
+      // the folded shape and must be read under the current rule.
+      if (changes[UNIFIED_GAINS_KEY]?.newValue === true && !storageMigrated) {
+        storageMigrated = true;
+        storageSettled = true;
+        foldInFlight = null;
+        storageRevision++;
+        if (!changes[CHANNEL_VOLUMES_KEY]) {
+          applyPreferredGain().then(notifyPopup);
+        }
       }
-      if (legacyFallbackChange || fallbackLiveChange) {
-        autoFallbackRevisionLive++;
-      }
-      if (changes[SETTINGS_KEY] || changes[CHANNEL_VOLUMES_KEY] ||
-          legacyFallbackChange || currentTypeFallbackChange) {
+      if (changes[SETTINGS_KEY] || changes[CHANNEL_VOLUMES_KEY]) {
         storageRevision++;
       }
       if (changes[SETTINGS_KEY]) {
@@ -778,44 +701,6 @@
           updateGainOverlay();
           notifyPopup();
         });
-      }
-      if (currentFallbackChanged && currentChannel.id) {
-        const granularFallbackChanged = !!(fallbackVideoChange || fallbackLiveChange);
-        if (legacyFallbackChange && !granularFallbackChanged) {
-          // A legacy writer may update the aggregate map while granular values
-          // already exist. Reload so granular keys retain precedence.
-          const requestedChannelId = currentChannel.id;
-          const requestedVideoType = currentVideoType;
-          const requestedStorageRevision = storageRevision;
-          loadAutoFallbackEntry(requestedChannelId).then(fallbackEntry => {
-            if (requestedChannelId !== currentChannel.id ||
-                requestedVideoType !== currentVideoType ||
-                requestedStorageRevision !== storageRevision) return;
-            setCurrentAutoFallbacksFromEntry(fallbackEntry);
-            if (!changes[CHANNEL_VOLUMES_KEY]) {
-              applyCurrentFallbackAfterStorageChange();
-            }
-          });
-        } else {
-          if (legacyFallbackChange) {
-            const allFallbacks = legacyFallbackChange.newValue || {};
-            setCurrentAutoFallbacksFromEntry(allFallbacks[currentChannel.id]);
-          }
-          if (fallbackVideoChange) {
-            currentAutoFallbackVideo = normalizeStoredGain(
-              fallbackVideoChange.newValue
-            );
-          }
-          if (fallbackLiveChange) {
-            currentAutoFallbackLive = normalizeStoredGain(
-              fallbackLiveChange.newValue
-            );
-          }
-          if (!changes[CHANNEL_VOLUMES_KEY] &&
-              (legacyFallbackChange || currentTypeFallbackChange)) {
-            applyCurrentFallbackAfterStorageChange();
-          }
-        }
       }
       if (changes[CHANNEL_VOLUMES_KEY] && currentChannel.id) {
         const all = changes[CHANNEL_VOLUMES_KEY].newValue || {};
@@ -835,10 +720,7 @@
           previousAutoApplyLive !== currentAutoApplyLoudnessLive;
         const gain = currentAutoApply && currentLoudnessDb !== null
           ? calcGainFromLoudness(currentLoudnessDb)
-          : currentAutoApply
-            ? getCurrentAutoFallback() ??
-              getChannelGain(entry, currentVideoType) ?? 1.0
-            : (entry ? getChannelGain(entry, currentVideoType) : 1.0);
+          : (entry ? getChannelGain(entry, currentVideoType) : 1.0);
         if (gain == null && !currentTypeAutoApplyChanged) {
           if (anyAutoApplyChanged) notifyPopup();
           return;
@@ -860,7 +742,37 @@
 
   // ── Message handler (from popup) ───────────────────────────────────
 
+  // A manual gain is only a gain once it is stored: leaving playback on a
+  // value storage refused would show the user a level that reverts at the
+  // next navigation. The slider's live preview has already moved the gain by
+  // then, so the level to go back to is the one storage still holds.
+  function restoreGainAfterFailedSave() {
+    return applyPreferredGain().catch(err =>
+      reportFailure('gain not restored after a failed save', err));
+  }
+
+  function respondOnce(sendResponse) {
+    let answered = false;
+    return payload => {
+      if (answered) return;
+      answered = true;
+      sendResponse(payload);
+    };
+  }
+
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+    const reply = respondOnce(sendResponse);
+    try {
+      return handleMessage(msg, reply);
+    } catch (err) {
+      // commitGain and the DOM reads around it run synchronously here.
+      reportFailure((msg?.type || 'message') + ' failed', err);
+      reply({ ok: false, reason: 'request failed' });
+      return true;
+    }
+  });
+
+  function handleMessage(msg, sendResponse) {
     if (msg.type === 'getState') {
       sendResponse(getState());
       return true;
@@ -880,9 +792,15 @@
       fillCurrentChannelNameFromDomFallback();
       const gain = calcGainFromLoudness(currentLoudnessDb);
       commitGain(gain);
-      saveChannelGain(currentChannel.id, currentChannel.name, gain, currentVideoType, currentChannel.url).then(() => {
+      saveManualChannelGain(currentChannel.id, currentChannel.name, gain, currentVideoType, currentChannel.url).then(() => {
         notifyPopup();
         sendResponse({ ok: true, gain });
+      }).catch(err => {
+        reportFailure('applyLoudness failed', err);
+        // Answer after the restore, so the state the popup reads back is the
+        // level that is playing.
+        restoreGainAfterFailedSave().then(() =>
+          sendResponse({ ok: false, reason: 'request failed' }));
       });
       return true;
     }
@@ -905,9 +823,13 @@
       const { channelId, gain } = msg;
       fillCurrentChannelNameFromDomFallback();
       commitGain(gain);
-      saveChannelGain(channelId, currentChannel.name, gain, currentVideoType, currentChannel.url).then(() => {
+      saveManualChannelGain(channelId, currentChannel.name, gain, currentVideoType, currentChannel.url).then(() => {
         notifyPopup();
         sendResponse({ ok: true });
+      }).catch(err => {
+        reportFailure('setGain failed', err);
+        restoreGainAfterFailedSave().then(() =>
+          sendResponse({ ok: false, reason: 'request failed' }));
       });
       return true;
     }
@@ -917,11 +839,12 @@
       deleteChannelGain(channelId).then(() => {
         currentAutoApplyLoudnessVideo = false;
         currentAutoApplyLoudnessLive = false;
-        currentAutoFallbackVideo = null;
-        currentAutoFallbackLive = null;
         commitGain(1.0);
         notifyPopup();
         sendResponse({ ok: true });
+      }).catch(err => {
+        reportFailure('clearChannel failed', err);
+        sendResponse({ ok: false, reason: 'request failed' });
       });
       return true;
     }
@@ -943,6 +866,9 @@
         await applyPreferredGain();
         notifyPopup();
         sendResponse({ ok: true, ...getState() });
+      }).catch(err => {
+        reportFailure('setAutoApplyLoudness failed', err);
+        sendResponse({ ok: false, reason: 'request failed' });
       });
       return true;
     }
@@ -953,6 +879,9 @@
         applyAutomaticLoudnessGain();
         notifyPopup();
         sendResponse({ ok: true });
+      }).catch(err => {
+        reportFailure('setTargetLufs failed', err);
+        sendResponse({ ok: false, reason: 'request failed' });
       });
       return true;
     }
@@ -1005,14 +934,16 @@
         sendResponse(getState());
       }
 
-      if (stale && !_applyRunning) {
-        triggerApply().then(sendDetectedState);
-      } else {
-        sendDetectedState();
-      }
+      const detected = stale && !_applyRunning
+        ? triggerApply().then(sendDetectedState)
+        : Promise.resolve().then(sendDetectedState);
+      detected.catch(err => {
+        reportFailure('forceDetect failed', err);
+        sendResponse({ ok: false, reason: 'request failed' });
+      });
       return true;
     }
-  });
+  }
 
   // Test-only: expose internals for state transition testing
   if (typeof globalThis.__TEST_YTCV__ !== 'undefined') {
@@ -1023,7 +954,7 @@
           currentGain, currentLoudnessDb, currentLoudnessVideoId,
           currentVideoType, currentVideoTypeDetected, currentIsLiveNow, showGainOverlay,
           currentAutoApplyLoudnessVideo, currentAutoApplyLoudnessLive,
-          currentAutoFallbackVideo, currentAutoFallbackLive,
+          storageSettled, storageMigrated,
           _lastVideoId, _lastProcessedVideo, _applyRunning, connectedVideo,
           targetLufs, defaultAutoApplyLoudnessVideo,
           defaultAutoApplyLoudnessLive, gainNode, audioCtx
@@ -1038,10 +969,9 @@
       isWatchPage,
       getUrlVideoId,
       calcGainFromLoudness,
-      loadChannelGain,
-      loadAutoFallbackEntry,
-      saveAutoFallbackGain,
-      autoFallbackStorageKey,
+      loadChannelEntry,
+      saveChannelGain,
+      saveManualChannelGain,
       saveChannelAutoApply,
       applyPreferredGain,
       notifyPopup,
@@ -1061,9 +991,10 @@
           case 'defaultAutoApplyLoudnessLive': defaultAutoApplyLoudnessLive = val; break;
           case 'currentAutoApplyLoudnessVideo': currentAutoApplyLoudnessVideo = val; break;
           case 'currentAutoApplyLoudnessLive': currentAutoApplyLoudnessLive = val; break;
-          case 'currentAutoFallbackVideo': currentAutoFallbackVideo = val; break;
-          case 'currentAutoFallbackLive': currentAutoFallbackLive = val; break;
           case 'currentLoudnessDb': currentLoudnessDb = val; break;
+          case 'storageReady': storageReady = val; break;
+          case 'storageSettled': storageSettled = val; break;
+          case 'storageMigrated': storageMigrated = val; break;
           case 'currentLoudnessVideoId': currentLoudnessVideoId = val; break;
         }
       }

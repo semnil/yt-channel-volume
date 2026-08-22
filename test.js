@@ -13,7 +13,27 @@ function assertClose(actual, expected, tolerance, msg) {
 function section(name) { console.log(name); }
 
 // Load utils.js into global scope
-globalThis.chrome = { i18n: { getMessage: () => '' } };
+let mockStorage = {};
+globalThis.chrome = {
+  runtime: { id: 'test-extension-id' },
+  i18n: { getMessage: () => '' },
+  storage: {
+    local: {
+      get(key) {
+        if (key === null) return Promise.resolve(JSON.parse(JSON.stringify(mockStorage)));
+        return Promise.resolve({ [key]: mockStorage[key] });
+      },
+      set(obj) {
+        Object.assign(mockStorage, JSON.parse(JSON.stringify(obj)));
+        return Promise.resolve();
+      },
+      remove(keys) {
+        for (const key of Array.isArray(keys) ? keys : [keys]) delete mockStorage[key];
+        return Promise.resolve();
+      }
+    }
+  }
+};
 globalThis.document = { createElement: () => ({ set textContent(v) {}, get innerHTML() { return ''; } }) };
 const fs = require('fs');
 // Replace const/let with var so eval exposes to global scope
@@ -56,31 +76,36 @@ assert(f.text === gainToDb(0.5), '0.5 dB → text matches gainToDb');
 f = formatGain(0, '%');
 assert(f.text === '0' && f.unit === '%', '0 % → 0%');
 
-section('formatAutoFallback');
-assert(formatAutoFallback(0.7, '%') === 'Auto (70%)', 'saved 0.7 fallback → Auto (70%)');
-assert(formatAutoFallback(null, '%') === 'Auto (100%)', 'missing fallback → Auto (100%)');
-assert(formatAutoFallback(0.5, 'dB', '自動') === '自動 (-6.0 dB)', 'fallback respects display unit and label');
+section('formatAutoGain');
+assert(formatAutoGain(0.7, '%') === 'Auto (70%)', 'stored 0.7 gain → Auto (70%)');
+assert(formatAutoGain(null, '%') === 'Auto (—)', 'no stored gain is shown as unknown, not as 100%');
+assert(formatAutoGain(undefined, 'dB') === 'Auto (—)', 'undefined gain is shown as unknown');
+assert(formatAutoGain(0.5, 'dB', '自動') === '自動 (-6.0 dB)', 'Auto gain respects display unit and label');
 
-section('auto fallback storage');
+section('normalizeStoredGain');
 assert(normalizeStoredGain(0.5) === 0.5, 'finite stored gain remains available');
 assert(normalizeStoredGain(NaN) === null, 'non-finite stored gain is rejected');
-const fallbackVideoKey = autoFallbackStorageKey('UCfixture', 'video');
-const fallbackLiveKey = autoFallbackStorageKey('UCfixture', 'live');
-assert(fallbackVideoKey === 'autoLoudnessFallback:UCfixture:video',
-  'video fallback uses a channel/type-specific key');
-assert(fallbackLiveKey === 'autoLoudnessFallback:UCfixture:live',
-  'live fallback uses a channel/type-specific key');
-assert(getStoredAutoFallbackGain({
-  [AUTO_FALLBACKS_KEY]: { UCfixture: { gainVideo: 0.4 } }
-}, 'UCfixture', 'video') === 0.4, 'legacy aggregate fallback remains readable');
-assert(getStoredAutoFallbackGain({
-  [AUTO_FALLBACKS_KEY]: { UCfixture: { gainVideo: 0.4 } },
-  [fallbackVideoKey]: 0.8
-}, 'UCfixture', 'video') === 0.8, 'granular fallback overrides legacy value');
-assert(getStoredAutoFallbackGain({
-  [AUTO_FALLBACKS_KEY]: { UCfixture: { gainVideo: 0.4 } },
-  [fallbackVideoKey]: null
-}, 'UCfixture', 'video') === null, 'granular tombstone clears legacy fallback');
+
+section('setChannelGain / setChannelAutoApply');
+const typedEntry = { gainVideo: 0.5, gainLive: 0.7 };
+setChannelGain(typedEntry, 'live', 0.9);
+assert(typedEntry.gainLive === 0.9 && typedEntry.gainVideo === 0.5,
+  'typed gain write leaves the other type untouched');
+const legacyGainEntry = { gain: 0.6 };
+setChannelGain(legacyGainEntry, 'video', 0.3);
+assert(legacyGainEntry.gainVideo === 0.3 && legacyGainEntry.gainLive === 0.6 &&
+  !('gain' in legacyGainEntry),
+  'legacy single gain expands into both types before the write');
+const legacyAutoEntry = { autoApplyLoudness: true };
+setChannelAutoApply(legacyAutoEntry, 'video', false);
+assert(legacyAutoEntry.autoApplyLoudnessVideo === false &&
+  legacyAutoEntry.autoApplyLoudnessLive === true &&
+  !('autoApplyLoudness' in legacyAutoEntry),
+  'legacy all-types Auto flag expands before one type is set');
+assert(hasExplicitAutoApply({ autoApplyLoudness: false }, 'live') === true,
+  'legacy all-types flag counts as an explicit Auto choice');
+assert(hasExplicitAutoApply({ gainLive: 0.7 }, 'live') === false,
+  'a stored gain is not an explicit Auto choice');
 
 section('getChannelGain');
 assert(getChannelGain({ gainVideo: 0.5, gainLive: 0.7 }, 'video') === 0.5,
@@ -93,22 +118,28 @@ assert(getChannelGain({ gain: 0.6, gainVideo: 0.5 }, 'live') === null,
   'mixed storage does not reuse legacy gain for a missing typed gain');
 
 section('resolveAutoApplySetting');
-assert(resolveAutoApplySetting({ gainVideo: 0.5 }, 'video', true) === false,
-  'manual Video gain remains manual when default is ON');
-assert(resolveAutoApplySetting({ gainLive: 0.7 }, 'live', true) === false,
-  'manual Live gain remains manual when default is ON');
-assert(resolveAutoApplySetting({ gainVideo: 0.5 }, 'live', true) === true,
-  'manual Video gain does not block the Live default');
-assert(resolveAutoApplySetting({ gain: 0.6 }, 'video', true) === false,
-  'legacy manual gain remains manual');
+assert(resolveAutoApplySetting({ autoApplyLoudnessVideo: false, gainVideo: 0.5 },
+  'video', true) === false, 'a manual save pins Auto OFF against the default');
+assert(resolveAutoApplySetting({ autoApplyLoudnessVideo: false }, 'live', true) === true,
+  'an explicit Video choice does not block the Live default');
+assert(resolveAutoApplySetting({ autoApplyLoudness: false }, 'video', true) === false,
+  'legacy all-types Auto flag still resolves both types');
 assert(resolveAutoApplySetting({ autoApplyLoudnessVideo: true, gainVideo: 0.5 },
-  'video', false) === true, 'explicit Auto ON overrides a manual fallback gain');
+  'video', false) === true, 'explicit Auto ON overrides the global default');
 assert(resolveAutoApplySetting({ autoApplyLoudnessVideo: false },
   'video', true) === false, 'explicit Auto OFF overrides the global default');
 assert(resolveAutoApplySetting({ name: 'Unconfigured' }, 'video', true) === true,
-  'channel type without Auto or manual gain inherits the default');
-assert(resolveAutoApplySetting({ gain: 0.6, gainVideo: 0.5 }, 'live', true) === true,
-  'mixed storage uses the same typed-gain rule as content preference resolution');
+  'channel type without an explicit choice inherits the default');
+assert(resolveAutoApplySetting({ gainVideo: 0.5 }, 'video', true) === true,
+  'a stored gain no longer decides Auto — Auto writes that gain too');
+assert(resolveAutoApplySetting({ gainVideo: 0.5 }, 'video', true, true) === false,
+  'before the fold a stored gain still means the channel opted out');
+assert(resolveAutoApplySetting({ gain: 0.6 }, 'live', true, true) === false,
+  'the legacy single gain opts both types out before the fold');
+assert(resolveAutoApplySetting({ autoApplyLoudnessVideo: true, gainVideo: 0.5 },
+  'video', false, true) === true, 'an explicit choice still wins before the fold');
+assert(resolveAutoApplySetting({ name: 'No gain' }, 'video', true, true) === true,
+  'a channel with no gain still inherits the default before the fold');
 
 section('isManualGainLocked');
 assert(isManualGainLocked(true, true) === true,
@@ -134,8 +165,55 @@ assert(optionsHtml.includes('<body class="initializing">'),
   'options remain hidden while asynchronous settings load');
 assert(optionsHtml.includes('body.initializing .toggle-switch .slider'),
   'options toggle transitions are disabled during initialization');
-assert(optionsSrc.includes('}).finally(revealOptions);'),
+assert(optionsSrc.includes('.finally(revealOptions);'),
   'options reveal after initialization succeeds or fails');
+assert(optionsSrc.indexOf("requestChannelWrite('migrateLegacyGains')") !== -1 &&
+  optionsSrc.indexOf("requestChannelWrite('migrateLegacyGains')") <
+    optionsSrc.indexOf('.then(renderChannels)'),
+  'options ask the worker to fold legacy Auto gains in before listing channels');
+
+section('packaging');
+const packSrc = fs.readFileSync('./pack.py', 'utf8');
+const excludeBlock = packSrc.slice(packSrc.indexOf('EXCLUDE = {'), packSrc.indexOf('}', packSrc.indexOf('EXCLUDE = {')));
+const excluded = new Set(Array.from(excludeBlock.matchAll(/'([^']+)'/g), m => m[1]));
+const manifestFiles = [
+  ...(manifest.content_scripts || []).flatMap(script => script.js || []),
+  manifest.background?.service_worker,
+  manifest.options_page,
+  manifest.action?.default_popup,
+  ...Object.values(manifest.action?.default_icon || {}),
+  ...Object.values(manifest.icons || {})
+].filter(Boolean);
+for (const file of manifestFiles) {
+  assert(!excluded.has(file.split('/')[0]) && !excluded.has(file),
+    `${file} is referenced by the manifest and must be packed`);
+  assert(fs.existsSync('./' + file), `${file} exists`);
+}
+
+// options.js has no DOM harness here, so its half of the cross-context
+// contract is asserted against the source.
+section('options adopt a fold another context finished');
+const optionsListener = optionsSrc.slice(optionsSrc.indexOf('chrome.storage.onChanged.addListener'));
+assert(optionsListener.includes('UNIFIED_GAINS_KEY'),
+  'the options listener watches the migration mark');
+assert(/UNIFIED_GAINS_KEY[\s\S]{0,160}storageMigrated = true[\s\S]{0,80}renderChannels\(\)/.test(optionsListener),
+  'and adopting it re-renders the table under the current rule');
+assert(/resolveAutoApplySetting\([^)]*!storageMigrated\)/.test(optionsSrc),
+  'the table resolves with the pre-unification rule until the fold has landed');
+
+section('service worker is the single writer');
+const backgroundSrc = fs.readFileSync('./background.js', 'utf8');
+const contentSrc = fs.readFileSync('./content.js', 'utf8');
+assert(manifest.background?.service_worker === 'background.js',
+  'the worker is registered so channel writes have one owner');
+assert(backgroundSrc.includes("importScripts('utils.js')"),
+  'the worker shares the channel write definitions with the pages');
+assert(!/updateChannelVolumes\(/.test(contentSrc) && !/updateChannelVolumes\(/.test(optionsSrc),
+  'no page performs a channel read-modify-write of its own');
+for (const write of Object.keys(CHANNEL_WRITES)) {
+  assert(contentSrc.includes(`'${write}'`) || optionsSrc.includes(`'${write}'`),
+    `channel write ${write} is requested by a page`);
+}
 
 // ── calcGain ─────────────────────────────────────────────────────────
 
@@ -201,10 +279,144 @@ assert(DEFAULT_TARGET_LUFS === -18, 'DEFAULT_TARGET_LUFS = -18');
 assert(DEFAULT_AUTO_APPLY_LOUDNESS === false, 'DEFAULT_AUTO_APPLY_LOUDNESS = false');
 assert(SETTINGS_KEY === 'autoLoudnessSettings', 'SETTINGS_KEY');
 assert(CHANNEL_VOLUMES_KEY === 'channelVolumes', 'CHANNEL_VOLUMES_KEY');
-assert(AUTO_FALLBACKS_KEY === 'autoLoudnessFallbacks', 'AUTO_FALLBACKS_KEY');
-assert(AUTO_FALLBACK_KEY_PREFIX === 'autoLoudnessFallback:', 'AUTO_FALLBACK_KEY_PREFIX');
+assert(LEGACY_AUTO_FALLBACKS_KEY === 'autoLoudnessFallbacks', 'LEGACY_AUTO_FALLBACKS_KEY');
+assert(LEGACY_AUTO_FALLBACK_KEY_PREFIX === 'autoLoudnessFallback:',
+  'LEGACY_AUTO_FALLBACK_KEY_PREFIX');
 
-// ── Summary ──────────────────────────────────────────────────────────
+// ── migrateLegacyAutoGains ───────────────────────────────────────────
 
-console.log(`\n${passed} passed, ${failed} failed`);
-process.exit(failed > 0 ? 1 : 0);
+async function runMigrationTests() {
+  section('migrateLegacyAutoGains');
+
+  mockStorage = {
+    autoLoudnessSettings: { autoApplyLoudnessVideoDefault: true },
+    channelVolumes: {
+      UCauto: { name: 'Auto', autoApplyLoudnessLive: true, gainLive: 0.4 },
+      UCmanual: { name: 'Manual', gainVideo: 0.5 },
+      UClegacy: { name: 'Legacy' },
+      UCtombstone: { name: 'Tombstone', autoApplyLoudnessVideo: true, gainVideo: 0.55 },
+      UCallTypes: { name: 'All Types', autoApplyLoudness: true, gainVideo: 0.3 },
+      UCboth: { name: 'Both Sources', autoApplyLoudnessVideo: true, gainVideo: 0.2 },
+      UCshadowed: { name: 'Shadowed', gainVideo: 0.55 }
+    },
+    'autoLoudnessFallback:UCauto:live': 0.8,
+    'autoLoudnessFallback:UCtombstone:video': null,
+    'autoLoudnessFallback:UCorphan:video': 0.9,
+    'autoLoudnessFallback:UCallTypes:video': 0.75,
+    'autoLoudnessFallback:UCboth:video': 0.8,
+    'autoLoudnessFallback:UCshadowed:video': null,
+    autoLoudnessFallbacks: {
+      UClegacy: { gainVideo: 0.3 },
+      UCboth: { gainVideo: 0.35 },
+      UCshadowed: { gainVideo: 0.9 }
+    }
+  };
+  assert(await migrateLegacyAutoGains() === true, 'legacy keys trigger the migration');
+  const migrated = mockStorage.channelVolumes;
+  assert(migrated.UCauto.gainLive === 0.8,
+    'learned Auto gain becomes the channel gain so toggling Auto keeps the level');
+  assert(migrated.UCmanual.autoApplyLoudnessVideo === false,
+    'a saved gain without an Auto flag is pinned OFF against the all-channel default');
+  assert(migrated.UCmanual.gainVideo === 0.5, 'pinning a manual gain does not change it');
+  assert(!('autoApplyLoudnessLive' in migrated.UCmanual),
+    'the type without a saved gain keeps inheriting the default');
+  assert(migrated.UClegacy.gainVideo === 0.3,
+    'legacy aggregate value folds in for a type the default drives');
+  assert(migrated.UCtombstone.gainVideo === 0.55,
+    'a tombstoned learned gain leaves the manually saved gain in place');
+  assert(!('UCorphan' in migrated), 'an orphan learned gain is dropped, not resurrected');
+  assert(migrated.UCallTypes.gainVideo === 0.75,
+    'the legacy all-types Auto flag still selects the type for folding');
+  assert(resolveAutoApplySetting(migrated.UCallTypes, 'video', false) === true &&
+    resolveAutoApplySetting(migrated.UCallTypes, 'live', false) === true,
+    'the legacy all-types flag keeps both types on Auto after the migration');
+  assert(!('autoApplyLoudnessVideo' in migrated.UCallTypes),
+    'a channel already on Auto is not pinned OFF by its saved gain');
+  assert(migrated.UCboth.gainVideo === 0.8,
+    'a per-type learned gain wins over the legacy aggregate for the same channel');
+  assert(migrated.UCshadowed.gainVideo === 0.55,
+    'a per-type tombstone blocks the legacy aggregate from resurrecting');
+  assert(Object.keys(mockStorage).filter(k => k.startsWith('autoLoudnessFallback:')).length === 0,
+    'granular legacy keys are removed');
+  assert(!('autoLoudnessFallbacks' in mockStorage), 'legacy aggregate key is removed');
+  assert(mockStorage.unifiedGains === true,
+    'the profile is marked so the migration cannot run a second time');
+  assert(!('unifiedGains' in mockStorage.autoLoudnessSettings),
+    'the mark is a top-level key, out of reach of every settings writer');
+  assert(mockStorage.autoLoudnessSettings.autoApplyLoudnessVideoDefault === true,
+    'the migration does not rewrite the settings object');
+
+  const settled = JSON.stringify(mockStorage);
+  assert(await migrateLegacyAutoGains() === false, 'migration is a no-op once the profile is marked');
+  assert(JSON.stringify(mockStorage) === settled, 'no-op migration leaves storage untouched');
+
+  // Auto stores a gain without an Auto flag — the same shape the migration
+  // reads as "saved manually". A second pass must not pin it OFF.
+  mockStorage.channelVolumes.UCautoLearned = { name: 'Auto Learned', gainVideo: 0.7 };
+  await migrateLegacyAutoGains();
+  assert(!('autoApplyLoudnessVideo' in mockStorage.channelVolumes.UCautoLearned),
+    'a gain Auto stored after the migration is never pinned OFF');
+
+  section('migrateLegacyAutoGains — storage that predates the Auto feature');
+  mockStorage = {
+    autoLoudnessSettings: { targetLufs: -18 },
+    channelVolumes: {
+      UCreleased: { name: 'Released Ch', gainVideo: 0.5, url: 'https://example.com' },
+      UCbothTypes: { name: 'Both', gain: 0.6 }
+    }
+  };
+  assert(await migrateLegacyAutoGains() === true,
+    'a profile with no legacy Auto keys still migrates');
+  assert(mockStorage.channelVolumes.UCreleased.autoApplyLoudnessVideo === false,
+    'a gain saved before Auto existed is pinned against the all-channel default');
+  assert(mockStorage.channelVolumes.UCreleased.gainVideo === 0.5,
+    'pinning leaves the saved gain untouched');
+  assert(!('autoApplyLoudnessLive' in mockStorage.channelVolumes.UCreleased),
+    'the type with no saved gain keeps inheriting the default');
+  assert(mockStorage.channelVolumes.UCbothTypes.autoApplyLoudnessVideo === false &&
+    mockStorage.channelVolumes.UCbothTypes.autoApplyLoudnessLive === false,
+    'a legacy single gain pins both types');
+  assert(mockStorage.autoLoudnessSettings.targetLufs === -18,
+    'migrating without legacy keys preserves the target LUFS');
+
+  // A settings writer whose read predates the migration writes its snapshot
+  // back. The mark has to survive that, or the next run pins Auto's own gains.
+  const staleSettings = { ...mockStorage.autoLoudnessSettings };
+  staleSettings.showGainOverlay = true;
+  await chrome.storage.local.set({ autoLoudnessSettings: staleSettings });
+  mockStorage.channelVolumes.UCstoredByAuto = { name: 'Stored By Auto', gainVideo: 2.9 };
+  assert(await migrateLegacyAutoGains() === false,
+    'a concurrent settings write cannot make the migration run again');
+  assert(!('autoApplyLoudnessVideo' in mockStorage.channelVolumes.UCstoredByAuto),
+    'a gain Auto stored is not pinned OFF after a concurrent settings write');
+
+  section('migrateLegacyAutoGains — leftover legacy keys after the marker');
+  mockStorage = {
+    unifiedGains: true,
+    channelVolumes: { UCkept: { name: 'Kept', gainVideo: 0.42 } },
+    'autoLoudnessFallback:UCkept:video': 0.9,
+    autoLoudnessFallbacks: { UCkept: { gainVideo: 0.9 } }
+  };
+  assert(await migrateLegacyAutoGains() === false, 'a marked profile does not migrate again');
+  assert(mockStorage.channelVolumes.UCkept.gainVideo === 0.42,
+    'leftover legacy values never overwrite the unified gain');
+  assert(!('autoLoudnessFallback:UCkept:video' in mockStorage) &&
+    !('autoLoudnessFallbacks' in mockStorage),
+    'leftover legacy keys are cleared on the next run');
+
+  section('migrateLegacyAutoGains — dormant learned gain');
+  mockStorage = {
+    channelVolumes: { UCoff: { name: 'Off', gainLive: 0.6 } },
+    'autoLoudnessFallback:UCoff:live': 0.2
+  };
+  await migrateLegacyAutoGains();
+  assert(mockStorage.channelVolumes.UCoff.gainLive === 0.6,
+    'a dormant learned gain does not overwrite the gain an Auto-off channel plays at');
+
+  // ── Summary ────────────────────────────────────────────────────────
+
+  console.log(`\n${passed} passed, ${failed} failed`);
+  process.exit(failed > 0 ? 1 : 0);
+}
+
+runMigrationTests();

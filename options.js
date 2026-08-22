@@ -21,6 +21,9 @@
   let targetLufs = DEFAULT_TARGET_LUFS;
   let defaultAutoApplyVideo = DEFAULT_AUTO_APPLY_LOUDNESS;
   let defaultAutoApplyLive = DEFAULT_AUTO_APPLY_LOUDNESS;
+  // Until the fold lands, the table has to read the map the way the content
+  // script does, or it shows Auto for channels that are still manual.
+  let storageMigrated = false;
 
   function fmtGain(gain) {
     const f = formatGain(gain, displayUnit);
@@ -59,11 +62,19 @@
     });
   }
 
+  // The service worker performs every channel write; see background.js.
+  async function requestChannelWrite(type, payload = {}) {
+    const response = await chrome.runtime.sendMessage({
+      type: 'store:' + type, ...payload
+    });
+    if (!response?.ok) throw new Error(response?.reason || 'channel write failed');
+  }
+
   function resolveAutoApply(entry, videoType) {
     const defaultValue = videoType === 'live'
       ? defaultAutoApplyLive
       : defaultAutoApplyVideo;
-    return resolveAutoApplySetting(entry, videoType, defaultValue);
+    return resolveAutoApplySetting(entry, videoType, defaultValue, !storageMigrated);
   }
 
   // ── Channel list ───────────────────────────────────────────────────
@@ -77,15 +88,6 @@
       channelListEl.innerHTML = '<div class="empty-msg">' + esc(msg('noSavedChannels')) + '</div>';
       return;
     }
-
-    const fallbackKeys = entries.flatMap(([id]) => [
-      autoFallbackStorageKey(id, 'video'),
-      autoFallbackStorageKey(id, 'live')
-    ]);
-    const fallbackData = await chrome.storage.local.get([
-      AUTO_FALLBACKS_KEY,
-      ...fallbackKeys
-    ]);
 
     entries.sort((a, b) => a[1].name.localeCompare(b[1].name));
 
@@ -105,15 +107,13 @@
       // Support old format (single gain) and new format (gainLive/gainVideo)
       const gainLive = getChannelGain(entry, 'live');
       const gainVideo = getChannelGain(entry, 'video');
-      const fallbackLive = getStoredAutoFallbackGain(fallbackData, id, 'live') ?? gainLive;
-      const fallbackVideo = getStoredAutoFallbackGain(fallbackData, id, 'video') ?? gainVideo;
       const autoVideo = resolveAutoApply(entry, 'video');
       const autoLive = resolveAutoApply(entry, 'live');
       const videoText = autoVideo
-        ? formatAutoFallback(fallbackVideo, displayUnit, msg('labelAuto'))
+        ? formatAutoGain(gainVideo, displayUnit, msg('labelAuto'))
         : (gainVideo !== null ? fmtGain(gainVideo) : '—');
       const liveText = autoLive
-        ? formatAutoFallback(fallbackLive, displayUnit, msg('labelAuto'))
+        ? formatAutoGain(gainLive, displayUnit, msg('labelAuto'))
         : (gainLive !== null ? fmtGain(gainLive) : '—');
       const tr = document.createElement('tr');
       const nameHtml = url
@@ -135,14 +135,11 @@
     channelListEl.querySelectorAll('.ch-del').forEach(btn => {
       btn.addEventListener('click', async () => {
         const id = btn.dataset.id;
-        const d = await chrome.storage.local.get(CHANNEL_VOLUMES_KEY);
-        const obj = d[CHANNEL_VOLUMES_KEY] || {};
-        delete obj[id];
-        await chrome.storage.local.set({
-          [CHANNEL_VOLUMES_KEY]: obj,
-          [autoFallbackStorageKey(id, 'video')]: null,
-          [autoFallbackStorageKey(id, 'live')]: null
-        });
+        try {
+          await requestChannelWrite('deleteChannel', { channelId: id });
+        } catch (err) {
+          console.error('[YTCV] channel not deleted', err);
+        }
         renderChannels();
       });
     });
@@ -195,15 +192,11 @@
 
   clearAllBtn.addEventListener('click', async () => {
     if (!confirm(msg('clearAllConfirm'))) return;
-    const stored = await chrome.storage.local.get(null);
-    const fallbackKeys = Object.keys(stored).filter(key =>
-      key.startsWith(AUTO_FALLBACK_KEY_PREFIX)
-    );
-    if (fallbackKeys.length) await chrome.storage.local.remove(fallbackKeys);
-    await chrome.storage.local.set({
-      [CHANNEL_VOLUMES_KEY]: {},
-      [AUTO_FALLBACKS_KEY]: {}
-    });
+    try {
+      await requestChannelWrite('clearChannels');
+    } catch (err) {
+      console.error('[YTCV] channels not cleared', err);
+    }
     renderChannels();
   });
 
@@ -221,10 +214,13 @@
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local') return;
-    const fallbackChanged = Object.keys(changes).some(key =>
-      key === AUTO_FALLBACKS_KEY || key.startsWith(AUTO_FALLBACK_KEY_PREFIX)
-    );
-    if (changes[CHANNEL_VOLUMES_KEY] || fallbackChanged) {
+    // Another context may have folded the profile; the table has to stop
+    // reading the map under the pre-unification rule.
+    if (changes[UNIFIED_GAINS_KEY]?.newValue === true && !storageMigrated) {
+      storageMigrated = true;
+      renderChannels();
+    }
+    if (changes[CHANNEL_VOLUMES_KEY]) {
       renderChannels();
     }
     if (changes[SETTINGS_KEY]) {
@@ -263,7 +259,12 @@
     });
   }
 
-  loadSettings().then(() => {
-    return renderChannels();
-  }).finally(revealOptions);
+  requestChannelWrite('migrateLegacyGains')
+    .then(() => { storageMigrated = true; })
+    // The table below reads channelVolumes either way; an un-folded profile
+    // shows `Auto (—)` for the types whose gain is still in a legacy key.
+    .catch(err => console.error('[YTCV] legacy auto gains not folded in', err))
+    .then(loadSettings)
+    .then(renderChannels)
+    .finally(revealOptions);
 })();

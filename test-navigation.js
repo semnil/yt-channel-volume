@@ -118,11 +118,27 @@ globalThis.URL = class {
 };
 
 // Chrome API mock
+// runtime.sendMessage carries two things: popup notifications, and the channel
+// writes background.js performs. Both are delivered as the browser does, so a
+// test exercises the real service-worker path rather than a stand-in.
+let mockWorkerListeners = [];
 globalThis.chrome = {
   runtime: {
     id: 'test-extension-id',
     sendMessage(message) {
       mockSentMessages.push(message);
+      for (const fn of mockWorkerListeners) {
+        let response;
+        const handled = fn(message, {}, r => { response = r; });
+        if (!handled) continue;
+        return new Promise(resolve => {
+          const settle = () => {
+            if (response === undefined) { setTimeout(settle, 1); return; }
+            resolve(response);
+          };
+          settle();
+        });
+      }
       return Promise.resolve();
     },
     onMessage: {
@@ -188,7 +204,30 @@ globalThis.AudioContext = class {
 
 globalThis.__TEST_YTCV__ = true;
 
+// Storage as it stands when a tab loads right after the upgrade: the gain Auto
+// learned still lives in a legacy key. content.js has to fold it in before its
+// first apply, or the tab plays the older manual gain.
+mockStorage['channelVolumes'] = {
+  UCboot: { name: 'Boot Ch', gainVideo: 0.25, autoApplyLoudnessVideo: true }
+};
+mockStorage['autoLoudnessFallback:UCboot:video'] = 0.62;
+mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCboot' };
+
 vm.runInThisContext(fs.readFileSync('./utils.js', 'utf8'), { filename: 'utils.js' });
+
+// background.js pulls utils.js in with importScripts, which this context has
+// already evaluated. Its listener registers on the worker side of sendMessage.
+globalThis.importScripts = () => {};
+const workerChrome = {
+  runtime: { onMessage: { addListener(fn) { mockWorkerListeners.push(fn); } } }
+};
+(function loadWorker() {
+  const realChrome = globalThis.chrome;
+  globalThis.chrome = { ...realChrome, runtime: { ...realChrome.runtime, ...workerChrome.runtime } };
+  vm.runInThisContext(fs.readFileSync('./background.js', 'utf8'), { filename: 'background.js' });
+  globalThis.chrome = realChrome;
+})();
+
 vm.runInThisContext(fs.readFileSync('./content.js', 'utf8'), { filename: 'content.js' });
 
 const ytcv = globalThis.__YTCV__;
@@ -249,6 +288,21 @@ async function runTests() {
   await tick();
   assert(ytcv.state._lastVideoId === 'abc123', 'video ID captured');
   assert(ytcv.state._lastProcessedVideo === mockVideoEl, 'video element tracked');
+  assert(ytcv.state.currentChannel.id === 'UCboot', 'channel detected on load');
+  assert(ytcv.state.currentGain === 0.62,
+    'the first apply waits for the legacy Auto gain to be folded in');
+  assert(mockStorage['channelVolumes'].UCboot.gainVideo === 0.62,
+    'the folded gain is what the channel entry now holds');
+  assert(!('autoLoudnessFallback:UCboot:video' in mockStorage),
+    'the legacy key is cleared during bootstrap');
+  assert(mockStorage['unifiedGains'] === true, 'bootstrap marks the profile');
+
+  // Back to an unsaved channel for the navigation cases below.
+  mockDOMElements['canonical'] = null;
+  mockStorage = {};
+  ytcv._set('currentChannel', { id: '', name: '', url: '' });
+  ytcv._set('currentGain', 1.0);
+  await ytcv.triggerApply();
   assert(ytcv.state.currentGain === 1.0, 'unsaved channel → gain 1.0');
 
   // ── P02: Reload (simulated by resetting state and re-triggering) ──
@@ -690,7 +744,35 @@ async function runTests() {
   await ytcv.applyPreferredGain();
   assert(Math.abs(ytcv.state.currentGain - expectedAutoGain) < 0.001, 'live auto applies calculated gain when LUFS is available');
 
-  section('Auto LUFS: archive gain becomes same-channel live fallback');
+  section('Auto LUFS: bridge loudness stores the calculated gain');
+  mockStorage['channelVolumes'] = {
+    'UCbridgeLearn': { name: 'Bridge Learn', autoApplyLoudnessVideo: true }
+  };
+  setURL('/watch', 'BRIDGELEARN');
+  ytcv._set('currentChannel', { id: 'UCbridgeLearn', name: 'Bridge Learn', url: '' });
+  ytcv._set('currentChannelVideoId', 'BRIDGELEARN');
+  ytcv._set('currentVideoType', 'video');
+  ytcv._set('currentLoudnessDb', null);
+  ytcv._set('currentLoudnessVideoId', '');
+  ytcv._set('currentAutoApplyLoudnessVideo', true);
+  ytcv._set('currentGain', 1.0);
+  ytcv._set('targetLufs', -18);
+  simulateBridgeMessage({
+    videoId: 'BRIDGELEARN',
+    loudnessDb: -6,
+    isLiveContent: false,
+    channelId: 'UCbridgeLearn',
+    author: 'Bridge Learn'
+  });
+  await tick();
+  assert(Math.abs(ytcv.state.currentGain - expectedAutoGain) < 0.001,
+    'bridge loudness applies the calculated gain');
+  assert(Math.abs(mockStorage['channelVolumes']['UCbridgeLearn'].gainVideo - expectedAutoGain) < 0.001,
+    'bridge loudness stores the calculated gain as the channel gain');
+  assert(!('autoApplyLoudnessLive' in mockStorage['channelVolumes']['UCbridgeLearn']),
+    'storing an Auto gain does not touch the other type');
+
+  section('Auto LUFS: archive gain becomes the same-channel live gain');
   // Keep this regression independent of mutable, real YouTube content.
   const comparedArchiveVideoId = 'ARCHIVE0001';
   const comparedLiveVideoId = 'LIVESTREAM1';
@@ -701,7 +783,6 @@ async function runTests() {
       autoApplyLoudnessLive: true
     }
   };
-  mockStorage['autoLoudnessFallbacks'] = {};
   setURL('/watch', comparedArchiveVideoId);
   ytcv._set('currentChannel', {
     id: 'UCsharedLive',
@@ -714,14 +795,11 @@ async function runTests() {
   ytcv._set('currentLoudnessVideoId', comparedArchiveVideoId);
   ytcv._set('currentAutoApplyLoudnessLive', true);
   ytcv._set('targetLufs', -18);
-  const sharedLiveFallbackKey = ytcv.autoFallbackStorageKey('UCsharedLive', 'live');
   await ytcv.applyPreferredGain();
   assert(Math.abs(ytcv.state.currentGain - expectedAutoGain) < 0.001,
     'archive applies calculated live gain');
-  assert(Math.abs(mockStorage[sharedLiveFallbackKey] - expectedAutoGain) < 0.001,
-    'archive persists calculated gain as learned live fallback');
-  assert(mockStorage['channelVolumes']['UCsharedLive'].gainLive === 0.4,
-    'learning fallback does not overwrite existing Saved Channels gain');
+  assert(Math.abs(mockStorage['channelVolumes']['UCsharedLive'].gainLive - expectedAutoGain) < 0.001,
+    'calculated gain becomes the channel live gain');
 
   setURL('/watch', comparedLiveVideoId);
   ytcv._set('currentChannelVideoId', comparedLiveVideoId);
@@ -730,110 +808,137 @@ async function runTests() {
   ytcv._set('currentGain', 0.4);
   await ytcv.applyPreferredGain();
   assert(Math.abs(ytcv.state.currentGain - expectedAutoGain) < 0.001,
-    'same-channel live without LUFS loads learned archive fallback');
+    'same-channel live without LUFS loads the stored channel gain');
 
-  section('Auto LUFS: learned fallback synchronizes to open live tab');
+  section('Auto LUFS: switching Auto off keeps the level Auto was playing');
+  const autoOffResponse = await simulateRuntimeMessage({
+    type: 'setAutoApplyLoudness',
+    channelId: 'UCsharedLive',
+    videoType: 'live',
+    enabled: false
+  });
+  assert(autoOffResponse?.ok === true, 'per-channel Auto OFF accepted');
+  assert(ytcv.state.currentAutoApplyLoudnessLive === false, 'live Auto flag cleared');
+  assert(Math.abs(ytcv.state.currentGain - expectedAutoGain) < 0.001,
+    'live without LUFS keeps the same gain after Auto is switched off');
+  assert(Math.abs(ytcv.state.gainNode.gain.value - expectedAutoGain) < 0.001,
+    'GainNode keeps the same level after Auto is switched off');
+
+  section('Auto LUFS: learned gain synchronizes to open live tab');
+  mockStorage['channelVolumes']['UCsharedLive'].autoApplyLoudnessLive = true;
   ytcv._set('currentLoudnessDb', null);
   ytcv._set('currentAutoApplyLoudnessLive', true);
-  ytcv._set('currentAutoFallbackLive', null);
   ytcv._set('currentGain', 0.4);
   ytcv.notifyPopup();
-  const messagesBeforeFallbackSync = mockSentMessages.length;
+  const messagesBeforeGainSync = mockSentMessages.length;
+  const syncedLiveEntry = {
+    name: 'Shared Live Channel',
+    gainLive: expectedAutoGain,
+    autoApplyLoudnessLive: true
+  };
+  mockStorage['channelVolumes'] = { 'UCsharedLive': syncedLiveEntry };
   simulateStorageChange({
-    [sharedLiveFallbackKey]: {
-      oldValue: 0.4,
-      newValue: expectedAutoGain
+    channelVolumes: {
+      oldValue: { 'UCsharedLive': { name: 'Shared Live Channel', gainLive: 0.4, autoApplyLoudnessLive: true } },
+      newValue: { 'UCsharedLive': syncedLiveEntry }
     }
   });
   assert(Math.abs(ytcv.state.currentGain - expectedAutoGain) < 0.001,
-    'open live tab immediately applies archive fallback from storage');
+    'open live tab immediately applies the gain another tab learned');
   assert(Math.abs(ytcv.state.gainNode.gain.value - expectedAutoGain) < 0.001,
-    'synchronized fallback reaches live tab GainNode');
-  assert(mockSentMessages.length === messagesBeforeFallbackSync + 1 &&
+    'synchronized gain reaches live tab GainNode');
+  assert(mockSentMessages.length === messagesBeforeGainSync + 1 &&
     Math.abs(mockSentMessages.at(-1).gain - expectedAutoGain) < 0.001,
-    'synchronized fallback publishes matching popup state');
+    'synchronized gain publishes matching popup state');
 
-  section('Auto LUFS: stale preference read cannot undo cross-tab fallback');
+  section('Auto LUFS: stale preference read cannot undo a cross-tab gain');
   ytcv._set('currentLoudnessDb', null);
   ytcv._set('currentAutoApplyLoudnessLive', true);
-  ytcv._set('currentAutoFallbackLive', 0.4);
   ytcv._set('currentGain', 0.4);
   const originalStorageGet = chrome.storage.local.get;
-  let resolveStaleFallbackRead;
+  let resolveStaleGainRead;
   chrome.storage.local.get = key => {
-    if (Array.isArray(key) && key.includes(sharedLiveFallbackKey)) {
-      return new Promise(resolve => { resolveStaleFallbackRead = resolve; });
+    if (key === 'channelVolumes') {
+      return new Promise(resolve => { resolveStaleGainRead = resolve; });
     }
     return originalStorageGet(key);
   };
   const staleApply = ytcv.applyPreferredGain();
-  const newerFallbackGain = 0.8;
-  mockStorage[sharedLiveFallbackKey] = newerFallbackGain;
+  // The apply waits for the legacy fold before it reads storage.
+  await tick();
+  const newerLearnedGain = 0.8;
+  const newerLiveEntry = {
+    name: 'Shared Live Channel',
+    gainLive: newerLearnedGain,
+    autoApplyLoudnessLive: true
+  };
+  mockStorage['channelVolumes'] = { 'UCsharedLive': newerLiveEntry };
   simulateStorageChange({
-    [sharedLiveFallbackKey]: {
-      oldValue: 0.4,
-      newValue: newerFallbackGain
+    channelVolumes: {
+      oldValue: { 'UCsharedLive': syncedLiveEntry },
+      newValue: { 'UCsharedLive': newerLiveEntry }
     }
   });
-  resolveStaleFallbackRead({
-    [sharedLiveFallbackKey]: 0.4
+  resolveStaleGainRead({
+    channelVolumes: { 'UCsharedLive': syncedLiveEntry }
   });
   await staleApply;
   chrome.storage.local.get = originalStorageGet;
-  assert(ytcv.state.currentGain === newerFallbackGain,
-    'older async preference load does not overwrite cross-tab fallback');
-  assert(ytcv.state.gainNode.gain.value === newerFallbackGain,
-    'newest cross-tab fallback remains applied to GainNode');
+  assert(ytcv.state.currentGain === newerLearnedGain,
+    'older async preference load does not overwrite a cross-tab gain');
+  assert(ytcv.state.gainNode.gain.value === newerLearnedGain,
+    'newest cross-tab gain remains applied to GainNode');
 
-  section('Auto LUFS: hidden-type fallback update does not cancel current apply');
+  section('Auto LUFS: hidden-type gain update leaves the current type applied');
   const hiddenTypeChannelId = 'UChiddenType';
-  const hiddenVideoFallbackKey = ytcv.autoFallbackStorageKey(hiddenTypeChannelId, 'video');
-  const hiddenLiveFallbackKey = ytcv.autoFallbackStorageKey(hiddenTypeChannelId, 'live');
-  mockStorage['channelVolumes'] = {
-    [hiddenTypeChannelId]: {
-      name: 'Hidden Type',
-      gainLive: 0.65,
-      autoApplyLoudnessLive: true
-    }
+  const hiddenTypeEntry = {
+    name: 'Hidden Type',
+    gainVideo: 0.2,
+    gainLive: 0.65,
+    autoApplyLoudnessLive: true
   };
+  mockStorage['channelVolumes'] = { [hiddenTypeChannelId]: hiddenTypeEntry };
   ytcv._set('currentChannel', { id: hiddenTypeChannelId, name: 'Hidden Type', url: '' });
   ytcv._set('currentVideoType', 'live');
   ytcv._set('currentLoudnessDb', null);
   ytcv._set('currentAutoApplyLoudnessLive', true);
-  ytcv._set('currentAutoFallbackVideo', 0.2);
-  ytcv._set('currentAutoFallbackLive', null);
   ytcv._set('currentGain', 1.0);
   const storageGetBeforeHiddenType = chrome.storage.local.get;
-  let resolveHiddenTypeFallbackRead;
+  let resolveHiddenTypeRead;
   chrome.storage.local.get = key => {
-    if (Array.isArray(key) && key.includes(hiddenLiveFallbackKey)) {
-      return new Promise(resolve => { resolveHiddenTypeFallbackRead = resolve; });
+    if (key === 'channelVolumes') {
+      return new Promise(resolve => { resolveHiddenTypeRead = resolve; });
     }
     return storageGetBeforeHiddenType(key);
   };
   const hiddenTypeApply = ytcv.applyPreferredGain();
-  mockStorage[hiddenVideoFallbackKey] = 0.5;
+  // The apply waits for the legacy fold before it reads storage.
+  await tick();
+  const hiddenTypeUpdated = { ...hiddenTypeEntry, gainVideo: 0.5 };
+  mockStorage['channelVolumes'] = { [hiddenTypeChannelId]: hiddenTypeUpdated };
   simulateStorageChange({
-    [hiddenVideoFallbackKey]: { oldValue: 0.2, newValue: 0.5 }
+    channelVolumes: {
+      oldValue: { [hiddenTypeChannelId]: hiddenTypeEntry },
+      newValue: { [hiddenTypeChannelId]: hiddenTypeUpdated }
+    }
   });
-  resolveHiddenTypeFallbackRead({ [hiddenVideoFallbackKey]: 0.2 });
+  resolveHiddenTypeRead({ channelVolumes: { [hiddenTypeChannelId]: hiddenTypeEntry } });
   await hiddenTypeApply;
   chrome.storage.local.get = storageGetBeforeHiddenType;
   assert(ytcv.state.currentGain === 0.65,
-    'hidden Video fallback update does not cancel pending Live gain apply');
+    'hidden Video gain update leaves the Live gain applied');
   assert(ytcv.state.gainNode.gain.value === 0.65,
-    'pending Live gain still reaches GainNode');
-  assert(ytcv.state.currentAutoFallbackVideo === 0.5,
-    'stale Live preference read does not roll back hidden Video fallback');
+    'applied Live gain still reaches GainNode');
+  assert(mockStorage['channelVolumes'][hiddenTypeChannelId].gainVideo === 0.5,
+    'stale Live preference read does not roll back the hidden Video gain');
 
-  section('Auto LUFS: manual fallback replaces learned fallback');
-  mockStorage['channelVolumes'] = {
-    'UCsharedLive': {
-      name: 'Shared Live Channel',
-      gainLive: 0.4,
-      autoApplyLoudnessLive: true
-    }
+  section('Auto LUFS: manual save replaces the gain Auto learned');
+  const learnedLiveEntry = {
+    name: 'Shared Live Channel',
+    gainLive: 0.4,
+    autoApplyLoudnessLive: true
   };
+  mockStorage['channelVolumes'] = { 'UCsharedLive': learnedLiveEntry };
   ytcv._set('currentChannel', {
     id: 'UCsharedLive',
     name: 'Shared Live Channel',
@@ -842,24 +947,22 @@ async function runTests() {
   ytcv._set('currentVideoType', 'live');
   ytcv._set('currentLoudnessDb', null);
   ytcv._set('currentAutoApplyLoudnessLive', true);
-  const manualFallbackResponse = await simulateRuntimeMessage({
+  const manualGainResponse = await simulateRuntimeMessage({
     type: 'setGain',
     channelId: 'UCsharedLive',
     gain: 0.6
   });
-  assert(manualFallbackResponse?.ok === true, 'manual fallback save succeeds');
-  assert(mockStorage[sharedLiveFallbackKey] === null,
-    'manual live gain clears learned live fallback');
+  assert(manualGainResponse?.ok === true, 'manual gain save succeeds while Auto lacks LUFS');
+  assert(mockStorage['channelVolumes']['UCsharedLive'].gainLive === 0.6,
+    'manual live gain replaces the gain Auto stored');
+  assert(mockStorage['channelVolumes']['UCsharedLive'].autoApplyLoudnessLive === true,
+    'adjusting the level Auto falls back to does not switch Auto off');
   await ytcv.applyPreferredGain();
   assert(ytcv.state.currentGain === 0.6,
-    'live without LUFS uses manual fallback after explicit save');
+    'live without LUFS uses the manually saved gain');
 
   section('Auto LUFS: detected loudness blocks manual gain changes');
   const detectedManualChannelId = 'UCdetectedManual';
-  const detectedManualFallbackKey = ytcv.autoFallbackStorageKey(
-    detectedManualChannelId,
-    'video'
-  );
   mockStorage['channelVolumes'] = {
     [detectedManualChannelId]: {
       name: 'Detected Manual',
@@ -878,6 +981,8 @@ async function runTests() {
   ytcv._set('targetLufs', -18);
   await ytcv.applyPreferredGain();
   const detectedAutoGain = ytcv.state.currentGain;
+  assert(mockStorage['channelVolumes'][detectedManualChannelId].gainVideo === detectedAutoGain,
+    'Auto stores the calculated gain as the channel gain');
   const storedDetectedManualBefore = JSON.stringify(
     mockStorage['channelVolumes'][detectedManualChannelId]
   );
@@ -898,31 +1003,49 @@ async function runTests() {
     'saved manual gain is rejected while detected loudness controls Auto');
   assert(JSON.stringify(mockStorage['channelVolumes'][detectedManualChannelId]) ===
     storedDetectedManualBefore,
-    'rejected manual gain does not change the saved fallback');
-  assert(mockStorage[detectedManualFallbackKey] === detectedAutoGain,
-    'rejected manual gain preserves the learned Auto fallback');
+    'rejected manual gain leaves the stored channel gain unchanged');
   await ytcv.applyPreferredGain();
   assert(ytcv.state.currentGain === detectedAutoGain,
     'preference re-resolution keeps the same calculated Auto gain');
 
-  section('Auto LUFS: concurrent channel learning uses independent storage keys');
-  const concurrentVideoKey = ytcv.autoFallbackStorageKey('UCfallbackA', 'video');
-  const concurrentLiveKey = ytcv.autoFallbackStorageKey('UCfallbackB', 'live');
+  section('Auto LUFS: concurrent learning keeps every channel entry');
+  mockStorage['channelVolumes'] = {};
   await Promise.all([
-    ytcv.saveAutoFallbackGain('UCfallbackA', 0.55, 'video'),
-    ytcv.saveAutoFallbackGain('UCfallbackB', 0.85, 'live')
+    ytcv.saveChannelGain('UCconcurrentA', 'Concurrent A', 0.55, 'video', ''),
+    ytcv.saveChannelGain('UCconcurrentB', 'Concurrent B', 0.85, 'live', '')
   ]);
-  assert(mockStorage[concurrentVideoKey] === 0.55,
-    'concurrent channel A fallback remains stored');
-  assert(mockStorage[concurrentLiveKey] === 0.85,
-    'concurrent channel B fallback remains stored');
+  assert(mockStorage['channelVolumes']['UCconcurrentA']?.gainVideo === 0.55,
+    'concurrent channel A gain remains stored');
+  assert(mockStorage['channelVolumes']['UCconcurrentB']?.gainLive === 0.85,
+    'concurrent channel B gain remains stored');
 
-  mockStorage['autoLoudnessFallbacks'] = {
-    'UClegacyFallback': { gainVideo: 0.35 }
+  section('Auto LUFS: a placeholder name never replaces the stored channel name');
+  mockStorage['channelVolumes'] = { 'UCnamed': { name: 'Named Channel', gainVideo: 0.5 } };
+  await ytcv.saveChannelGain('UCnamed', 'UCnamed', 0.7, 'video', '');
+  assert(mockStorage['channelVolumes']['UCnamed'].name === 'Named Channel',
+    'a name equal to the channel ID leaves the stored name in place');
+  assert(mockStorage['channelVolumes']['UCnamed'].gainVideo === 0.7,
+    'the gain is still stored under the placeholder name');
+  mockStorage['channelVolumes'] = {};
+  await ytcv.saveChannelGain('UCunnamed', 'UCunnamed', 0.7, 'video', '');
+  assert(mockStorage['channelVolumes']['UCunnamed'].name === 'UCunnamed',
+    'a new channel falls back to the channel ID as its name');
+
+  section('Auto LUFS: re-applying the same gain does not rewrite storage');
+  mockStorage['channelVolumes'] = {
+    'UCrepeat': { name: 'Repeat Ch', gainVideo: 0.55 }
   };
-  const legacyFallback = await ytcv.loadAutoFallbackEntry('UClegacyFallback');
-  assert(legacyFallback?.gainVideo === 0.35,
-    'legacy aggregate fallback remains readable after storage migration');
+  const storageSetBeforeRepeat = chrome.storage.local.set;
+  let channelVolumeWrites = 0;
+  chrome.storage.local.set = obj => {
+    if (Object.prototype.hasOwnProperty.call(obj, 'channelVolumes')) channelVolumeWrites++;
+    return storageSetBeforeRepeat(obj);
+  };
+  await ytcv.saveChannelGain('UCrepeat', 'Repeat Ch', 0.55, 'video', '');
+  assert(channelVolumeWrites === 0, 'an unchanged gain is not written again');
+  await ytcv.saveChannelGain('UCrepeat', 'Repeat Ch', 0.6, 'video', '');
+  assert(channelVolumeWrites === 1, 'a changed gain is written');
+  chrome.storage.local.set = storageSetBeforeRepeat;
 
   section('Auto LUFS: early bridge for next video clears stale loudness');
   const oldVideoId = 'AAAAAAAAAAA';
@@ -1106,24 +1229,38 @@ async function runTests() {
   assert(mockStorage['channelVolumes']['UCautoOnly'].autoApplyLoudnessVideo === false,
     'explicit disabled state retained for all-channel default override');
 
-  section('Auto LUFS defaults: manual gains remain manual without storage writes');
-  mockStorage['channelVolumes'] = {
-    'UCdefaultAuto': { name: 'Default Auto', gainVideo: 0.45, gainLive: 0.8 }
-  };
+  section('Auto LUFS defaults: a manual save pins Auto against a later default');
+  mockStorage['channelVolumes'] = { 'UCdefaultAuto': { name: 'Default Auto' } };
   ytcv._set('currentChannel', { id: 'UCdefaultAuto', name: 'Default Auto', url: '' });
   ytcv._set('currentVideoType', 'video');
-  ytcv._set('currentLoudnessDb', -6);
-  ytcv._set('defaultAutoApplyLoudnessVideo', true);
+  ytcv._set('currentLoudnessDb', null);
+  ytcv._set('defaultAutoApplyLoudnessVideo', false);
   ytcv._set('defaultAutoApplyLoudnessLive', false);
-  const defaultEntryBefore = JSON.stringify(mockStorage['channelVolumes']['UCdefaultAuto']);
+  ytcv._set('currentAutoApplyLoudnessVideo', false);
+  ytcv._set('currentAutoApplyLoudnessLive', false);
+  await simulateRuntimeMessage({
+    type: 'setGain',
+    channelId: 'UCdefaultAuto',
+    gain: 0.45
+  });
+  const pinnedEntry = mockStorage['channelVolumes']['UCdefaultAuto'];
+  assert(pinnedEntry.gainVideo === 0.45, 'manual Video gain saved');
+  assert(pinnedEntry.autoApplyLoudnessVideo === false,
+    'manual save records the Auto state it was made under');
+  assert(!('autoApplyLoudnessLive' in pinnedEntry),
+    'the untouched type keeps inheriting the all-channel default');
+
+  ytcv._set('defaultAutoApplyLoudnessVideo', true);
+  ytcv._set('currentLoudnessDb', -6);
+  ytcv._set('targetLufs', -18);
+  const pinnedEntryBefore = JSON.stringify(pinnedEntry);
   await ytcv.applyPreferredGain();
   assert(ytcv.state.currentAutoApplyLoudnessVideo === false,
-    'saved manual Video gain remains manual when all-channel default is ON');
+    'a pinned manual gain stays manual when the all-channel default turns ON');
   assert(ytcv.state.currentAutoApplyLoudnessLive === false, 'live keeps independent all-channel OFF');
-  assert(ytcv.state.currentGain === 0.45,
-    'saved manual Video gain remains applied');
-  assert(JSON.stringify(mockStorage['channelVolumes']['UCdefaultAuto']) === defaultEntryBefore,
-    'resolving manual state does not write a per-channel flag or alter saved gains');
+  assert(ytcv.state.currentGain === 0.45, 'pinned manual Video gain remains applied');
+  assert(JSON.stringify(mockStorage['channelVolumes']['UCdefaultAuto']) === pinnedEntryBefore,
+    'resolving a pinned channel writes nothing');
 
   mockStorage['channelVolumes']['UCunconfiguredAuto'] = { name: 'Unconfigured Auto' };
   ytcv._set('currentChannel', {
@@ -1133,15 +1270,563 @@ async function runTests() {
   });
   await ytcv.applyPreferredGain();
   assert(ytcv.state.currentAutoApplyLoudnessVideo === true,
-    'channel type without Auto or manual gain inherits all-channel ON');
+    'channel type without an explicit choice inherits all-channel ON');
   assert(Math.abs(ytcv.state.currentGain - expectedAutoGain) < 0.001,
     'unconfigured channel type applies automatic gain');
-  assert(!('autoApplyLoudnessVideo' in mockStorage['channelVolumes']['UCunconfiguredAuto']),
-    'inherited default remains unpersisted');
+  const inheritedEntry = mockStorage['channelVolumes']['UCunconfiguredAuto'];
+  assert(Math.abs(inheritedEntry.gainVideo - expectedAutoGain) < 0.001,
+    'Auto stores its calculated gain on an inherited channel');
+  assert(!('autoApplyLoudnessVideo' in inheritedEntry),
+    'storing the gain does not pin the inherited default');
+
+  section('Single writer: overlapping saves keep both channels');
+  mockStorage['channelVolumes'] = {};
+  const realGetForOverlap = chrome.storage.local.get;
+  let releaseReads;
+  const readsHeld = new Promise(resolve => { releaseReads = resolve; });
+  chrome.storage.local.get = key => readsHeld.then(() => realGetForOverlap(key));
+  const writeA = chrome.runtime.sendMessage({
+    type: 'store:saveChannelGain',
+    channelId: 'UCoverlapA', name: 'Overlap A', gain: 0.5, videoType: 'video', url: ''
+  });
+  const writeB = chrome.runtime.sendMessage({
+    type: 'store:saveChannelGain',
+    channelId: 'UCoverlapB', name: 'Overlap B', gain: 0.7, videoType: 'live', url: ''
+  });
+  await tick();
+  releaseReads();
+  const [replyA, replyB] = await Promise.all([writeA, writeB]);
+  chrome.storage.local.get = realGetForOverlap;
+  assert(replyA?.ok === true && replyB?.ok === true, 'both saves are accepted');
+  assert(mockStorage['channelVolumes']['UCoverlapA']?.gainVideo === 0.5,
+    'the first channel survives a save that overlapped it');
+  assert(mockStorage['channelVolumes']['UCoverlapB']?.gainLive === 0.7,
+    'the second channel survives too');
+
+  section('Sync failure: a throwing apply answers every manual handler');
+  mockStorage['channelVolumes'] = {
+    'UCthrows': { name: 'Throws Ch', gainVideo: 0.5, autoApplyLoudnessVideo: false }
+  };
+  ytcv._set('currentChannel', { id: 'UCthrows', name: 'Throws Ch', url: '' });
+  ytcv._set('currentVideoType', 'video');
+  ytcv._set('currentLoudnessDb', -6);
+  ytcv._set('targetLufs', -18);
+  ytcv._set('currentAutoApplyLoudnessVideo', false);
+  await ytcv.applyPreferredGain();
+  const gainBeforeThrows = ytcv.state.currentGain;
+  const throwingCtx = ytcv.state.audioCtx;
+  const realCreateForThrows = throwingCtx.createMediaElementSource;
+  throwingCtx.createMediaElementSource = () => {
+    throw new Error('InvalidStateError: already connected');
+  };
+  const videoBeforeThrows = mockVideoEl;
+  mockVideoEl = { id: 'owned-by-another-extension' };
+  for (const message of [
+    { type: 'applyLoudness' },
+    { type: 'setGain', channelId: 'UCthrows', gain: 0.3 },
+    { type: 'setGainLive', gain: 0.3 }
+  ]) {
+    const reply = await simulateRuntimeMessage(message);
+    assert(reply?.ok === false, `${message.type} answers when the apply throws`);
+  }
+  throwingCtx.createMediaElementSource = realCreateForThrows;
+  mockVideoEl = videoBeforeThrows;
+  assert(mockStorage['channelVolumes']['UCthrows'].gainVideo === 0.5,
+    'nothing was stored for a manual save whose apply threw');
+
+  section('Sync failure: forceDetect answers when its apply throws');
+  mockStorage['channelVolumes'] = {
+    'UCdetect': { name: 'Detect Ch', autoApplyLoudnessVideo: true }
+  };
+  ytcv._set('currentChannel', { id: 'UCdetect', name: 'Detect Ch', url: '' });
+  ytcv._set('currentVideoType', 'video');
+  ytcv._set('currentLoudnessDb', -6);
+  ytcv._set('targetLufs', -18);
+  ytcv._set('currentAutoApplyLoudnessVideo', true);
+  const detectCtx = ytcv.state.audioCtx;
+  const realCreateForDetect = detectCtx.createMediaElementSource;
+  detectCtx.createMediaElementSource = () => {
+    throw new Error('InvalidStateError: already connected');
+  };
+  const videoBeforeDetect = mockVideoEl;
+  mockVideoEl = { id: 'owned-during-detect' };
+  const detectReply = await simulateRuntimeMessage({ type: 'forceDetect' });
+  detectCtx.createMediaElementSource = realCreateForDetect;
+  mockVideoEl = videoBeforeDetect;
+  assert(detectReply !== undefined,
+    'forceDetect answers instead of leaving the popup initializing');
+  assert(detectReply?.ok === false, 'and it answers with the failure');
+  ytcv._set('currentLoudnessDb', null);
+  ytcv._set('currentAutoApplyLoudnessVideo', false);
+
+  section('Storage failure: playback and storage do not diverge');
+  mockStorage['channelVolumes'] = {
+    'UCagree': { name: 'Agree Ch', gainVideo: 0.5, autoApplyLoudnessVideo: false }
+  };
+  ytcv._set('currentChannel', { id: 'UCagree', name: 'Agree Ch', url: '' });
+  ytcv._set('currentVideoType', 'video');
+  ytcv._set('currentLoudnessDb', null);
+  ytcv._set('currentAutoApplyLoudnessVideo', false);
+  await ytcv.applyPreferredGain();
+  assert(ytcv.state.currentGain === 0.5, 'the saved gain is playing');
+  const realSetForAgree = chrome.storage.local.set;
+  chrome.storage.local.set = () => Promise.reject(new Error('storage write failed'));
+  // The slider previews the new level through setGainLive before the change
+  // event stores it, so "the level before this save" is already the preview.
+  await simulateRuntimeMessage({ type: 'setGainLive', gain: 0.3 });
+  assert(ytcv.state.currentGain === 0.3, 'the preview is playing');
+  const rejectedSave = await simulateRuntimeMessage({
+    type: 'setGain', channelId: 'UCagree', gain: 0.3
+  });
+  chrome.storage.local.set = realSetForAgree;
+  assert(rejectedSave?.ok === false, 'the rejected save is reported');
+  assert(ytcv.state.currentGain === 0.5,
+    'playback returns to the level storage still holds');
+  assert(ytcv.state.gainNode.gain.value === 0.5, 'the GainNode returns with it');
+  assert(ytcv.getState().gain === 0.5,
+    'the popup reads the level that is actually stored');
+  assert(mockStorage['channelVolumes']['UCagree'].gainVideo === 0.5,
+    'the stored gain is unchanged');
+
+  section('Legacy fold: nothing resolves channel state until it has run');
+  mockStorage = {
+    autoLoudnessSettings: { targetLufs: -18, autoApplyLoudnessVideoDefault: true },
+    channelVolumes: { 'UCpremigration': { name: 'Pre Ch', gainVideo: 0.5, url: '' } }
+  };
+  mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCpremigration' };
+  setURL('/watch', 'PREMIG00001');
+  ytcv._set('currentChannel', { id: 'UCpremigration', name: 'Pre Ch', url: '' });
+  ytcv._set('currentLoudnessVideoId', 'PREMIG00001');
+  ytcv._set('currentVideoType', 'video');
+  ytcv._set('currentLoudnessDb', -6);
+  ytcv._set('targetLufs', -18);
+  ytcv._set('defaultAutoApplyLoudnessVideo', true);
+  ytcv._set('currentGain', 0.5);
+  // Storage still holds the pre-unification shape: a gain with no Auto flag,
+  // which the current rule reads as "follows the all-channel default".
+  // A flag left over from an earlier resolution must not let the bridge's
+  // fast path store a gain before the fold either.
+  ytcv._set('currentAutoApplyLoudnessVideo', true);
+  let releaseFold;
+  ytcv._set('storageSettled', false);
+  ytcv._set('storageReady', new Promise(resolve => { releaseFold = resolve; }));
+  const applyDuringFold = ytcv.applyPreferredGain();
+  simulateBridgeMessage({
+    videoId: 'PREMIG00001', loudnessDb: -6, isLiveContent: false,
+    channelId: 'UCpremigration', author: 'Pre Ch'
+  });
+  await tick();
+  await tick();
+  await tick();
+  assert(ytcv.state.currentGain === 0.5, 'no gain is applied before the fold has run');
+  assert(mockStorage['channelVolumes']['UCpremigration'].gainVideo === 0.5,
+    'no gain is stored before the fold has run');
+  await chrome.runtime.sendMessage({ type: 'store:migrateLegacyGains' });
+  releaseFold();
+  ytcv._set('storageSettled', true);
+  await applyDuringFold;
+  await tick();
+  assert(mockStorage['channelVolumes']['UCpremigration'].autoApplyLoudnessVideo === false,
+    'the fold pins the saved gain as the migration intends');
+  assert(mockStorage['channelVolumes']['UCpremigration'].gainVideo === 0.5,
+    'the gain saved before Auto existed is still the stored one');
+  assert(ytcv.state.currentGain === 0.5, 'and it is what plays');
+  mockDOMElements['canonical'] = null;
+
+  section('Legacy fold: an Auto gain is not stored until the fold has landed');
+  mockStorage = {
+    autoLoudnessSettings: { targetLufs: -18, autoApplyLoudnessVideoDefault: true },
+    channelVolumes: {}
+  };
+  mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCunstored' };
+  setURL('/watch', 'UNSTORED001');
+  ytcv._set('currentChannel', { id: 'UCunstored', name: 'Unstored Ch', url: '' });
+  ytcv._set('currentVideoType', 'video');
+  ytcv._set('currentLoudnessDb', -6);
+  ytcv._set('currentLoudnessVideoId', 'UNSTORED001');
+  ytcv._set('targetLufs', -18);
+  ytcv._set('defaultAutoApplyLoudnessVideo', true);
+  ytcv._set('storageMigrated', false);
+  const realSetForUnstored = chrome.storage.local.set;
+  let unstoredFoldFailed = false;
+  chrome.storage.local.set = obj => {
+    if (!unstoredFoldFailed && 'unifiedGains' in obj) {
+      unstoredFoldFailed = true;
+      return Promise.reject(new Error('fold write failed'));
+    }
+    return realSetForUnstored(obj);
+  };
+  ytcv._set('_lastProcessedVideo', null);
+  await ytcv.triggerApply();
+  await tick();
+  assert(Math.abs(ytcv.state.currentGain - expectedAutoGain) < 0.001,
+    'the calculated gain still plays while the fold has not landed');
+  assert(!('UCunstored' in mockStorage['channelVolumes']),
+    'but it is not stored, because a flagless gain is what the fold reads as manual');
+  // The bridge's fast path stores its own gain; it has to hold back too.
+  assert(ytcv.state.currentAutoApplyLoudnessVideo === true,
+    'the unsaved channel is on Auto through the all-channel default');
+  simulateBridgeMessage({
+    videoId: 'UNSTORED001', loudnessDb: -6, isLiveContent: false,
+    channelId: 'UCunstored', author: 'Unstored Ch'
+  });
+  await tick();
+  await tick();
+  assert(!('UCunstored' in mockStorage['channelVolumes']),
+    'the gain the bridge path calculates is not stored before the fold either');
+
+  chrome.storage.local.set = realSetForUnstored;
+  ytcv._set('_lastProcessedVideo', null);
+  await ytcv.triggerApply();
+  await tick();
+  const unstored = mockStorage['channelVolumes']['UCunstored'];
+  assert(Math.abs(unstored?.gainVideo - expectedAutoGain) < 0.001,
+    'once the fold lands the Auto gain is stored');
+  assert(!('autoApplyLoudnessVideo' in unstored),
+    'and it is not pinned, so the channel keeps following the all-channel default');
+  assert(ytcv.state.currentAutoApplyLoudnessVideo === true,
+    'the channel is still on Auto after the fold');
+  mockDOMElements['canonical'] = null;
+
+  section('Legacy fold: clearing leftovers is not part of the move');
+  mockStorage = {
+    autoLoudnessSettings: { targetLufs: -18, autoApplyLoudnessVideoDefault: true },
+    channelVolumes: { 'UCswept': { name: 'Swept Ch', gainVideo: 0.5, url: '' } },
+    'autoLoudnessFallback:UCstale:video': 0.9
+  };
+  mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCswept' };
+  setURL('/watch', 'SWEPT000001');
+  ytcv._set('currentChannel', { id: 'UCswept', name: 'Swept Ch', url: '' });
+  ytcv._set('currentVideoType', 'video');
+  ytcv._set('currentLoudnessDb', -6);
+  ytcv._set('currentLoudnessVideoId', 'SWEPT000001');
+  ytcv._set('storageMigrated', false);
+  const realRemoveForSweep = chrome.storage.local.remove;
+  chrome.storage.local.remove = () => Promise.reject(new Error('remove failed'));
+  ytcv._set('_lastProcessedVideo', null);
+  await ytcv.triggerApply();
+  await tick();
+  chrome.storage.local.remove = realRemoveForSweep;
+  assert(mockStorage['unifiedGains'] === true, 'the gains are unified and marked');
+  assert(ytcv.state.storageMigrated === true,
+    'a failed sweep does not send the profile back to the old rule');
+  assert('autoLoudnessFallback:UCstale:video' in mockStorage,
+    'the leftover key is still there, waiting for a later sweep');
+  await chrome.runtime.sendMessage({ type: 'store:migrateLegacyGains' });
+  assert(!('autoLoudnessFallback:UCstale:video' in mockStorage),
+    'the next run sweeps it');
+  mockDOMElements['canonical'] = null;
+
+  section('Legacy fold: another tab finishing it is adopted here');
+  mockStorage = {
+    autoLoudnessSettings: { targetLufs: -18, autoApplyLoudnessVideoDefault: true },
+    channelVolumes: { 'UCshared': { name: 'Shared Ch', gainVideo: 0.5, url: '' } }
+  };
+  ytcv._set('currentChannel', { id: 'UCshared', name: 'Shared Ch', url: '' });
+  ytcv._set('currentVideoType', 'video');
+  ytcv._set('currentLoudnessDb', -6);
+  ytcv._set('targetLufs', -18);
+  ytcv._set('defaultAutoApplyLoudnessVideo', true);
+  ytcv._set('storageMigrated', false);
+  ytcv._set('storageSettled', true);
+  ytcv._set('currentGain', 0.5);
+  await ytcv.applyPreferredGain();
+  assert(ytcv.state.currentAutoApplyLoudnessVideo === false,
+    'this tab still reads the saved gain as Auto off');
+
+  // The other tab folds the profile and stores its Auto gain in one write.
+  const foldedEntry = { name: 'Shared Ch', gainVideo: expectedAutoGain, url: '' };
+  mockStorage['unifiedGains'] = true;
+  mockStorage['channelVolumes'] = { 'UCshared': foldedEntry };
+  simulateStorageChange({
+    unifiedGains: { newValue: true },
+    channelVolumes: {
+      oldValue: { 'UCshared': { name: 'Shared Ch', gainVideo: 0.5, url: '' } },
+      newValue: { 'UCshared': foldedEntry }
+    }
+  });
+  await tick();
+  assert(ytcv.state.storageMigrated === true,
+    'the mark another tab stored is adopted here');
+  assert(ytcv.state.currentAutoApplyLoudnessVideo === true,
+    'and the same event re-resolves the channel under the current rule');
+  assert(Math.abs(ytcv.state.currentGain - expectedAutoGain) < 0.001,
+    'the gain that tab stored is what plays');
+
+  // A manual save from this tab must not pin a channel that is on Auto.
+  ytcv._set('currentLoudnessDb', null);
+  await simulateRuntimeMessage({ type: 'setGain', channelId: 'UCshared', gain: 0.7 });
+  assert(mockStorage['channelVolumes']['UCshared'].autoApplyLoudnessVideo === true,
+    'a save made after adopting the mark records Auto as on, not off');
+
+  section('Legacy fold: the mark alone re-resolves this tab');
+  mockStorage = {
+    autoLoudnessSettings: { targetLufs: -18, autoApplyLoudnessVideoDefault: true },
+    channelVolumes: { 'UCmarkonly': { name: 'Mark Only', gainVideo: 0.5, url: '' } }
+  };
+  ytcv._set('currentChannel', { id: 'UCmarkonly', name: 'Mark Only', url: '' });
+  ytcv._set('currentLoudnessDb', -6);
+  ytcv._set('storageMigrated', false);
+  ytcv._set('currentGain', 0.5);
+  await ytcv.applyPreferredGain();
+  assert(ytcv.state.currentGain === 0.5, 'the saved gain is playing before the mark');
+  mockStorage['unifiedGains'] = true;
+  simulateStorageChange({ unifiedGains: { newValue: true } });
+  await tick();
+  assert(ytcv.state.storageMigrated === true, 'the mark is adopted');
+  assert(Math.abs(ytcv.state.currentGain - expectedAutoGain) < 0.001,
+    'the channel is re-resolved even when only the mark changed');
+
+  section('Legacy fold: the apply mutex covers the wait for it');
+  ytcv._set('storageMigrated', false);
+  ytcv._set('_lastProcessedVideo', null);
+  const realGetForMutex = chrome.storage.local.get;
+  let settingsReads = 0;
+  chrome.storage.local.get = key => {
+    if (key === 'autoLoudnessSettings') settingsReads++;
+    return realGetForMutex(key);
+  };
+  await Promise.all([ytcv.triggerApply(), ytcv.triggerApply()]);
+  chrome.storage.local.get = realGetForMutex;
+  assert(settingsReads === 1,
+    'the second call is turned away instead of running a second apply');
+
+  section('Legacy fold: a failed fold keeps the old rule instead of Auto');
+  mockStorage = {
+    autoLoudnessSettings: { targetLufs: -18, autoApplyLoudnessVideoDefault: true },
+    channelVolumes: { 'UCfoldfail': { name: 'Fold Fail', gainVideo: 0.5, url: '' } }
+  };
+  mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCfoldfail' };
+  setURL('/watch', 'FOLDFAIL001');
+  ytcv._set('currentChannel', { id: 'UCfoldfail', name: 'Fold Fail', url: '' });
+  ytcv._set('currentVideoType', 'video');
+  ytcv._set('currentLoudnessDb', -6);
+  ytcv._set('currentLoudnessVideoId', 'FOLDFAIL001');
+  ytcv._set('targetLufs', -18);
+  ytcv._set('defaultAutoApplyLoudnessVideo', true);
+  ytcv._set('currentGain', 0.5);
+  ytcv._set('storageMigrated', false);
+  const realSetForFold = chrome.storage.local.set;
+  let foldWriteFailed = false;
+  chrome.storage.local.set = obj => {
+    if (!foldWriteFailed && 'unifiedGains' in obj) {
+      foldWriteFailed = true;
+      return Promise.reject(new Error('fold write failed'));
+    }
+    return realSetForFold(obj);
+  };
+  ytcv._set('_lastProcessedVideo', null);
+  await ytcv.triggerApply();
+  await tick();
+  assert(foldWriteFailed === true, 'the fold write was the one that failed');
+  assert(!('unifiedGains' in mockStorage), 'a failed fold leaves the profile unmarked');
+  assert(mockStorage['channelVolumes']['UCfoldfail'].gainVideo === 0.5,
+    'the gain saved before Auto existed is not overwritten by a calculated one');
+  assert(ytcv.state.currentAutoApplyLoudnessVideo === false,
+    'an unfolded profile still reads a saved gain as Auto off');
+  assert(ytcv.state.currentGain === 0.5, 'and plays the gain the user saved');
+
+  // The next apply retries the fold, which now succeeds.
+  chrome.storage.local.set = realSetForFold;
+  ytcv._set('_lastProcessedVideo', null);
+  await ytcv.triggerApply();
+  await tick();
+  assert(mockStorage['unifiedGains'] === true, 'the retry marks the profile');
+  assert(mockStorage['channelVolumes']['UCfoldfail'].autoApplyLoudnessVideo === false,
+    'the retry records the pin the old rule stood for');
+  assert(mockStorage['channelVolumes']['UCfoldfail'].gainVideo === 0.5,
+    'and the saved gain is still the stored one');
+  mockDOMElements['canonical'] = null;
+
+  section('Storage failure: a rejected write is answered, not dropped');
+  mockStorage['channelVolumes'] = { 'UCwritefail': { name: 'Write Fail', gainVideo: 0.5 } };
+  ytcv._set('currentChannel', { id: 'UCwritefail', name: 'Write Fail', url: '' });
+  ytcv._set('currentVideoType', 'video');
+  ytcv._set('currentLoudnessDb', null);
+  ytcv._set('currentAutoApplyLoudnessVideo', false);
+  const storageSetBeforeFailure = chrome.storage.local.set;
+  chrome.storage.local.set = () => Promise.reject(new Error('storage write failed'));
+  const failedGain = await simulateRuntimeMessage({
+    type: 'setGain', channelId: 'UCwritefail', gain: 0.3
+  });
+  assert(failedGain?.ok === false, 'a rejected manual save answers the popup instead of hanging');
+  const failedToggle = await simulateRuntimeMessage({
+    type: 'setAutoApplyLoudness', channelId: 'UCwritefail', videoType: 'video', enabled: true
+  });
+  assert(failedToggle?.ok === false, 'a rejected Auto toggle answers the popup instead of hanging');
+  const failedDelete = await simulateRuntimeMessage({
+    type: 'clearChannel', channelId: 'UCwritefail'
+  });
+  assert(failedDelete?.ok === false, 'a rejected delete answers the popup instead of hanging');
+  ytcv._set('currentLoudnessDb', -6);
+  ytcv._set('targetLufs', -18);
+  ytcv._set('currentAutoApplyLoudnessVideo', false);
+  const failedApply = await simulateRuntimeMessage({ type: 'applyLoudness' });
+  assert(failedApply?.ok === false,
+    'a rejected "apply to channel" answers the popup instead of hanging');
+  ytcv._set('currentLoudnessDb', null);
+
+  // forceDetect answers from applyPreferredGain, so an Auto write that fails
+  // must not reject out of it.
+  ytcv._set('currentAutoApplyLoudnessVideo', true);
+  ytcv._set('currentLoudnessDb', -6);
+  ytcv._set('targetLufs', -18);
+  let applyRejected = false;
+  await ytcv.applyPreferredGain().catch(() => { applyRejected = true; });
+  assert(applyRejected === false, 'a rejected Auto gain write does not reject the apply');
+  assert(Math.abs(ytcv.state.currentGain - expectedAutoGain) < 0.001,
+    'the calculated gain still reaches the GainNode when the write fails');
+  chrome.storage.local.set = storageSetBeforeFailure;
+  ytcv._set('currentLoudnessDb', null);
+  ytcv._set('currentAutoApplyLoudnessVideo', false);
+
+  // A throw from the apply the handler runs after the write is the same
+  // problem as a rejected write: the popup is left waiting.
+  // A fresh element forces the chain to be rebuilt, which is where another
+  // extension owning the <video> surfaces.
+  const contestedCtx = ytcv.state.audioCtx;
+  const realCreateSource = contestedCtx.createMediaElementSource;
+  contestedCtx.createMediaElementSource = () => {
+    throw new Error('InvalidStateError: already connected');
+  };
+  const videoBeforeThrow = mockVideoEl;
+  mockVideoEl = { id: 'contested-video' };
+  ytcv._set('currentLoudnessDb', -6);
+  const failedApplyToggle = await simulateRuntimeMessage({
+    type: 'setAutoApplyLoudness', channelId: 'UCwritefail', videoType: 'video', enabled: true
+  });
+  assert(failedApplyToggle?.ok === false,
+    'a throw from the apply after the write still answers the popup');
+  contestedCtx.createMediaElementSource = realCreateSource;
+  mockVideoEl = videoBeforeThrow;
+  ytcv._set('currentLoudnessDb', null);
+  await simulateRuntimeMessage({
+    type: 'setAutoApplyLoudness', channelId: 'UCwritefail', videoType: 'video', enabled: false
+  });
+
+  // One rejection must not poison the queue every later save runs through.
+  const recovered = await simulateRuntimeMessage({
+    type: 'setGain', channelId: 'UCwritefail', gain: 0.44
+  });
+  assert(recovered?.ok === true, 'the next save succeeds after a rejected write');
+  assert(mockStorage['channelVolumes']['UCwritefail'].gainVideo === 0.44,
+    'the write queue survives a rejection');
+
+  section('Auto LUFS defaults: an inherited Auto stays on after a manual save');
+  mockStorage['channelVolumes'] = { 'UCinherit': { name: 'Inherit Ch' } };
+  ytcv._set('currentChannel', { id: 'UCinherit', name: 'Inherit Ch', url: '' });
+  ytcv._set('currentVideoType', 'live');
+  ytcv._set('currentLoudnessDb', null);
+  ytcv._set('defaultAutoApplyLoudnessLive', true);
+  await ytcv.applyPreferredGain();
+  assert(ytcv.state.currentAutoApplyLoudnessLive === true, 'the channel inherits Auto ON');
+  // Auto is on but this live stream has no LUFS, so the slider is live and the
+  // user adjusts the level Auto falls back to.
+  await simulateRuntimeMessage({ type: 'setGain', channelId: 'UCinherit', gain: 0.55 });
+  assert(mockStorage['channelVolumes']['UCinherit'].autoApplyLoudnessLive === true,
+    'adjusting the fallback level records the Auto state it was made under');
+  ytcv._set('defaultAutoApplyLoudnessLive', false);
+  await ytcv.applyPreferredGain();
+  assert(ytcv.state.currentAutoApplyLoudnessLive === true,
+    'the pinned ON survives the all-channel default being switched off');
+  assert(ytcv.state.currentGain === 0.55, 'the adjusted fallback level is what plays');
+
+  section('Delete: an Auto channel comes back while the all-channel default is ON');
+  mockStorage['channelVolumes'] = { 'UCdeleted': { name: 'Deleted Ch', gainVideo: 0.5 } };
+  ytcv._set('currentChannel', { id: 'UCdeleted', name: 'Deleted Ch', url: '' });
+  ytcv._set('currentVideoType', 'video');
+  ytcv._set('currentLoudnessDb', -6);
+  ytcv._set('targetLufs', -18);
+  ytcv._set('defaultAutoApplyLoudnessVideo', true);
+  const deleteResponse = await simulateRuntimeMessage({
+    type: 'clearChannel', channelId: 'UCdeleted'
+  });
+  assert(deleteResponse?.ok === true, 'the channel is deleted');
+  assert(!('UCdeleted' in mockStorage['channelVolumes']), 'the entry is gone');
+  assert(ytcv.state.currentGain === 1.0, 'playback returns to passthrough');
+  // The all-channel default still covers this channel, so the next apply
+  // manages it again and stores the gain it calculates.
+  await ytcv.applyPreferredGain();
+  assert(ytcv.state.currentAutoApplyLoudnessVideo === true,
+    'a deleted channel inherits the all-channel default again');
+  assert(Math.abs(mockStorage['channelVolumes']['UCdeleted']?.gainVideo - expectedAutoGain) < 0.001,
+    'the entry is recreated with the gain Auto calculates');
+  ytcv._set('defaultAutoApplyLoudnessVideo', false);
+  ytcv._set('currentLoudnessDb', null);
+
+  section('Upgrade: a save made while the fold is in flight is not rolled back');
+  mockStorage = {
+    autoLoudnessSettings: { targetLufs: -18 },
+    channelVolumes: { 'UCinflight': { name: 'In Flight', gainVideo: 0.3 } }
+  };
+  const folding = migrateLegacyAutoGains();
+  const savingDuringFold = ytcv.saveChannelGain(
+    'UCinflight', 'In Flight', 0.75, 'video', '', false
+  );
+  await Promise.all([folding, savingDuringFold]);
+  assert(mockStorage['channelVolumes']['UCinflight'].gainVideo === 0.75,
+    'the migration folds onto what storage holds now, not onto its own snapshot');
+  assert(mockStorage['channelVolumes']['UCinflight'].autoApplyLoudnessVideo === false,
+    'the concurrent save is still pinned against the all-channel default');
+
+  // The learned value is older than anything written while the fold was
+  // reading it, so it must not be folded over the newer gain.
+  mockStorage = {
+    autoLoudnessSettings: { targetLufs: -18 },
+    channelVolumes: {
+      'UCnewer': { name: 'Newer', autoApplyLoudnessLive: true, gainLive: 0.4 }
+    },
+    'autoLoudnessFallback:UCnewer:live': 0.8
+  };
+  const foldingLearned = migrateLegacyAutoGains();
+  const newerSave = ytcv.saveChannelGain('UCnewer', 'Newer', 0.9, 'live', '', true);
+  await Promise.all([foldingLearned, newerSave]);
+  assert(mockStorage['channelVolumes']['UCnewer'].gainLive === 0.9,
+    'a gain written during the fold is not overwritten by the learned value');
+
+  // Auto saves a gain with no flag — the same shape the fold reads as manual.
+  // A channel that only appears while the fold is in flight is Auto's.
+  mockStorage = {
+    autoLoudnessSettings: { targetLufs: -18, autoApplyLoudnessVideoDefault: true },
+    channelVolumes: {}
+  };
+  const foldingAgain = migrateLegacyAutoGains();
+  const autoSaveDuringFold = ytcv.saveChannelGain('UCarrived', 'Arrived', 0.42, 'video', '');
+  await Promise.all([foldingAgain, autoSaveDuringFold]);
+  const arrived = mockStorage['channelVolumes']['UCarrived'];
+  assert(arrived.gainVideo === 0.42, 'the gain Auto stored during the fold is kept');
+  assert(!('autoApplyLoudnessVideo' in arrived),
+    'a gain that arrived after the snapshot is not read as a manual save');
+  assert(resolveAutoApplySetting(arrived, 'video', true) === true,
+    'that channel keeps following the all-channel default');
+
+  section('Upgrade: a gain saved before Auto existed survives the all-channel default');
+  // Released 1.0.4 storage: a saved gain, no Auto flag, no learned Auto key.
+  mockStorage = {
+    autoLoudnessSettings: { targetLufs: -18, autoApplyLoudnessVideoDefault: true },
+    channelVolumes: { 'UCreleased': { name: 'Released Ch', gainVideo: 0.5, url: '' } }
+  };
+  await migrateLegacyAutoGains();
+  setURL('/watch', 'UPGRADE0001');
+  ytcv._set('currentChannel', { id: 'UCreleased', name: 'Released Ch', url: '' });
+  ytcv._set('currentVideoType', 'video');
+  ytcv._set('currentLoudnessDb', -6);
+  ytcv._set('currentLoudnessVideoId', 'UPGRADE0001');
+  ytcv._set('targetLufs', -18);
+  ytcv._set('defaultAutoApplyLoudnessVideo', true);
+  ytcv._set('defaultAutoApplyLoudnessLive', false);
+  await ytcv.applyPreferredGain();
+  assert(ytcv.state.currentAutoApplyLoudnessVideo === false,
+    'a pre-Auto saved gain does not inherit the all-channel default');
+  assert(ytcv.state.currentGain === 0.5, 'the saved gain is what plays');
+  assert(mockStorage['channelVolumes']['UCreleased'].gainVideo === 0.5,
+    'the saved gain is not overwritten by a calculated one');
+  delete mockStorage['autoLoudnessSettings'];
+  ytcv._set('defaultAutoApplyLoudnessVideo', false);
+  ytcv._set('currentLoudnessDb', null);
 
   section('Auto LUFS defaults: SPA navigation cannot mix channel metadata');
   const navigationSourceId = 'UCnavSource';
-  const navigationFallbackKey = ytcv.autoFallbackStorageKey(navigationSourceId, 'video');
   mockStorage['channelVolumes'] = {
     [navigationSourceId]: {
       name: 'Channel A',
@@ -1158,11 +1843,12 @@ async function runTests() {
   ytcv._set('currentLoudnessDb', -6);
   ytcv._set('defaultAutoApplyLoudnessVideo', true);
   const originalStorageSet = chrome.storage.local.set;
-  let releaseFallbackSave;
+  let releaseChannelSave;
   chrome.storage.local.set = obj => {
     Object.assign(mockStorage, obj);
-    if (Object.prototype.hasOwnProperty.call(obj, navigationFallbackKey)) {
-      return new Promise(resolve => { releaseFallbackSave = resolve; });
+    if (!releaseChannelSave &&
+        Object.prototype.hasOwnProperty.call(obj, 'channelVolumes')) {
+      return new Promise(resolve => { releaseChannelSave = resolve; });
     }
     return Promise.resolve();
   };
@@ -1174,7 +1860,7 @@ async function runTests() {
     name: 'Channel B',
     url: 'https://www.youtube.com/channel/UCnavTarget'
   });
-  releaseFallbackSave();
+  releaseChannelSave();
   await navigationApply;
   chrome.storage.local.set = originalStorageSet;
   assert(mockStorage['channelVolumes'][navigationSourceId].name === 'Channel A',
@@ -1183,7 +1869,7 @@ async function runTests() {
     'https://www.youtube.com/channel/UCnavSource',
     'source channel URL is not replaced after SPA navigation');
   assert(!('autoApplyLoudnessVideo' in mockStorage['channelVolumes'][navigationSourceId]),
-    'inherited default remains unset after delayed fallback save');
+    'inherited default remains unset after a delayed Auto gain save');
 
   mockStorage['channelVolumes']['UCdefaultAuto'] = {
     name: 'Default Auto',
@@ -1364,6 +2050,35 @@ async function runTests() {
   assert('UCbrand_new' in storageAfter2, 'UC entry created via backfill');
   assert(storageAfter2['UCbrand_new'].gainVideo === 0.6, 'gain migrated via backfill');
   assert(!('@new_handle' in storageAfter2), '@handle deleted after backfill');
+
+  section('Data: backfill and the Auto gain from the same message both land');
+  mockStorage['channelVolumes'] = {
+    '@auto_handle': { name: 'Auto Handle Ch', gainVideo: 0.6 }
+  };
+  setURL('/watch', 'BACKFILL001');
+  ytcv._set('currentChannel', { id: '', name: '', url: '' });
+  ytcv._set('currentChannelVideoId', '');
+  ytcv._set('currentLoudnessDb', null);
+  ytcv._set('currentLoudnessVideoId', '');
+  ytcv._set('currentVideoType', 'video');
+  ytcv._set('targetLufs', -18);
+  ytcv._set('defaultAutoApplyLoudnessVideo', true);
+  simulateBridgeMessage({
+    videoId: 'BACKFILL001', loudnessDb: -6, isLiveContent: false,
+    channelId: 'UCauto_adopted', author: 'Auto Handle Ch'
+  });
+  await tick();
+  await tick();
+  await tick();
+  const adopted = mockStorage['channelVolumes'];
+  assert(!('@auto_handle' in adopted),
+    'the orphan is adopted even though Auto writes the same entry');
+  assert(Math.abs(adopted['UCauto_adopted']?.gainVideo - expectedAutoGain) < 0.001,
+    'the Auto gain survives the adoption');
+  assert(adopted['UCauto_adopted']?.url === 'https://www.youtube.com/channel/UCauto_adopted',
+    'the adopted entry keeps the channel URL the backfill wrote');
+  ytcv._set('defaultAutoApplyLoudnessVideo', false);
+  ytcv._set('currentLoudnessDb', null);
 
   // ── Cross-tab sync via storage.onChanged ───────────────────────────
 
