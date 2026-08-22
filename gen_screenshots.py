@@ -91,7 +91,8 @@ def fit_value_font(draw, cards, max_w):
         if all(draw.textlength(val, font=font) + draw.textlength(unit, font=FONT_XS) <= max_w
                for _, val, unit, _ in cards):
             return font
-    return ImageFont.truetype(BOLD, 14)
+    raise SystemExit(f'{FAMILY} draws these wider than the {max_w}px card at every size: '
+                     + ', '.join(f'{val} {unit}' for _, val, unit, _ in cards))
 
 
 # ── Localized strings ────────────────────────────────────────────────
