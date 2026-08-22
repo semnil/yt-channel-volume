@@ -268,5 +268,8 @@
     .catch(err => console.error('[YTCV] legacy auto gains not folded in', err))
     .then(loadSettings)
     .then(renderChannels)
+    // Deleting every saved channel is offered once the list has been read; a
+    // load that never got there leaves the button as the markup ships it.
+    .then(() => { clearAllBtn.disabled = false; })
     .finally(revealOptions);
 })();
