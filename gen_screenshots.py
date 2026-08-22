@@ -84,6 +84,13 @@ def fullscreen(draw, cx, cy, size, color):
             draw.line([(x, y), (x, y - arm * sy)], fill=color, width=2)
 
 
+def toggle(draw, x, y, on):
+    """The extension's 36x20 switch: dark track, knob left when off, teal right when on."""
+    draw.rounded_rectangle([x, y, x+36, y+20], radius=10, fill=(27, 58, 75) if on else BORDER)
+    knob_x = x + 19 if on else x + 3
+    draw.ellipse([knob_x, y+3, knob_x+14, y+17], fill=TEAL if on else GRAY)
+
+
 def fit_value_font(draw, cards, max_w):
     """Largest bold size at which every card's value + unit still fits its card."""
     for size in (22, 20, 18, 17, 16, 15, 14):
@@ -100,10 +107,16 @@ def fit_value_font(draw, cards, max_w):
 STRINGS = {
     'ja': {
         'apply': '63% をチャンネルに適用 (Video)',
+        'auto_label': 'LUFS 自動適用',
         'manual': 'MANUAL VOLUME',
         'target_desc': 'Loudness から算出するゲインの基準値',
+        'all_auto_label': '全チャンネルの LUFS 自動適用',
+        'all_auto_desc': '個別設定がないチャンネルの既定値',
         'unit_label': '表示単位',
         'unit_desc': 'ゲイン値の表示形式',
+        'overlay_label': 'ゲイン表示',
+        'overlay_desc': 'プレイヤーの音量バー横に適用中のゲインを表示',
+        'clear_all': '全削除',
         'video_title': 'Sample Ch. - ピアノカバー集',
         'video_channel': 'Sample Ch.',
         'channels': [
@@ -114,10 +127,16 @@ STRINGS = {
     },
     'en': {
         'apply': 'Apply 63% to channel (Video)',
+        'auto_label': 'Auto-apply LUFS',
         'manual': 'MANUAL VOLUME',
         'target_desc': 'Reference level for gain calculation from Loudness',
+        'all_auto_label': 'Auto-apply LUFS for all channels',
+        'all_auto_desc': 'Default for channels without an individual setting',
         'unit_label': 'Display unit',
         'unit_desc': 'Format for gain values',
+        'overlay_label': 'Gain overlay',
+        'overlay_desc': 'Show applied gain next to the volume bar in the player',
+        'clear_all': 'Clear all',
         'video_title': 'Sample Ch. - Piano Cover Collection',
         'video_channel': 'Sample Ch.',
         'channels': [
@@ -168,8 +187,15 @@ def screenshot_popup(lang):
 
     draw.line([(px, iy+100), (px+pw, iy+100)], fill=BORDER)
 
+    # Per-channel automatic LUFS, off here — that is what leaves the apply
+    # button and the slider below it usable.
+    ay = iy + 100
+    draw.text((px+16, ay+11), s['auto_label'], fill=(204, 204, 204), font=FONT_SM)
+    toggle(draw, px+pw-52, ay+8, on=False)
+    draw.line([(px, ay+36), (px+pw, ay+36)], fill=BORDER)
+
     # Apply button
-    by = iy + 108
+    by = iy + 144
     rr(draw, [px+16, by, px+pw-16, by+32], 6, TEAL)
     tw = draw.textlength(s['apply'], font=FONT_BOLD)
     draw.text((px + (pw - tw) / 2, by+7), s['apply'], fill=CARD_BG, font=FONT_BOLD)
@@ -202,48 +228,65 @@ def screenshot_settings(lang):
     img = Image.new('RGB', (W, H), BG)
     draw = ImageDraw.Draw(img)
 
-    draw.text((40, 24), 'YT Channel Volume', fill=TEAL, font=FONT_XL)
+    draw.text((36, 16), 'YT Channel Volume', fill=TEAL, font=FONT_XL)
 
-    # Settings section
-    sy = 70
-    rr(draw, [30, sy, 610, sy+130], 10, CARD_BG)
-    draw.text((50, sy+16), 'SETTINGS', fill=GRAY, font=FONT_SM)
+    # Settings section \u2014 the four rows options.html lays out, in its order
+    sy = 54
+    rr(draw, [30, sy, 610, sy+186], 10, CARD_BG)
+    draw.text((50, sy+12), 'SETTINGS', fill=GRAY, font=FONT_SM)
 
-    # Target LUFS
-    draw.text((50, sy+40), 'Target LUFS', fill=(204, 204, 204), font=FONT)
-    draw.text((50, sy+58), s['target_desc'], fill=DIM, font=FONT_SM)
-    draw.rounded_rectangle([380, sy+45, 520, sy+51], radius=2, fill=BORDER)
-    draw.ellipse([440, sy+40, 456, sy+56], fill=TEAL)
-    draw.text((530, sy+40), '-18 LUFS', fill=TEAL, font=FONT_BOLD)
+    ry = sy + 34
+    for label, desc in ((('Target LUFS'), s['target_desc']),
+                        (s['all_auto_label'], s['all_auto_desc']),
+                        (s['unit_label'], s['unit_desc']),
+                        (s['overlay_label'], s['overlay_desc'])):
+        draw.text((50, ry), label, fill=(204, 204, 204), font=FONT)
+        draw.text((50, ry+17), desc, fill=DIM, font=FONT_SM)
+        ry += 38
 
-    draw.line([(50, sy+80), (590, sy+80)], fill=BORDER)
+    # Target LUFS slider
+    ry = sy + 34
+    draw.rounded_rectangle([400, ry+5, 520, ry+11], radius=2, fill=BORDER)
+    draw.ellipse([452, ry, 468, ry+16], fill=TEAL)
+    draw.text((530, ry), '-18 LUFS', fill=TEAL, font=FONT_BOLD)
+
+    # Video / Live defaults, both off
+    ry += 38
+    for type_label, x in ((('VIDEO'), 424), ('LIVE', 512)):
+        draw.text((x, ry+4), type_label, fill=GRAY, font=FONT_SM)
+        toggle(draw, x+42, ry, on=False)
 
     # Display unit
-    draw.text((50, sy+88), s['unit_label'], fill=(204, 204, 204), font=FONT)
-    draw.text((50, sy+106), s['unit_desc'], fill=DIM, font=FONT_SM)
-    rr(draw, [520, sy+92, 556, sy+112], 6, TEAL)
-    draw.text((528, sy+95), '%', fill=CARD_BG, font=FONT_BOLD)
-    rr(draw, [556, sy+92, 590, sy+112], 6, SECTION_BG)
-    draw.text((562, sy+95), 'dB', fill=GRAY, font=FONT_BOLD)
+    ry += 38
+    rr(draw, [520, ry, 556, ry+20], 6, TEAL)
+    draw.text((528, ry+3), '%', fill=CARD_BG, font=FONT_BOLD)
+    rr(draw, [556, ry, 590, ry+20], 6, SECTION_BG)
+    draw.text((562, ry+3), 'dB', fill=GRAY, font=FONT_BOLD)
+
+    # Gain overlay, on here \u2014 it is what the overlay screenshot shows
+    ry += 38
+    toggle(draw, 554, ry, on=True)
 
     # Saved Channels section
-    cy = sy + 150
-    rr(draw, [30, cy, 610, cy+170], 10, CARD_BG)
-    draw.text((50, cy+16), 'SAVED CHANNELS', fill=GRAY, font=FONT_SM)
+    cy = sy + 200
+    rr(draw, [30, cy, 610, cy+134], 10, CARD_BG)
+    draw.text((50, cy+12), 'SAVED CHANNELS', fill=GRAY, font=FONT_SM)
+    clear_w = draw.textlength(s['clear_all'], font=FONT_SM)
+    draw.text((590-clear_w, cy+12), s['clear_all'], fill=PINK, font=FONT_SM)
 
-    hy = cy + 40
+    hy = cy + 34
     draw.text((50, hy), 'CHANNEL', fill=DIM, font=FONT_SM)
     draw.text((380, hy), 'VIDEO', fill=DIM, font=FONT_SM)
     draw.text((470, hy), 'LIVE', fill=DIM, font=FONT_SM)
-    draw.line([(50, hy+18), (590, hy+18)], fill=BORDER)
+    draw.line([(50, hy+16), (590, hy+16)], fill=BORDER)
 
     ry = hy + 24
     for name, video, live in s['channels']:
         draw.text((50, ry), name, fill=TEAL, font=FONT)
         draw.text((380, ry), video, fill=PINK, font=FONT_BOLD)
         draw.text((470, ry), live, fill=PINK if live != '\u2014' else DIM, font=FONT_BOLD)
-        draw.text((570, ry), '\u00d7', fill=DIM, font=FONT_LG)
-        ry += 36
+        draw.text((570, ry-4), '\u00d7', fill=DIM, font=FONT_LG)
+        ry += 26
 
     save(img, f'settings_{lang}.png')
 

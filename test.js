@@ -225,7 +225,17 @@ if (outDirDecl && langLoop) {
   }
 
   // The mockups spell out UI text that lives in _locales, so it can drift.
-  const drawnLabels = { target_desc: 'targetLufsDesc', unit_label: 'displayUnit', unit_desc: 'displayUnitDesc' };
+  const drawnLabels = {
+    auto_label: 'autoApplyLoudness',
+    target_desc: 'targetLufsDesc',
+    all_auto_label: 'allChannelsAutoApply',
+    all_auto_desc: 'allChannelsAutoApplyDesc',
+    unit_label: 'displayUnit',
+    unit_desc: 'displayUnitDesc',
+    overlay_label: 'showGainOverlay',
+    overlay_desc: 'showGainOverlayDesc',
+    clear_all: 'clearAll',
+  };
   for (const lang of langs) {
     const localeFile = `./_locales/${lang}/messages.json`;
     assert(fs.existsSync(localeFile), `${localeFile} exists for the language the mockups draw`);
