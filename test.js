@@ -219,7 +219,8 @@ if (outDirDecl && sheetTable && langTuple) {
   for (const file of generated) {
     assert(fs.existsSync('./' + file), `${file} is generated and must be committed`);
   }
-  for (const name of fs.readdirSync('./' + outDir)) {
+  const committed = fs.existsSync('./' + outDir) ? fs.readdirSync('./' + outDir) : [];
+  for (const name of committed) {
     assert(generated.has(`${outDir}/${name}`),
       `${outDir}/${name} is committed but nothing draws it`);
   }

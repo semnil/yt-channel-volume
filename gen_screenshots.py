@@ -375,7 +375,10 @@ def check(images):
         os.rmdir(scratch)
 
     here = os.path.relpath(OUT_DIR, ROOT)
-    orphans = [f'{here}/{name}' for name in sorted(os.listdir(OUT_DIR)) if name not in images]
+    # No directory at all is the "none of them are committed" case above, which
+    # every image has already reported for itself.
+    committed = sorted(os.listdir(OUT_DIR)) if os.path.isdir(OUT_DIR) else []
+    orphans = [f'{here}/{name}' for name in committed if name not in images]
 
     for line in stale:
         print(line, file=sys.stderr)
