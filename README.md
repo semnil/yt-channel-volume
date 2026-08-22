@@ -115,6 +115,7 @@ yt-channel-volume/
 ├── _locales/             # i18n (ja, en)
 ├── icons/                # 拡張アイコン (16/48/128 px)
 ├── docs/screenshots/     # README・ストア掲載用スクリーンショット (ja, en)
+├── tools/fonts/          # スクリーンショット描画用フォント M PLUS 1p (OFL)
 ├── test.js               # utils ユニットテスト
 ├── test-navigation.js    # ナビゲーション・データ整合性テスト
 ├── gen_icons.py          # アイコン生成 (Python pillow)

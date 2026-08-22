@@ -32,31 +32,17 @@ GRAY = (136, 136, 136)
 DIM = (85, 85, 85)
 BORDER = (42, 42, 74)
 
-# Japanese-capable UI faces, tried in order. The first family whose regular and
-# bold both load is used for every string in the mockups.
-FONT_FAMILIES = [
-    ('Meiryo', 'meiryo.ttc', 'meiryob.ttc'),
-    ('Hiragino Sans',
-     '/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc',
-     '/System/Library/Fonts/ヒラギノ角ゴシック W6.ttc'),
-    ('Noto Sans JP', 'NotoSansJP-Regular.otf', 'NotoSansJP-Bold.otf'),
-]
+# The one face these mockups are drawn with, committed under tools/fonts so that
+# every machine and the CI runner rasterize the same bytes.
+FAMILY = 'M PLUS 1p'
+FONT_DIR = os.path.join(ROOT, 'tools', 'fonts')
+REGULAR = os.path.join(FONT_DIR, 'MPLUS1p-Regular.ttf')
+BOLD = os.path.join(FONT_DIR, 'MPLUS1p-Bold.ttf')
 
-
-def pick_family():
-    for name, regular, bold in FONT_FAMILIES:
-        try:
-            ImageFont.truetype(regular, 12)
-            ImageFont.truetype(bold, 12)
-        except OSError:
-            continue
-        return name, regular, bold
-    print('No Japanese-capable font found. Install one of: '
-          + ', '.join(f[0] for f in FONT_FAMILIES), file=sys.stderr)
-    sys.exit(UNAVAILABLE)
-
-
-FAMILY, REGULAR, BOLD = pick_family()
+for _face in (REGULAR, BOLD):
+    if not os.path.exists(_face):
+        print(f'{os.path.relpath(_face, ROOT)} is missing from this checkout.', file=sys.stderr)
+        sys.exit(UNAVAILABLE)
 FONT = ImageFont.truetype(REGULAR, 14)
 FONT_SM = ImageFont.truetype(REGULAR, 11)
 FONT_LG = ImageFont.truetype(REGULAR, 18)

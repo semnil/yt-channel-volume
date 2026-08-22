@@ -259,8 +259,8 @@ if (outDirDecl && sheetTable && langTuple) {
   assert(excluded.has(outDir.split('/')[0]), 'the screenshots stay out of the store zip');
 
   // Whether the committed images are the ones this code draws can only be
-  // answered by drawing them, which needs pillow and a Japanese font. The
-  // generator answers 3 where it cannot run — the CI image is such a machine.
+  // answered by drawing them, which needs pillow. CI installs it and runs the
+  // same command as its own step, so a machine without it says so here.
   const drawn = require('child_process').spawnSync(
     'python3', ['gen_screenshots.py', '--check'], { encoding: 'utf8' });
   if (drawn.error || drawn.status === 3) {
@@ -268,6 +268,17 @@ if (outDirDecl && sheetTable && langTuple) {
   } else {
     assert(drawn.status === 0,
       `the committed screenshots are what gen_screenshots.py draws — ${(drawn.stderr || '').trim()}`);
+  }
+
+  // The face those images are drawn with is committed, and stays out of the zip.
+  const fontDir = genSrc.match(/FONT_DIR = os\.path\.join\(ROOT, '([^']+)', '([^']+)'\)/);
+  assert(fontDir, 'gen_screenshots.py declares FONT_DIR as os.path.join(ROOT, ...)');
+  if (fontDir) {
+    for (const face of Array.from(genSrc.matchAll(/os\.path\.join\(FONT_DIR, '([^']+)'\)/g), m => m[1])) {
+      assert(fs.existsSync(`./${fontDir[1]}/${fontDir[2]}/${face}`),
+        `${fontDir[1]}/${fontDir[2]}/${face} is the face the screenshots are drawn with`);
+    }
+    assert(excluded.has(fontDir[1]), 'the vendored font stays out of the store zip');
   }
 }
 assert(excluded.has('screenshots'),

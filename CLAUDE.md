@@ -103,7 +103,8 @@ options.html / options.js (設定画面、別タブで表示)
 | `docs/screenshots/` | README 埋め込み・ストア掲載用スクリーンショット (ja, en)。`gen_screenshots.py` の出力 |
 | `gen_icons.py` | アイコン生成スクリプト (Python pillow) |
 | `pack.py` | Chrome Web Store 用 zip 生成 |
-| `gen_screenshots.py` | スクリーンショット生成 (`docs/screenshots/` へ出力。日本語対応フォントを Meiryo → Hiragino Sans → Noto Sans JP の順で選ぶ。`--check` は書き込まずコミット済み画像と画素比較し、描けない環境では exit 3) |
+| `gen_screenshots.py` | スクリーンショット生成 (`docs/screenshots/` へ出力。描画フォントは `tools/fonts/` の M PLUS 1p 固定。`--check` は書き込まずコミット済み画像と画素比較し、pillow が無い環境では exit 3) |
+| `tools/fonts/` | 描画フォント M PLUS 1p (Regular / Bold) と OFL.txt。google/fonts の `ofl/mplus1p` から取得 (commit `66a36c8`)。CI と各マシンで同じ画素を得るためにリポジトリへ入れている |
 | `test.js` | ユニットテスト (node test.js) |
 | `test-navigation.js` | ナビゲーション・状態遷移テスト (node test-navigation.js) |
 
