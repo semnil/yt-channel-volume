@@ -2,7 +2,7 @@
 
 [日本語版はこちら (Japanese)](PRIVACY_POLICY_JA.md)
 
-Last updated: 2026-04-11
+Last updated: 2026-08-22
 
 ## Overview
 
@@ -12,21 +12,21 @@ YT Channel Volume is a Chrome extension that remembers and auto-applies volume s
 
 ### Channel Volume Settings
 
-- **What**: YouTube channel IDs, display names, channel URLs, and volume (gain) values you set.
+- **What**: YouTube channel IDs, display names, channel URLs, the volume (gain) values you set for each kind (video / live), the loudness auto-apply switch for each kind, and the gain the extension works out for itself while that switch is on.
 - **Purpose**: Used to automatically apply your preferred volume when you visit a video from a saved channel.
-- **Storage**: Saved locally in `chrome.storage.local` on your device. Never transmitted to any external server.
+- **Storage**: Saved locally in `chrome.storage.local` on your device, and never transmitted to any external server. The gain you set is written when you set it. While auto-apply is on, the extension may also write the gain it calculates from a Content Loudness value, without an additional action from you.
 
 ### Extension Preferences
 
-- **What**: Target LUFS level, display unit (% or dB), gain overlay toggle.
+- **What**: Target LUFS level, display unit (% or dB), gain overlay toggle, and the loudness auto-apply default for each kind (video / live).
 - **Purpose**: Customize the extension's behavior according to your preferences.
 - **Storage**: Saved locally in `chrome.storage.local` on your device.
 
 ### YouTube Video Metadata (read-only)
 
-- **What**: Content Loudness (`loudnessDb`), `isLiveContent`, `isLive`, `channelId`, and `videoId` from YouTube's player response.
+- **What**: Content Loudness (`loudnessDb`), `isLiveContent`, `isLive`, `channelId`, `videoId`, and the channel name from YouTube's player response.
 - **Purpose**: Display loudness information and calculate suggested volume. Determine whether content is a live stream or a regular video.
-- **Storage**: Not stored. Values are held in memory only while the video page is open and discarded on navigation.
+- **Storage**: `channelId` is the key a channel's settings are kept under, so it stays on your device once that channel is saved, and the channel name read beside it is saved as that channel's display name. The Content Loudness value, `isLiveContent`, `isLive` and `videoId` are held in memory only while the video page is open and are discarded on navigation. The gain worked out from the Content Loudness value, however, is saved with the channel's settings.
 
 ## Data NOT Collected
 
