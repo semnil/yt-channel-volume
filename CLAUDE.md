@@ -149,14 +149,17 @@ options.html / options.js (設定画面、別タブで表示)
 # chrome://extensions → Developer mode → Load unpacked → select this folder
 
 # Regenerate icons
-python gen_icons.py
+python3 gen_icons.py
+
+# Regenerate store screenshots
+python3 gen_screenshots.py
 
 # Run tests
 node test.js
 node test-navigation.js
 
 # Package for Chrome Web Store
-python pack.py
+python3 pack.py
 
 # No build step required. Plain JS, no bundler.
 ```
