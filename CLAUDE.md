@@ -149,14 +149,17 @@ options.html / options.js (設定画面、別タブで表示)
 # chrome://extensions → Developer mode → Load unpacked → select this folder
 
 # Regenerate icons
-python gen_icons.py
+python3 gen_icons.py
+
+# Regenerate store screenshots
+python3 gen_screenshots.py
 
 # Run tests
 node test.js
 node test-navigation.js
 
 # Package for Chrome Web Store
-python pack.py
+python3 pack.py
 
 # No build step required. Plain JS, no bundler.
 ```
@@ -171,6 +174,7 @@ python pack.py
 - Display name: bridge `videoDetails.author` が権威ソース。DOM `#owner #channel-name a` はフォールバック
 - SPA ナビ検知: `yt-navigate-finish` + `popstate` + `visibilitychange` + MutationObserver (video 要素変更 + URL video ID 変更)
 - テスト: `node test.js` (utils + packaging + single-writer 契約) + `node test-navigation.js` (navigation P01-P18 + bridge + guard + detectChannel + data integrity + cross-tab sync + per-channel auto LUFS + storage 失敗経路)。navigation 側は background.js を同じ VM に読み込み、`chrome.runtime.sendMessage` を worker のリスナーへ配線して実際の書き込み経路を通す
+- `background.js` を編集したら chrome://extensions で拡張をリロードする。ページの再読み込みでは service worker は再評価されない (content script の変更はタブの再読み込みで足りる)
 - テスト用 export: `__TEST_YTCV__` フラグで content.js 内部を `globalThis.__YTCV__` に露出。本番では無効
 - Storage keys: `autoLoudnessSettings` (target LUFS, display unit, Video/Live auto defaults), `channelVolumes` (saved channel gains, per-channel auto overrides, URL), `unifiedGains` (マイグレーション済みの印)。legacy `autoLoudnessFallback:<channelId>:<type>` / `autoLoudnessFallbacks` は起動時に畳み込んで削除
 - Storage format: `channelVolumes.{id}` = `{ name, gainLive, gainVideo, autoApplyLoudnessLive, autoApplyLoudnessVideo, url }` (種別ごとの個別自動適用フラグがない場合に全チャンネル既定値を継承。旧 `autoApplyLoudness` は両種別同値、旧 `{ name, gain, url }` は両ゲインとして読み替え)
