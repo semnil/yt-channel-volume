@@ -43,3 +43,15 @@ jobs:
 
       - name: Check Screenshots 📸
         run: python3 gen_screenshots.py --check
+
+      - name: Draw Them Again For Inspection 🖼️
+        if: failure()
+        run: python3 gen_screenshots.py
+
+      - name: Upload What The Runner Drew 📡
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: screenshots-from-ci
+          path: docs/screenshots/
+          if-no-files-found: error
