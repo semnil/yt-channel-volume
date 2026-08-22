@@ -1433,6 +1433,104 @@ async function runTests() {
   assert(ytcv.state.currentGain === 0.5, 'and it is what plays');
   mockDOMElements['canonical'] = null;
 
+  section('Legacy fold: an Auto gain is not stored until the fold has landed');
+  mockStorage = {
+    autoLoudnessSettings: { targetLufs: -18, autoApplyLoudnessVideoDefault: true },
+    channelVolumes: {}
+  };
+  mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCunstored' };
+  setURL('/watch', 'UNSTORED001');
+  ytcv._set('currentChannel', { id: 'UCunstored', name: 'Unstored Ch', url: '' });
+  ytcv._set('currentVideoType', 'video');
+  ytcv._set('currentLoudnessDb', -6);
+  ytcv._set('currentLoudnessVideoId', 'UNSTORED001');
+  ytcv._set('targetLufs', -18);
+  ytcv._set('defaultAutoApplyLoudnessVideo', true);
+  ytcv._set('storageMigrated', false);
+  const realSetForUnstored = chrome.storage.local.set;
+  let unstoredFoldFailed = false;
+  chrome.storage.local.set = obj => {
+    if (!unstoredFoldFailed && 'unifiedGains' in obj) {
+      unstoredFoldFailed = true;
+      return Promise.reject(new Error('fold write failed'));
+    }
+    return realSetForUnstored(obj);
+  };
+  ytcv._set('_lastProcessedVideo', null);
+  await ytcv.triggerApply();
+  await tick();
+  assert(Math.abs(ytcv.state.currentGain - expectedAutoGain) < 0.001,
+    'the calculated gain still plays while the fold has not landed');
+  assert(!('UCunstored' in mockStorage['channelVolumes']),
+    'but it is not stored, because a flagless gain is what the fold reads as manual');
+  // The bridge's fast path stores its own gain; it has to hold back too.
+  assert(ytcv.state.currentAutoApplyLoudnessVideo === true,
+    'the unsaved channel is on Auto through the all-channel default');
+  simulateBridgeMessage({
+    videoId: 'UNSTORED001', loudnessDb: -6, isLiveContent: false,
+    channelId: 'UCunstored', author: 'Unstored Ch'
+  });
+  await tick();
+  await tick();
+  assert(!('UCunstored' in mockStorage['channelVolumes']),
+    'the gain the bridge path calculates is not stored before the fold either');
+
+  chrome.storage.local.set = realSetForUnstored;
+  ytcv._set('_lastProcessedVideo', null);
+  await ytcv.triggerApply();
+  await tick();
+  const unstored = mockStorage['channelVolumes']['UCunstored'];
+  assert(Math.abs(unstored?.gainVideo - expectedAutoGain) < 0.001,
+    'once the fold lands the Auto gain is stored');
+  assert(!('autoApplyLoudnessVideo' in unstored),
+    'and it is not pinned, so the channel keeps following the all-channel default');
+  assert(ytcv.state.currentAutoApplyLoudnessVideo === true,
+    'the channel is still on Auto after the fold');
+  mockDOMElements['canonical'] = null;
+
+  section('Legacy fold: clearing leftovers is not part of the move');
+  mockStorage = {
+    autoLoudnessSettings: { targetLufs: -18, autoApplyLoudnessVideoDefault: true },
+    channelVolumes: { 'UCswept': { name: 'Swept Ch', gainVideo: 0.5, url: '' } },
+    'autoLoudnessFallback:UCstale:video': 0.9
+  };
+  mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCswept' };
+  setURL('/watch', 'SWEPT000001');
+  ytcv._set('currentChannel', { id: 'UCswept', name: 'Swept Ch', url: '' });
+  ytcv._set('currentVideoType', 'video');
+  ytcv._set('currentLoudnessDb', -6);
+  ytcv._set('currentLoudnessVideoId', 'SWEPT000001');
+  ytcv._set('storageMigrated', false);
+  const realRemoveForSweep = chrome.storage.local.remove;
+  chrome.storage.local.remove = () => Promise.reject(new Error('remove failed'));
+  ytcv._set('_lastProcessedVideo', null);
+  await ytcv.triggerApply();
+  await tick();
+  chrome.storage.local.remove = realRemoveForSweep;
+  assert(mockStorage['unifiedGains'] === true, 'the gains are unified and marked');
+  assert(ytcv.state.storageMigrated === true,
+    'a failed sweep does not send the profile back to the old rule');
+  assert('autoLoudnessFallback:UCstale:video' in mockStorage,
+    'the leftover key is still there, waiting for a later sweep');
+  await chrome.runtime.sendMessage({ type: 'store:migrateLegacyGains' });
+  assert(!('autoLoudnessFallback:UCstale:video' in mockStorage),
+    'the next run sweeps it');
+  mockDOMElements['canonical'] = null;
+
+  section('Legacy fold: the apply mutex covers the wait for it');
+  ytcv._set('storageMigrated', false);
+  ytcv._set('_lastProcessedVideo', null);
+  const realGetForMutex = chrome.storage.local.get;
+  let settingsReads = 0;
+  chrome.storage.local.get = key => {
+    if (key === 'autoLoudnessSettings') settingsReads++;
+    return realGetForMutex(key);
+  };
+  await Promise.all([ytcv.triggerApply(), ytcv.triggerApply()]);
+  chrome.storage.local.get = realGetForMutex;
+  assert(settingsReads === 1,
+    'the second call is turned away instead of running a second apply');
+
   section('Legacy fold: a failed fold keeps the old rule instead of Auto');
   mockStorage = {
     autoLoudnessSettings: { targetLufs: -18, autoApplyLoudnessVideoDefault: true },

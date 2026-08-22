@@ -49,6 +49,7 @@
   let storageReady = Promise.resolve();
   let storageSettled = true;
   let storageMigrated = false;
+  let foldInFlight = null;
 
   // ── Storage helpers ────────────────────────────────────────────────
 
@@ -298,10 +299,14 @@
     const videoType = currentVideoType;
     commitGain(gain);
     // The calculated gain becomes the channel's stored gain, so a later video
-    // of the same channel without Content Loudness keeps the same level.
-    saveChannelGain(
-      channelId, currentChannel.name, gain, videoType, currentChannel.url
-    ).catch(err => reportFailure('auto gain not stored', err));
+    // of the same channel without Content Loudness keeps the same level. Not
+    // before the fold, though: a flagless gain is what a pre-unification
+    // manual save looks like, and the fold would pin this channel Auto-off.
+    if (storageMigrated) {
+      saveChannelGain(
+        channelId, currentChannel.name, gain, videoType, currentChannel.url
+      ).catch(err => reportFailure('auto gain not stored', err));
+    }
     return true;
   }
 
@@ -327,7 +332,7 @@
       ? calcGainFromLoudness(currentLoudnessDb)
       : getChannelGain(entry, requestedVideoType) ?? 1.0;
     commitGain(gain);
-    if (autoEnabled && hasLoudness) {
+    if (autoEnabled && hasLoudness && storageMigrated) {
       // The gain is already playing. A failed write must not abort the caller —
       // `forceDetect` answers the popup from this path.
       await saveChannelGain(
@@ -603,12 +608,14 @@
   async function triggerApply() {
     if (!isContextValid()) { observer.disconnect(); return; }
     if (!isWatchPage()) return;
+    // Taken before the fold is awaited: a second call that arrives during that
+    // wait would otherwise pass this check and run a second apply.
     if (_applyRunning) return;
-    // A fold that failed leaves the profile on the old rule, so retry it on
-    // every apply until it lands rather than waiting for the next page load.
-    if (!storageMigrated) await foldLegacyGains();
     _applyRunning = true;
     try {
+      // A fold that failed leaves the profile on the old rule, so retry it on
+      // every apply until it lands rather than waiting for the next page load.
+      if (!storageMigrated) await foldLegacyGains();
       await applyVideoVolume();
     } catch (err) {
       reportFailure('apply failed', err);
@@ -622,11 +629,13 @@
   // saved and Auto cannot overwrite it.
   function foldLegacyGains() {
     if (storageMigrated) return storageReady;
+    if (foldInFlight) return foldInFlight;
     storageSettled = false;
-    storageReady = requestChannelWrite('migrateLegacyGains', {})
+    foldInFlight = requestChannelWrite('migrateLegacyGains', {})
       .then(() => { storageMigrated = true; })
       .catch(err => reportFailure('legacy auto gains not folded in', err))
-      .then(() => { storageSettled = true; });
+      .then(() => { storageSettled = true; foldInFlight = null; });
+    storageReady = foldInFlight;
     return storageReady;
   }
 

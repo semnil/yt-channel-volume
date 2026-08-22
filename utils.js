@@ -205,7 +205,7 @@ async function migrateLegacyAutoGains() {
   if (stored[UNIFIED_GAINS_KEY]) {
     // Reached when an earlier run stored the unified gains but did not finish
     // clearing. Nothing reads these keys any more.
-    if (removeKeys.length) await chrome.storage.local.remove(removeKeys);
+    await clearLegacyKeys(removeKeys);
     return false;
   }
 
@@ -251,8 +251,21 @@ async function migrateLegacyAutoGains() {
       }
     }
   }, { [UNIFIED_GAINS_KEY]: true });
-  if (removeKeys.length) await chrome.storage.local.remove(removeKeys);
+  await clearLegacyKeys(removeKeys);
   return true;
+}
+
+// Clearing is housekeeping, not part of the move: the gains are unified and
+// marked by the time this runs, and nothing reads these keys any more. Failing
+// the caller here would send it back to the pre-unification rule, where a
+// saved gain means Auto is off. The next run sweeps whatever is left.
+async function clearLegacyKeys(removeKeys) {
+  if (!removeKeys.length) return;
+  try {
+    await chrome.storage.local.remove(removeKeys);
+  } catch (err) {
+    console.error('[YTCV] legacy Auto keys not cleared', err);
+  }
 }
 
 function isManualGainLocked(autoApplyEnabled, hasLoudness) {
