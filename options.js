@@ -37,9 +37,25 @@
 
   // ── Settings ───────────────────────────────────────────────────────
 
-  async function loadSettings() {
-    const data = await chrome.storage.local.get(SETTINGS_KEY);
-    const s = data[SETTINGS_KEY] || {};
+  function setSettingsControlsDisabled(disabled) {
+    for (const control of [
+      targetSlider, defaultAutoVideoToggle, defaultAutoLiveToggle, overlayToggle, clearAllBtn
+    ]) {
+      control.disabled = disabled;
+    }
+    unitToggle.querySelectorAll('button').forEach(btn => { btn.disabled = disabled; });
+  }
+
+  // Both keys come from one read, so a page that shows what it read shows both
+  // or neither, and the line it puts up when it fails names that one read.
+  async function loadAll() {
+    const data = await chrome.storage.local.get([SETTINGS_KEY, CHANNEL_VOLUMES_KEY]);
+    applySettings(data[SETTINGS_KEY] || {});
+    settingsLoaded = true;
+    await renderChannels(data[CHANNEL_VOLUMES_KEY] || {});
+  }
+
+  function applySettings(s) {
     targetLufs = s.targetLufs ?? DEFAULT_TARGET_LUFS;
     displayUnit = s.displayUnit || '%';
     defaultAutoApplyVideo =
@@ -55,6 +71,8 @@
   }
 
   async function saveSetting(key, value) {
+    // A page that never read the settings does not get to write one back.
+    if (!settingsLoaded) return;
     const data = await chrome.storage.local.get(SETTINGS_KEY);
     const s = data[SETTINGS_KEY] || {};
     s[key] = value;
@@ -84,9 +102,12 @@
 
   // ── Channel list ───────────────────────────────────────────────────
 
-  async function renderChannels() {
-    const data = await chrome.storage.local.get(CHANNEL_VOLUMES_KEY);
-    const all = data[CHANNEL_VOLUMES_KEY] || {};
+  async function renderChannels(preloaded) {
+    let all = preloaded;
+    if (!all) {
+      const data = await chrome.storage.local.get(CHANNEL_VOLUMES_KEY);
+      all = data[CHANNEL_VOLUMES_KEY] || {};
+    }
     const entries = Object.entries(all);
 
     if (entries.length === 0) {
@@ -276,17 +297,13 @@
     // The table below reads channelVolumes either way; an un-folded profile
     // shows `Auto (—)` for the types whose gain is still in a legacy key.
     .catch(err => console.error('[YTCV] legacy auto gains not folded in', err))
-    .then(loadSettings)
-    // The rows are written after this, so they carry a delete button only when
-    // the load got this far; one that stopped earlier never writes them.
-    .then(() => { settingsLoaded = true; })
-    .then(renderChannels)
-    // Deleting every saved channel is offered once the list has been read; a
-    // load that never got there leaves the button as the markup ships it.
-    .then(() => { clearAllBtn.disabled = false; })
+    .then(loadAll)
+    // Everything that acts on what was read is offered once it has been read; a
+    // load that never got there leaves them as the markup ships them.
+    .then(() => { setSettingsControlsDisabled(false); })
     .catch(err => {
       // The page is shown either way; what it says about itself is the part
-      // that changes, and nothing on it can be acted on afterwards.
+      // that changes, and the controls stay as the markup ships them.
       loadFailed = true;
       settingsErrorEl.classList.remove('hidden');
       console.error('[YTCV] settings not loaded', err);

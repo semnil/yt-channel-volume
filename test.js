@@ -215,7 +215,7 @@ for (const [name, html, src, reveal, fnName] of [
 }
 assert(optionsSrc.indexOf("requestChannelWrite('migrateLegacyGains')") !== -1 &&
   optionsSrc.indexOf("requestChannelWrite('migrateLegacyGains')") <
-    optionsSrc.indexOf('.then(renderChannels)'),
+    optionsSrc.indexOf('.then(loadAll)'),
   'options ask the worker to fold legacy Auto gains in before listing channels');
 
 section('destructive actions wait for the list');
@@ -228,10 +228,47 @@ assert(/\.clear-all-btn:disabled\s*\{[^}]*opacity:/.test(optionsHtml),
   'the disabled Delete all does not look live');
 assert(/\.clear-all-btn:hover:not\(:disabled\)\s*\{/.test(optionsHtml),
   'hover does not paint the disabled Delete all');
-assert(optionsSrc.indexOf('.then(renderChannels)') !== -1 &&
-  optionsSrc.indexOf('.then(renderChannels)') <
-    optionsSrc.indexOf('clearAllBtn.disabled = false'),
-  'options enable Delete all only after the channels have been rendered');
+assert(optionsSrc.indexOf('.then(loadAll)') !== -1 &&
+  optionsSrc.indexOf('.then(loadAll)') <
+    optionsSrc.indexOf('setSettingsControlsDisabled(false)'),
+  'options enable Delete all only after the load that read the list');
+
+section('nothing that acts on what was read is offered before the read');
+// The page is revealed whether the load arrived or not, so a control that is
+// live from the first frame is live on a page that read nothing.
+for (const [id, label] of [
+  ['targetSlider', 'the target slider'],
+  ['defaultAutoVideoToggle', 'the video Auto default'],
+  ['defaultAutoLiveToggle', 'the live Auto default'],
+  ['overlayToggle', 'the gain overlay'],
+]) {
+  const tag = optionsHtml.match(new RegExp(`<input[^>]+id="${id}"[^>]*>`));
+  assert(tag && /\bdisabled\b/.test(tag[0]), `${label} ships disabled`);
+}
+assert(/<button data-unit="%"[^>]*\bdisabled\b/.test(optionsHtml) &&
+  /<button data-unit="dB"[^>]*\bdisabled\b/.test(optionsHtml),
+  'both unit buttons ship disabled');
+for (const control of [
+  'targetSlider', 'defaultAutoVideoToggle', 'defaultAutoLiveToggle', 'overlayToggle', 'clearAllBtn'
+]) {
+  assert(new RegExp(`function setSettingsControlsDisabled[\\s\\S]{0,400}?${control}`).test(optionsSrc),
+    `${control} is one of the controls the load enables`);
+}
+assert(/function setSettingsControlsDisabled[\s\S]{0,600}?unitToggle\.querySelectorAll\('button'\)/
+  .test(optionsSrc), 'so are the unit buttons');
+// The markup is the primary refusal; this is the one behind it.
+assert(/async function saveSetting\(key, value\) \{[^}]*if \(!settingsLoaded\) return;/
+  .test(optionsSrc),
+  'a page that never read the settings writes none of them back');
+// Disabled controls that look live are controls the viewer will reach for.
+assert(/\.setting-row input\[type="range"\]:disabled\s*\{[^}]*opacity:/.test(optionsHtml),
+  'the disabled slider does not look live');
+assert(/\.toggle-group button:disabled\s*\{[^}]*opacity:/.test(optionsHtml),
+  'the disabled unit buttons do not look live');
+assert(/\.toggle-switch input:disabled \+ \.slider\s*\{[^}]*opacity:/.test(optionsHtml),
+  'the disabled switches do not look live');
+assert(/\.toggle-group button:hover:not\(\.active\):not\(:disabled\)\s*\{/.test(optionsHtml),
+  'hover does not paint a disabled unit button');
 
 section('a load that did not arrive says so, and stays that way');
 // The page is revealed whether the load arrived or not, so the one that did not
@@ -266,7 +303,7 @@ assert(new RegExp(`id="targetSlider"[^>]*value="${DEFAULT_TARGET_LUFS}"`).test(o
   'the target slider ships at DEFAULT_TARGET_LUFS');
 assert(/targetLufs = s\.targetLufs \?\? DEFAULT_TARGET_LUFS;/.test(optionsSrc),
   'and that is what the load falls back to');
-assert(/<button data-unit="%" class="active">/.test(optionsHtml),
+assert(/<button data-unit="%" class="active"[^>]*>/.test(optionsHtml),
   'the unit toggle ships on %');
 assert(/displayUnit = s\.displayUnit \|\| '%';/.test(optionsSrc),
   'and that is what the load falls back to');
@@ -286,9 +323,14 @@ assert(/class="ch-del" data-id="\$\{esc\(id\)\}"\$\{settingsLoaded \? '' : ' dis
 assert(/addEventListener\('click', async \(\) => \{\s*if \(!settingsLoaded\) return;/
   .test(optionsSrc),
   'the row delete handler refuses on a load that never finished');
-assert(optionsSrc.indexOf('settingsLoaded = true') <
-  optionsSrc.indexOf('.then(renderChannels)'),
+assert(optionsSrc.indexOf('settingsLoaded = true') !== -1 &&
+  optionsSrc.indexOf('settingsLoaded = true') <
+    optionsSrc.indexOf('await renderChannels('),
   'the rows are written after the load records that it read the settings');
+// One read of both keys: a page that shows what it read shows both or neither,
+// so the line it puts up names the read that failed rather than half of one.
+assert(/chrome\.storage\.local\.get\(\[SETTINGS_KEY, CHANNEL_VOLUMES_KEY\]\)/.test(optionsSrc),
+  'the initial load reads the settings and the channels together');
 assert(/\.ch-del:disabled\s*\{[^}]*opacity:/.test(optionsHtml),
   'the disabled row delete does not look live');
 assert(/\.ch-del:hover:not\(:disabled\)\s*\{/.test(optionsHtml),
