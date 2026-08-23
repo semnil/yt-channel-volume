@@ -61,7 +61,7 @@
     if (settingsAt === settingsRevision) applySettings(data[SETTINGS_KEY] || {});
     settingsLoaded = true;
     if (channelsAt === channelRevision) channelVolumes = data[CHANNEL_VOLUMES_KEY] || {};
-    await renderChannels(channelVolumes);
+    renderChannels(channelVolumes);
   }
 
   function applySettings(s) {
@@ -111,12 +111,11 @@
 
   // ── Channel list ───────────────────────────────────────────────────
 
-  async function renderChannels(preloaded) {
-    let all = preloaded;
-    if (!all) {
-      const data = await chrome.storage.local.get(CHANNEL_VOLUMES_KEY);
-      all = data[CHANNEL_VOLUMES_KEY] || {};
-    }
+  // Draws the list the page holds, and nothing else. A read of its own would be
+  // a second read racing the one that is already out, and it would land without
+  // anything to weigh it against; a page that holds no list yet draws none.
+  function renderChannels(all) {
+    if (!all) return;
     const entries = Object.entries(all);
 
     if (entries.length === 0) {
@@ -176,7 +175,8 @@
         } catch (err) {
           console.error('[YTCV] channel not deleted', err);
         }
-        renderChannels();
+        // The worker's write comes back as a change notification, which carries
+        // the list the table is redrawn from.
       });
     });
   }
@@ -199,7 +199,7 @@
     try {
       await saveSetting('autoApplyLoudnessVideoDefault', enabled);
       defaultAutoApplyVideo = enabled;
-      await renderChannels();
+      renderChannels(channelVolumes);
     } catch (_) {
       defaultAutoVideoToggle.checked = previous;
     } finally {
@@ -214,7 +214,7 @@
     try {
       await saveSetting('autoApplyLoudnessLiveDefault', enabled);
       defaultAutoApplyLive = enabled;
-      await renderChannels();
+      renderChannels(channelVolumes);
     } catch (_) {
       defaultAutoLiveToggle.checked = previous;
     } finally {
@@ -233,7 +233,6 @@
     } catch (err) {
       console.error('[YTCV] channels not cleared', err);
     }
-    renderChannels();
   });
 
   unitToggle.addEventListener('click', (e) => {
@@ -242,7 +241,7 @@
     displayUnit = btn.dataset.unit;
     updateUnitButtons();
     saveSetting('displayUnit', displayUnit);
-    renderChannels();
+    renderChannels(channelVolumes);
   });
 
   // ── Storage change listener ─────────────────────────────────────

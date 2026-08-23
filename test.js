@@ -325,8 +325,17 @@ assert(/addEventListener\('click', async \(\) => \{\s*if \(!settingsLoaded\) ret
   'the row delete handler refuses on a load that never finished');
 assert(optionsSrc.indexOf('settingsLoaded = true') !== -1 &&
   optionsSrc.indexOf('settingsLoaded = true') <
-    optionsSrc.indexOf('await renderChannels('),
+    optionsSrc.indexOf('renderChannels(channelVolumes);\n  }'),
   'the rows are written after the load records that it read the settings');
+// The renderer draws what it is handed. Reading the list itself would put a
+// second read in flight against the one the load already has out, with no
+// revision to weigh the answer against.
+assert(!/renderChannels\(\)/.test(optionsSrc),
+  'nothing asks the table to draw without handing it a list');
+assert(/function renderChannels\(all\) \{\s*if \(!all\) return;/.test(optionsSrc),
+  'and a page that holds no list draws none');
+assert(!/function renderChannels[\s\S]{0,400}?chrome\.storage\.local\.get/.test(optionsSrc),
+  'the renderer reads no storage of its own');
 // One read of both keys: a page that shows what it read shows both or neither,
 // so the line it puts up names the read that failed rather than half of one.
 assert(/chrome\.storage\.local\.get\(\[SETTINGS_KEY, CHANNEL_VOLUMES_KEY\]\)/.test(optionsSrc),
