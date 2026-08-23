@@ -457,9 +457,13 @@ if (outDirDecl && sheetTable && langTuple) {
   assert(excluded.has(outDir.split('/')[0]), 'the screenshots stay out of the store zip');
 
   // Chrome refuses to load an unpacked extension whose top level holds a name
-  // starting with "_", and that top level is where these children run. They
-  // run without -B, and without the variable that would decide this for them,
-  // so what they write answers for their source and nothing else.
+  // starting with "_" outside this list, and that top level is where these
+  // children run. They run without -B, and without the variable that would
+  // decide this for them, so what they write answers for their source and
+  // nothing else.
+  const chromeAllows = ['_locales', '_platform_specific', '_metadata', '__MACOSX'];
+  const reservedAtRoot = () => fs.readdirSync('.')
+    .filter(name => name.startsWith('_') && !chromeAllows.includes(name));
   const pyEnv = { ...process.env };
   delete pyEnv.PYTHONDONTWRITEBYTECODE;
   fs.rmSync('./__pycache__', { recursive: true, force: true });
@@ -500,11 +504,13 @@ if (outDirDecl && sheetTable && langTuple) {
       `test-screenshots.py — ${(paths.stdout || '').trim().split('\n').filter(l => l.includes('FAIL')).join('; ')}`);
   }
 
-  // Removed rather than only reported: left in place it is the thing that
-  // stops the next Load unpacked.
-  const bytecodeLeak = fs.existsSync('./__pycache__');
+  // __pycache__ is this suite's own leaving, so it goes rather than only being
+  // reported: left in place it is the thing that stops the next Load unpacked.
+  // Anything else wearing that name shape is someone else's and only reported.
+  const reserved = reservedAtRoot();
   fs.rmSync('./__pycache__', { recursive: true, force: true });
-  assert(!bytecodeLeak, 'the python this suite runs writes no __pycache__ at the extension root');
+  assert(reserved.length === 0,
+    `the extension root carries no name Chrome reserves — ${reserved.join(', ')}`);
   const ciYaml = fs.readFileSync('./.github/workflows/ci.yaml', 'utf8');
   // What this file spawns skips itself where pillow is missing, so CI has to
   // have it before the suite rather than after — in the same job, since a
