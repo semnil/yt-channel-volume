@@ -458,14 +458,17 @@ if (outDirDecl && sheetTable && langTuple) {
 
   // Chrome refuses to load an unpacked extension whose top level holds a name
   // starting with "_", and that top level is where these children run. They
-  // run without -B so what they write is what the check below reads.
+  // run without -B, and without the variable that would decide this for them,
+  // so what they write answers for their source and nothing else.
+  const pyEnv = { ...process.env };
+  delete pyEnv.PYTHONDONTWRITEBYTECODE;
   fs.rmSync('./__pycache__', { recursive: true, force: true });
 
   // Whether the committed images are the ones this code draws can only be
   // answered by drawing them, which needs pillow. CI installs it and runs the
   // same command as its own step, so a machine without it says so here.
   const drawn = require('child_process').spawnSync(
-    'python3', ['gen_screenshots.py', '--check'], { encoding: 'utf8' });
+    'python3', ['gen_screenshots.py', '--check'], { encoding: 'utf8', env: pyEnv });
   if (drawn.error || drawn.status === 3) {
     console.log(`  (pixel check skipped: ${(drawn.error || drawn.stderr || '').toString().trim()})`);
   } else {
@@ -489,7 +492,7 @@ if (outDirDecl && sheetTable && langTuple) {
   assert(genSrc.includes("'--out'"), 'gen_screenshots.py takes --out');
   assert(excluded.has('test-screenshots.py'), 'the generator test stays out of the store zip');
   const paths = require('child_process').spawnSync(
-    'python3', ['test-screenshots.py'], { encoding: 'utf8' });
+    'python3', ['test-screenshots.py'], { encoding: 'utf8', env: pyEnv });
   if (paths.error || paths.status === 3) {
     console.log(`  (path test skipped: ${(paths.error || paths.stderr || '').toString().trim()})`);
   } else {
