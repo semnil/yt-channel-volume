@@ -207,9 +207,13 @@ h1 {
   border-radius: 4px;
   transition: color 0.15s, background 0.15s;
 }
-.ch-del:hover {
+.ch-del:hover:not(:disabled) {
   color: #ff6b9d;
   background: #2a2a4a;
+}
+.ch-del:disabled {
+  cursor: default;
+  opacity: 0.45;
 }
 
 .clear-all-btn {
@@ -222,9 +226,13 @@ h1 {
   cursor: pointer;
   transition: color 0.15s, border-color 0.15s;
 }
-.clear-all-btn:hover {
+.clear-all-btn:hover:not(:disabled) {
   color: #ff6b9d;
   border-color: #ff6b9d;
+}
+.clear-all-btn:disabled {
+  cursor: default;
+  opacity: 0.45;
 }
 
 .empty-msg {
@@ -339,7 +347,7 @@ h1 {
   <div class="section">
     <div style="display:flex;align-items:center;justify-content:space-between;">
       <h2 data-i18n="savedChannels" style="margin-bottom:0"></h2>
-      <button id="clearAllBtn" class="clear-all-btn" data-i18n="clearAll"></button>
+      <button id="clearAllBtn" class="clear-all-btn" data-i18n="clearAll" disabled></button>
     </div>
     <div id="channelList"></div>
   </div>
