@@ -525,6 +525,8 @@ if (outDirDecl && sheetTable && langTuple) {
 }
 assert(excluded.has('screenshots'),
   'a screenshots/ left over from before the move stays out of the store zip');
+assert(excluded.has('.DS_Store'),
+  'the finder metadata macOS drops beside the manifest stays out of the store zip');
 
 // options.js has no DOM harness here, so its half of the cross-context
 // contract is asserted against the source.
