@@ -35,6 +35,9 @@
   "reloadPageNeeded": {
     "message": "拡張機能と接続できません。ページを再読み込みしてください (F5)"
   },
+  "settingsLoadFailed": {
+    "message": "保存済みの設定を読み込めませんでした。ページを再読み込みしてください"
+  },
   "settings": {
     "message": "Settings"
   },

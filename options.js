@@ -16,6 +16,7 @@
   const overlayToggle = document.getElementById('overlayToggle');
   const clearAllBtn = document.getElementById('clearAllBtn');
   const channelListEl = document.getElementById('channelList');
+  const settingsErrorEl = document.getElementById('settingsError');
 
   let displayUnit = '%';
   let targetLufs = DEFAULT_TARGET_LUFS;
@@ -26,6 +27,8 @@
   let storageMigrated = false;
   // Deleting is offered once the load has read what it would delete from.
   let settingsLoaded = false;
+  // A load that did not arrive leaves the page saying so, and keeping it so.
+  let loadFailed = false;
 
   function fmtGain(gain) {
     const f = formatGain(gain, displayUnit);
@@ -217,6 +220,10 @@
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local') return;
+    // The page that could not read its own settings is telling the viewer to
+    // reload it. What another tab writes after that would stand on a page whose
+    // own read never landed, so none of it is taken.
+    if (loadFailed) return;
     // Another context may have folded the profile; the table has to stop
     // reading the map under the pre-unification rule.
     if (changes[UNIFIED_GAINS_KEY]?.newValue === true && !storageMigrated) {
@@ -277,5 +284,12 @@
     // Deleting every saved channel is offered once the list has been read; a
     // load that never got there leaves the button as the markup ships it.
     .then(() => { clearAllBtn.disabled = false; })
+    .catch(err => {
+      // The page is shown either way; what it says about itself is the part
+      // that changes, and nothing on it can be acted on afterwards.
+      loadFailed = true;
+      settingsErrorEl.classList.remove('hidden');
+      console.error('[YTCV] settings not loaded', err);
+    })
     .finally(revealOptions);
 })();

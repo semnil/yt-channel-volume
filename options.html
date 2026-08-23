@@ -240,6 +240,14 @@ h1 {
   font-size: 13px;
   padding: 12px 0;
 }
+
+.settings-error {
+  color: #ff6b9d;
+  font-size: 11px;
+  line-height: 1.4;
+  margin: -6px 0 8px;
+}
+.settings-error.hidden { display: none; }
 .toggle-switch {
   position: relative;
   width: 36px;
@@ -286,6 +294,7 @@ h1 {
 
   <div class="section">
     <h2 data-i18n="settings"></h2>
+    <div id="settingsError" class="settings-error hidden" role="status" data-i18n="settingsLoadFailed"></div>
 
     <div class="setting-row">
       <div>
