@@ -255,7 +255,7 @@ print('--check — what it refuses to write')
 def tracked_bytes(box):
     directory = os.path.join(box, 'docs', 'screenshots')
     out = {}
-    for name in sorted(os.listdir(directory)):
+    for name in sorted(n for n in os.listdir(directory) if n.lower().endswith('.png')):
         with open(os.path.join(directory, name), 'rb') as handle:
             out[name] = handle.read()
     return out

@@ -416,7 +416,11 @@ if (outDirDecl && sheetTable && langTuple) {
   for (const file of generated) {
     assert(fs.existsSync('./' + file), `${file} is generated and must be committed`);
   }
-  const committed = fs.existsSync('./' + outDir) ? fs.readdirSync('./' + outDir) : [];
+  // Only .png, which is what --check counts: neither what Finder leaves in a
+  // directory of images nor what an interrupted run leaves beside them is an
+  // image anybody drew.
+  const committed = (fs.existsSync('./' + outDir) ? fs.readdirSync('./' + outDir) : [])
+    .filter(name => /\.png$/i.test(name));
   for (const name of committed) {
     assert(generated.has(`${outDir}/${name}`),
       `${outDir}/${name} is committed but nothing draws it`);
