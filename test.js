@@ -232,6 +232,52 @@ assert(optionsSrc.indexOf('.then(renderChannels)') !== -1 &&
   optionsSrc.indexOf('.then(renderChannels)') <
     optionsSrc.indexOf('clearAllBtn.disabled = false'),
   'options enable Delete all only after the channels have been rendered');
+
+section('a load that did not arrive says so, and stays that way');
+// The page is revealed whether the load arrived or not, so the one that did not
+// has to name what it could not read; nothing else on the page says it.
+assert(/<div id="settingsError" class="settings-error hidden" role="status" data-i18n="settingsLoadFailed">/
+  .test(optionsHtml),
+  'options ship a line naming a failed settings read, hidden');
+assert(/\.settings-error\.hidden\s*\{\s*display:\s*none;/.test(optionsHtml),
+  'the line stays out of the layout until it is shown');
+assert(/\.catch\(err => \{[\s\S]{0,400}?loadFailed = true;[\s\S]{0,200}?settingsErrorEl\.classList\.remove\('hidden'\);/
+  .test(optionsSrc),
+  'a load that fails records the failure and shows the line');
+assert(optionsSrc.indexOf("if (area !== 'local') return;") !== -1 &&
+  optionsSrc.indexOf("if (area !== 'local') return;") <
+    optionsSrc.indexOf('if (loadFailed) return;'),
+  'the storage listener takes nothing on a page whose load failed');
+const jaMessages = JSON.parse(fs.readFileSync('./_locales/ja/messages.json', 'utf8'));
+const enMessages = JSON.parse(fs.readFileSync('./_locales/en/messages.json', 'utf8'));
+// The message speaks for the read, not for the values next to it: a change that
+// lands while the read is still out is rendered before there is a failure.
+assert(jaMessages.settingsLoadFailed.message ===
+  '保存済みの設定を読み込めませんでした。ページを再読み込みしてください',
+  'the ja message names the read and the next step');
+assert(enMessages.settingsLoadFailed.message ===
+  'Could not load the saved settings. Please reload the page.',
+  'the en message names the read and the next step');
+
+section('the markup ships the defaults the code falls back to');
+// A load that never wrote to the controls leaves the markup on screen, so the
+// markup has to be what the extension would have used.
+assert(new RegExp(`id="targetSlider"[^>]*value="${DEFAULT_TARGET_LUFS}"`).test(optionsHtml),
+  'the target slider ships at DEFAULT_TARGET_LUFS');
+assert(/targetLufs = s\.targetLufs \?\? DEFAULT_TARGET_LUFS;/.test(optionsSrc),
+  'and that is what the load falls back to');
+assert(/<button data-unit="%" class="active">/.test(optionsHtml),
+  'the unit toggle ships on %');
+assert(/displayUnit = s\.displayUnit \|\| '%';/.test(optionsSrc),
+  'and that is what the load falls back to');
+assert(DEFAULT_AUTO_APPLY_LOUDNESS === false,
+  'auto-apply is off by default');
+assert(/overlayToggle\.checked = !!s\.showGainOverlay;/.test(optionsSrc),
+  'the gain overlay is off by default');
+for (const id of ['defaultAutoVideoToggle', 'defaultAutoLiveToggle', 'overlayToggle']) {
+  const tag = optionsHtml.match(new RegExp(`<input[^>]+id="${id}"[^>]*>`));
+  assert(tag && !/\bchecked\b/.test(tag[0]), `${id} ships unchecked`);
+}
 // The row button is written by the render, so the refusal is stated twice: in
 // the markup the render writes, and in the handler the click reaches.
 assert(/class="ch-del" data-id="\$\{esc\(id\)\}"\$\{settingsLoaded \? '' : ' disabled'\}/
