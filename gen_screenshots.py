@@ -100,8 +100,11 @@ def fit_value_font(draw, cards, max_w):
         if all(draw.textlength(val, font=font) + draw.textlength(unit, font=FONT_XS) <= max_w
                for _, val, unit, _ in cards):
             return font
-    raise SystemExit(f'{FAMILY} draws these wider than the {max_w}px card at every size: '
-                     + ', '.join(f'{val} {unit}' for _, val, unit, _ in cards))
+    # Nothing this machine can draw fits, which is the same answer as a
+    # missing face rather than a difference between images.
+    print(f'{FAMILY} draws these wider than the {max_w}px card at every size: '
+          + ', '.join(f'{val} {unit}' for _, val, unit, _ in cards), file=sys.stderr)
+    sys.exit(UNAVAILABLE)
 
 
 # ── Localized strings ────────────────────────────────────────────────
@@ -360,21 +363,31 @@ def target_dir(args):
     reaching the write path overwrites the images the run was meant to read,
     which is the staleness it was called to find.
     """
-    target = OUT_DIR
+    target = None
+    checking = False
     rest = list(args)
     while rest:
         arg = rest.pop(0)
         if arg == '--check':
+            checking = True
             continue
         if arg == '--out':
-            if not rest or not rest[0]:
+            # A value that looks like a flag is a missing value, not a
+            # directory: `--out --chek` used to create one called --chek.
+            if not rest or not rest[0] or rest[0].startswith('-'):
                 print(f'--out needs a directory to write into\n{USAGE}', file=sys.stderr)
                 sys.exit(2)
             target = os.path.abspath(rest.pop(0))
             continue
         print(f'unknown argument: {arg}\n{USAGE}', file=sys.stderr)
         sys.exit(2)
-    return target
+    if checking and target is not None:
+        # --check reads docs/screenshots and writes nothing, so a destination
+        # given alongside it would be dropped without saying so.
+        print(f'--check compares the committed screenshots and writes nothing, '
+              f'so --out has nowhere to go\n{USAGE}', file=sys.stderr)
+        sys.exit(2)
+    return OUT_DIR if target is None else target
 
 
 def under_root(target):
@@ -407,14 +420,17 @@ def check(images):
             if not os.path.exists(committed):
                 stale.append(f'{name}: not committed')
                 continue
+            # RGBA: dropping alpha would call an image that differs only in its
+            # transparency the same one. What this run just drew is read
+            # outside the guard — a failure there is this run's, not the
+            # committed file's.
+            new = Image.open(fresh).convert('RGBA')
             try:
-                # RGBA: dropping alpha would call an image that differs only in
-                # its transparency the same one.
-                new, old = (Image.open(fresh).convert('RGBA'),
-                            Image.open(committed).convert('RGBA'))
-            except OSError as err:
+                old = Image.open(committed).convert('RGBA')
+            except (OSError, Image.DecompressionBombError) as err:
                 # Whatever it is, it is not what the code draws. Raising here
-                # would take the remaining images and the orphan report with it.
+                # would take the remaining images and the orphan report with
+                # it. A bomb header raises outside OSError, hence both.
                 stale.append(f'{name}: cannot be read as an image ({err})')
                 continue
             if new.size != old.size:
@@ -437,7 +453,8 @@ def check(images):
     # what Finder leaves in a directory of images, and what an interrupted run
     # leaves beside them, are not images anybody drew.
     committed = sorted(name for name in os.listdir(OUT_DIR)
-                       if name.endswith('.png') and os.path.isfile(os.path.join(OUT_DIR, name))
+                       if name.lower().endswith('.png')
+                       and os.path.isfile(os.path.join(OUT_DIR, name))
                        ) if os.path.isdir(OUT_DIR) else []
     orphans = [f'{here}/{name}' for name in committed if name not in images]
 

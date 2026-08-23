@@ -1,13 +1,16 @@
 """Where gen_screenshots writes, and what it reports. Run: python3 test-screenshots.py"""
 import os
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
+import zlib
 
-from PIL import Image
-
+# gen_screenshots first: it is the one that answers 3 where pillow is missing,
+# and importing PIL here first would turn that into a traceback.
 import gen_screenshots
+from PIL import Image
 
 passed = failed = 0
 
@@ -110,8 +113,10 @@ def sandbox():
 
 
 def run(box, *args):
+    # A child that never returns would otherwise sit here until whatever is
+    # running this gives up on it.
     return subprocess.run([sys.executable, '-B', 'gen_screenshots.py', *args],
-                          cwd=box, capture_output=True, text=True)
+                          cwd=box, capture_output=True, text=True, timeout=120)
 
 
 def shot(box, name):
@@ -130,7 +135,8 @@ try:
     img.save(shot(box, 'popup_ja.png'))
     changed = run(box, '--check')
     check(changed.returncode == 1, f'a changed pixel is reported (exit {changed.returncode})')
-    check('popup_ja.png' in changed.stderr, 'and the file is named')
+    check('popup_ja.png: differs from what the code draws now' in changed.stderr,
+          'and the line names the file and what is wrong with it')
 finally:
     shutil.rmtree(box)
 
@@ -144,7 +150,8 @@ try:
     img.save(shot(box, 'popup_ja.png'))
     alpha = run(box, '--check')
     check(alpha.returncode == 1, f'a transparent pixel is reported (exit {alpha.returncode})')
-    check('popup_ja.png' in alpha.stderr, 'and the file is named')
+    check('popup_ja.png: differs from what the code draws now' in alpha.stderr,
+          'and the line names the file and what is wrong with it')
 finally:
     shutil.rmtree(box)
 
@@ -165,12 +172,21 @@ try:
     shutil.copy2(shot(box, 'popup_ja.png'), shot(box, 'popup_de.png'))
     orphan = run(box, '--check')
     check(orphan.returncode == 1, f'an image nothing draws is reported (exit {orphan.returncode})')
-    check('popup_de.png' in orphan.stderr, 'and the file is named')
+    check('docs/screenshots/popup_de.png: drawn by nothing' in orphan.stderr,
+          'and the line names the file and what is wrong with it')
+    check('Delete: docs/screenshots/popup_de.png' in orphan.stderr,
+          'and the way out is the one that works on it')
 
-    # What Finder and an interrupted run leave behind are not tracked images.
-    os.remove(shot(box, 'popup_de.png'))
+    # An image by any other spelling is still one nothing draws.
+    os.rename(shot(box, 'popup_de.png'), shot(box, 'popup_de.PNG'))
+    upper = run(box, '--check')
+    check(upper.returncode == 1, f'.PNG is read as an image too (exit {upper.returncode})')
+
+    # What Finder and an interrupted run leave behind are not tracked images —
+    # the staging directory carries the suffix, so the name alone cannot tell.
+    os.remove(shot(box, 'popup_de.PNG'))
     open(shot(box, '.DS_Store'), 'wb').close()
-    os.mkdir(shot(box, 'tmpabc123'))
+    os.mkdir(shot(box, 'tmpabc123.png'))
     leftovers = run(box, '--check')
     check(leftovers.returncode == 0,
           f'.DS_Store and a leftover staging directory are not images (exit '
@@ -180,13 +196,28 @@ finally:
 
 box = sandbox()
 try:
+    # The shape of adding a language and forgetting to redraw.
+    os.remove(shot(box, 'overlay_en.png'))
+    gone = run(box, '--check')
+    check(gone.returncode == 1, f'a missing image is reported (exit {gone.returncode})')
+    check('overlay_en.png: not committed' in gone.stderr,
+          'and it is named as missing, once')
+    check(gone.stderr.count('overlay_en.png') == 1,
+          'not twice under two different reasons')
+finally:
+    shutil.rmtree(box)
+
+box = sandbox()
+try:
     # A file that is not an image at all, with something else wrong further
     # down: raising here would take the rest of the report with it.
-    open(shot(box, 'overlay_ja.png'), 'wb').write(b'not a png')
+    with open(shot(box, 'overlay_ja.png'), 'wb') as handle:
+        handle.write(b'not a png')
     shutil.copy2(shot(box, 'popup_ja.png'), shot(box, 'popup_de.png'))
     unreadable = run(box, '--check')
     check(unreadable.returncode == 1, f'an unreadable image is reported (exit {unreadable.returncode})')
-    check('overlay_ja.png' in unreadable.stderr, 'and the file is named')
+    check('overlay_ja.png: cannot be read as an image' in unreadable.stderr,
+          'and the line says so rather than a traceback saying it')
     check('popup_de.png' in unreadable.stderr, 'and the report goes on to the rest')
 finally:
     shutil.rmtree(box)
@@ -201,25 +232,110 @@ finally:
 
 print('--check — what it refuses to write')
 
+def tracked_bytes(box):
+    directory = os.path.join(box, 'docs', 'screenshots')
+    out = {}
+    for name in sorted(os.listdir(directory)):
+        with open(os.path.join(directory, name), 'rb') as handle:
+            out[name] = handle.read()
+    return out
+
+
+def mark(box, name):
+    """Leave one pixel that a redraw would put back.
+
+    Drawing is deterministic, so comparing bytes against an untouched copy
+    cannot tell a run that wrote from one that did not.
+    """
+    img = Image.open(shot(box, name)).convert('RGB')
+    r, g, b = img.getpixel((320, 200))
+    img.putpixel((320, 200), (r ^ 1, g, b))
+    img.save(shot(box, name))
+
+
 box = sandbox()
 try:
-    before = {name: open(shot(box, name), 'rb').read()
-              for name in sorted(os.listdir(os.path.join(box, 'docs', 'screenshots')))}
+    mark(box, 'popup_ja.png')
+    before = tracked_bytes(box)
     elsewhere = os.path.join(box, 'elsewhere')
     wrote = run(box, '--out', elsewhere)
     check(wrote.returncode == 0, f'--out is accepted (exit {wrote.returncode}: {wrote.stderr.strip()})')
     check(sorted(os.listdir(elsewhere)) == sorted(before), '--out writes the six where it was told')
-    check(all(open(shot(box, name), 'rb').read() == data for name, data in before.items()),
-          'and leaves the tracked directory alone')
+    check(tracked_bytes(box) == before, 'and leaves the tracked directory alone')
 
     # The one word that decides between reading and rewriting is not matched
     # loosely: a near miss is an argument error, not a redraw.
-    typo = run(box, '--chek')
-    check(typo.returncode == 2, f'an unknown argument is refused (exit {typo.returncode})')
-    check(all(open(shot(box, name), 'rb').read() == data for name, data in before.items()),
-          'and the refused run wrote nothing')
+    for args in (['--chek'], ['--check', '--chek'], ['--check', '--out', elsewhere],
+                 ['--out', '--chek']):
+        refused = run(box, *args)
+        check(refused.returncode == 2,
+              f'{" ".join(args)} is refused (exit {refused.returncode})')
+        check('usage:' in refused.stderr, f'and {" ".join(args)} is told the shape of the command')
+    check(tracked_bytes(box) == before, 'and no refused run wrote anything')
 finally:
     shutil.rmtree(box)
+
+print('--check — where it cannot draw')
+
+box = sandbox()
+try:
+    # Shadowing pillow the way a machine without it looks from inside the
+    # script: the answer is 3, which is what test.js reads as "not here".
+    os.mkdir(os.path.join(box, 'PIL'))
+    with open(os.path.join(box, 'PIL', '__init__.py'), 'w', encoding='utf-8') as handle:
+        handle.write("raise ImportError('No module named PIL')\n")
+    without = run(box, '--check')
+    check(without.returncode == 3, f'no pillow is 3, not a traceback (exit {without.returncode})')
+
+    # This file has to answer the same way, which is what test.js reads to
+    # decide between skipping and failing. Its own import order decides that:
+    # reaching for PIL before the generator turns the 3 into a traceback.
+    shutil.copy2(os.path.join(gen_screenshots.ROOT, 'test-screenshots.py'),
+                 os.path.join(box, 'test-screenshots.py'))
+    itself = subprocess.run([sys.executable, '-B', 'test-screenshots.py'],
+                            cwd=box, capture_output=True, text=True, timeout=120)
+    check(itself.returncode == 3,
+          f'and these tests say the same rather than crashing (exit {itself.returncode})')
+finally:
+    shutil.rmtree(box)
+
+def write_bomb(path, width=200000, height=200000):
+    """A PNG header claiming more pixels than pillow will decode.
+
+    It raises DecompressionBombError, which is not an OSError, so a guard
+    written for unreadable files alone lets it out of the loop.
+    """
+    def chunk(kind, data):
+        return (struct.pack('>I', len(data)) + kind + data
+                + struct.pack('>I', zlib.crc32(kind + data) & 0xffffffff))
+
+    header = struct.pack('>IIBBBBB', width, height, 8, 2, 0, 0, 0)
+    with open(path, 'wb') as handle:
+        handle.write(b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', header)
+                     + chunk(b'IDAT', zlib.compress(b'\x00')) + chunk(b'IEND', b''))
+
+
+box = sandbox()
+try:
+    write_bomb(shot(box, 'overlay_ja.png'))
+    shutil.copy2(shot(box, 'popup_ja.png'), shot(box, 'popup_de.png'))
+    bombed = run(box, '--check')
+    check(bombed.returncode == 1, f'a bomb header is reported (exit {bombed.returncode})')
+    check('overlay_ja.png: cannot be read as an image' in bombed.stderr,
+          'and the line says so rather than a traceback saying it')
+    check('popup_de.png' in bombed.stderr, 'and the report goes on to the rest')
+finally:
+    shutil.rmtree(box)
+
+print('fit_value_font — nothing fits')
+try:
+    from PIL import ImageDraw
+    probe = ImageDraw.Draw(Image.new('RGB', (10, 10)))
+    gen_screenshots.fit_value_font(probe, [('LOUDNESS', '-18.2', 'LUFS', 0)], 1)
+    check(False, 'a budget nothing fits into ends the run')
+except SystemExit as err:
+    check(err.code == gen_screenshots.UNAVAILABLE,
+          f'a budget nothing fits into is 3, the same as a missing face ({err.code})')
 
 print(f'\n{passed} passed, {failed} failed')
 raise SystemExit(1 if failed else 0)
