@@ -338,8 +338,10 @@ if (outDirDecl && sheetTable && langTuple) {
   // Whether the committed images are the ones this code draws can only be
   // answered by drawing them, which needs pillow. CI installs it and runs the
   // same command as its own step, so a machine without it says so here.
+  // -B: a __pycache__ at the extension root makes Chrome refuse to load the
+  // unpacked extension, and this runs from that root.
   const drawn = require('child_process').spawnSync(
-    'python3', ['gen_screenshots.py', '--check'], { encoding: 'utf8' });
+    'python3', ['-B', 'gen_screenshots.py', '--check'], { encoding: 'utf8' });
   if (drawn.error || drawn.status === 3) {
     console.log(`  (pixel check skipped: ${(drawn.error || drawn.stderr || '').toString().trim()})`);
   } else {
@@ -363,7 +365,7 @@ if (outDirDecl && sheetTable && langTuple) {
   assert(genSrc.includes("'--out'"), 'gen_screenshots.py takes --out');
   assert(excluded.has('test-screenshots.py'), 'the generator test stays out of the store zip');
   const paths = require('child_process').spawnSync(
-    'python3', ['test-screenshots.py'], { encoding: 'utf8' });
+    'python3', ['-B', 'test-screenshots.py'], { encoding: 'utf8' });
   if (paths.error || paths.status === 3) {
     console.log(`  (path test skipped: ${(paths.error || paths.stderr || '').toString().trim()})`);
   } else {
