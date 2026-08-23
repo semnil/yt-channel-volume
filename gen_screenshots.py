@@ -355,7 +355,7 @@ def target_dir(args):
     if '--out' not in args:
         return OUT_DIR
     after = args.index('--out') + 1
-    if after >= len(args):
+    if after >= len(args) or not args[after]:
         print('--out needs a directory to write into', file=sys.stderr)
         sys.exit(2)
     return os.path.abspath(args[after])

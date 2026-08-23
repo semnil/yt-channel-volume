@@ -32,6 +32,25 @@ def wrote_every_image(target):
     return all(os.path.exists(os.path.join(target, name)) for name in IMAGES)
 
 
+print('target_dir — what --out is given')
+
+
+def exit_code(args):
+    try:
+        return gen_screenshots.target_dir(args)
+    except SystemExit as err:
+        return err.code
+
+
+check(gen_screenshots.target_dir([]) == gen_screenshots.OUT_DIR,
+      'no --out writes into docs/screenshots')
+check(gen_screenshots.target_dir(['--out', os.sep + 'tmp' + os.sep + 'shots'])
+      == os.path.abspath(os.sep + 'tmp' + os.sep + 'shots'),
+      '--out with a directory writes there')
+check(exit_code(['--out']) == 2, '--out with nothing after it is an argument error')
+check(exit_code(['--out', '']) == 2,
+      '--out with an empty value is an argument error, not the working directory')
+
 print('write — inside the repository')
 inside = tempfile.mkdtemp(dir=gen_screenshots.ROOT)
 try:
