@@ -24,6 +24,8 @@
   // Until the fold lands, the table has to read the map the way the content
   // script does, or it shows Auto for channels that are still manual.
   let storageMigrated = false;
+  // Deleting is offered once the load has read what it would delete from.
+  let settingsLoaded = false;
 
   function fmtGain(gain) {
     const f = formatGain(gain, displayUnit);
@@ -123,7 +125,7 @@
         <td class="ch-name">${nameHtml}</td>
         <td class="ch-vol${autoVideo ? ' auto' : ''}">${esc(videoText)}</td>
         <td class="ch-vol${autoLive ? ' auto' : ''}">${esc(liveText)}</td>
-        <td style="text-align:right"><button class="ch-del" data-id="${esc(id)}" title="${esc(msg('delete'))}">×</button></td>
+        <td style="text-align:right"><button class="ch-del" data-id="${esc(id)}"${settingsLoaded ? '' : ' disabled'} title="${esc(msg('delete'))}">×</button></td>
       `;
       tbody.appendChild(tr);
     }
@@ -134,6 +136,7 @@
 
     channelListEl.querySelectorAll('.ch-del').forEach(btn => {
       btn.addEventListener('click', async () => {
+        if (!settingsLoaded) return;
         const id = btn.dataset.id;
         try {
           await requestChannelWrite('deleteChannel', { channelId: id });
@@ -267,6 +270,9 @@
     // shows `Auto (—)` for the types whose gain is still in a legacy key.
     .catch(err => console.error('[YTCV] legacy auto gains not folded in', err))
     .then(loadSettings)
+    // The rows are written after this, so they carry a delete button only when
+    // the load got this far; one that stopped earlier never writes them.
+    .then(() => { settingsLoaded = true; })
     .then(renderChannels)
     // Deleting every saved channel is offered once the list has been read; a
     // load that never got there leaves the button as the markup ships it.
