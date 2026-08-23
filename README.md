@@ -86,6 +86,7 @@ background.js (service worker)
 # テスト実行
 node test.js
 node test-navigation.js
+python3 test-screenshots.py
 
 # アイコン再生成
 python3 gen_icons.py
@@ -118,6 +119,7 @@ yt-channel-volume/
 ├── tools/fonts/          # スクリーンショット描画用フォント M PLUS 1p (OFL)
 ├── test.js               # utils ユニットテスト
 ├── test-navigation.js    # ナビゲーション・データ整合性テスト
+├── test-screenshots.py   # スクリーンショット出力先のパステスト
 ├── gen_icons.py          # アイコン生成 (Python pillow)
 ├── gen_screenshots.py    # スクリーンショット生成 (docs/screenshots/ へ出力)
 ├── pack.py               # zip パッケージング

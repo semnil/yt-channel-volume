@@ -361,9 +361,18 @@ def target_dir(args):
     return os.path.abspath(args[after])
 
 
+def under_root(target):
+    """Whether a path can be shown relative to the repository."""
+    try:
+        return os.path.commonpath([ROOT, os.path.abspath(target)]) == ROOT
+    except ValueError:
+        # Windows: a path on another drive shares nothing with ROOT.
+        return False
+
+
 def write(images, target):
+    inside = under_root(target)
     os.makedirs(target, exist_ok=True)
-    inside = os.path.commonpath([ROOT, os.path.abspath(target)]) == ROOT
     for name, img in images.items():
         path = os.path.join(target, name)
         img.save(path)
@@ -412,8 +421,9 @@ def check(images):
     return 0
 
 
-print(f'Font: {FAMILY} | pillow {PIL_VERSION} | freetype {features.version("freetype2")} '
-      f'| raqm {features.check("raqm")}')
-if '--check' in sys.argv[1:]:
-    sys.exit(check(render_all()))
-write(render_all(), target_dir(sys.argv[1:]))
+if __name__ == '__main__':
+    print(f'Font: {FAMILY} | pillow {PIL_VERSION} | freetype {features.version("freetype2")} '
+          f'| raqm {features.check("raqm")}')
+    if '--check' in sys.argv[1:]:
+        sys.exit(check(render_all()))
+    write(render_all(), target_dir(sys.argv[1:]))

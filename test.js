@@ -285,6 +285,15 @@ if (outDirDecl && sheetTable && langTuple) {
   // CI redraws into an empty directory and uploads that one, so the artifact
   // holds what the runner drew and nothing else that sits in docs/screenshots.
   assert(genSrc.includes("'--out'"), 'gen_screenshots.py takes --out');
+  assert(excluded.has('test-screenshots.py'), 'the generator test stays out of the store zip');
+  const paths = require('child_process').spawnSync(
+    'python3', ['test-screenshots.py'], { encoding: 'utf8' });
+  if (paths.error || paths.status === 3) {
+    console.log(`  (path test skipped: ${(paths.error || paths.stderr || '').toString().trim()})`);
+  } else {
+    assert(paths.status === 0,
+      `test-screenshots.py — ${(paths.stdout || '').trim().split('\n').filter(l => l.includes('FAIL')).join('; ')}`);
+  }
   const ciYaml = fs.readFileSync('./.github/workflows/ci.yaml', 'utf8');
   const redrawInto = ciYaml.match(/gen_screenshots\.py --out (.+)/);
   const uploads = ciYaml.match(/path: (.+)\n\s+if-no-files-found/);

@@ -107,6 +107,7 @@ options.html / options.js (設定画面、別タブで表示)
 | `tools/fonts/` | 描画フォント M PLUS 1p (Regular / Bold) と OFL.txt。google/fonts の `ofl/mplus1p` から取得 (commit `66a36c8`)。CI と各マシンで同じ画素を得るためにリポジトリへ入れている |
 | `test.js` | ユニットテスト (node test.js) |
 | `test-navigation.js` | ナビゲーション・状態遷移テスト (node test-navigation.js) |
+| `test-screenshots.py` | `gen_screenshots.py` の出力先パス処理テスト (python3 test-screenshots.py。`node test.js` からも実行) |
 
 ## Key design decisions
 
@@ -162,6 +163,7 @@ python3 gen_screenshots.py --check
 # Run tests
 node test.js
 node test-navigation.js
+python3 test-screenshots.py
 
 # Package for Chrome Web Store
 python3 pack.py
