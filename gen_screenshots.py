@@ -426,14 +426,22 @@ def check(images):
             # committed file's.
             new = Image.open(fresh).convert('RGBA')
             try:
-                old = Image.open(committed).convert('RGBA')
+                opened = Image.open(committed)
+                # Read before converting: convert() hands back a plain image
+                # that has forgotten how many frames the file held.
+                frames = getattr(opened, 'n_frames', 1)
+                old = opened.convert('RGBA')
             except (OSError, Image.DecompressionBombError) as err:
                 # Whatever it is, it is not what the code draws. Raising here
                 # would take the remaining images and the orphan report with
                 # it. A bomb header raises outside OSError, hence both.
                 stale.append(f'{name}: cannot be read as an image ({err})')
                 continue
-            if new.size != old.size:
+            if frames != 1:
+                # Every comparison below reads the frame the file opens on, so
+                # an animation whose first frame matches would pass on it.
+                stale.append(f'{name}: {frames} frames where the code draws one')
+            elif new.size != old.size:
                 # Sizes first: ImageChops.difference takes two of them without
                 # complaint and returns the overlap, so the rest goes unread.
                 stale.append(f'{name}: {old.size} where the code draws {new.size}')

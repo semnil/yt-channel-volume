@@ -196,6 +196,21 @@ finally:
 
 box = sandbox()
 try:
+    # An animation whose first frame is the drawn one: every comparison reads
+    # the frame the file opens on, so the second one rides along unseen.
+    first = Image.open(shot(box, 'popup_ja.png')).convert('RGB')
+    second = first.copy()
+    second.paste((255, 0, 255), (0, 0, first.width, first.height))
+    first.save(shot(box, 'popup_ja.png'), save_all=True, append_images=[second])
+    animated = run(box, '--check')
+    check(animated.returncode == 1, f'a second frame is reported (exit {animated.returncode})')
+    check('popup_ja.png: 2 frames where the code draws one' in animated.stderr,
+          'and it is named as frames rather than as a difference')
+finally:
+    shutil.rmtree(box)
+
+box = sandbox()
+try:
     # The shape of adding a language and forgetting to redraw.
     os.remove(shot(box, 'overlay_en.png'))
     gone = run(box, '--check')
