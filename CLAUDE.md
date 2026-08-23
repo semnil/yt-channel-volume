@@ -68,7 +68,9 @@ options.html / options.js (設定画面、別タブで表示)
 ├── 表示単位トグル (% / dB)
 ├── ゲイン表示トグル (プレイヤーのボリュームバー横に表示、default OFF)
 ├── Saved Channels テーブル (Video / Live 2列。Auto時は `Auto (保存済みゲイン)`、チャンネルリンク付き、削除可)
-└── storage.onChanged でリアルタイム同期
+├── 読込が終わるまで画面を隠し、設定コントロールと削除 (全削除・行の ×) は無効で出荷する
+├── 初回読取は 2 キーを 1 回の get で読み、種別ごとの revision で新しい変更通知に負ける
+└── storage.onChanged でリアルタイム同期 (通知が運んだ一覧をそのまま描画)
 ```
 
 ## i18n
@@ -143,6 +145,11 @@ options.html / options.js (設定画面、別タブで表示)
 - **ゲインオーバーレイ**: `.ytp-volume-area` にゲイン値を表示。SPA ナビでの DOM 再構築にも対応 (`document.contains` で detach 検知)
 - **失敗を握り潰さない**: メッセージ処理は `handleMessage()` を try/catch で包み、`respondOnce()` で必ず 1 回だけ応答する。`commitGain()` は Promise チェーンより前に同期実行され、他拡張が `<video>` を専有していると `createMediaElementSource` が throw するため、catch が Promise だけを見ていると応答が届かない。非同期側 (`forceDetect` の `sendDetectedState`、`setTargetLufs`) も同じ `respondOnce` へ成功・失敗の両方を接続する (無応答だと popup が初期化中のまま止まる)。失敗は `reportFailure()` で console へ出す。Autoのゲイン保存失敗は再生中のゲインを変えないため、`applyPreferredGain` の中で捕らえて呼び出し元 (`forceDetect` の応答経路) を巻き込まない
 - **手動ゲインは保存できて初めてゲイン**: `setGain` / `applyLoudness` は保存失敗時に `restoreGainAfterFailedSave()` が `applyPreferredGain()` を通して保存済みの値を読み直して適用し、その完了後に `{ ok: false }` を返す。スライダーは `input` の `setGainLive` で先にプレビューを当てているため「直前の値」は既に未保存の新値であり、in-memory の退避では戻せない。戻さないと再生中の音量と保存値が食い違い、popup は失敗後に読み直した値を表示して保存済みに見せ、次のナビゲーションで元へ戻る
+- **保存済みの値を反映してから画面を出す**: popup / options は `body.initializing` で読み込み中の画面を隠し、保存済み設定の描画が終わってから外す (options は読込が失敗しても外す — 出ない画面は操作もできない)。初期化中は `body.initializing *` (と `::before` / `::after`) の `transition: none !important` で全ての遷移を止める — セレクタの列挙は書き忘れたコントロールを取りこぼし、`!important` が無いと個々のセレクタに詳細度で負ける。遷移は値を書いた時点で走り始めるので、残りが画面上で動いて「表示してから更新された」ように見える。`revealOptions` / `revealPopup` は `document.body.offsetWidth` を読んでから次のフレームで class を外す — 同じスタイルパスで外すと書き込み前の値が遷移の始点になる
+- **読めていないものについては何も名乗らない**: options の初回読取は `autoLoudnessSettings` と `channelVolumes` を 1 回の `get` で読む。片方だけ成功する状態を作らないためで、失敗したときに出す `settingsLoadFailed` の行は「その 1 回の読取」を指す。文言は読取と次の操作 (再読み込み) だけを述べ、画面の値については何も言わない — 読取中に届いた変更通知は失敗が判明する前に描画されるので、値を述べる文言は偽になりうる。失敗が確定した後の変更通知は取らない (再読込を促している画面に別タブの書き込みが載るため)。確定前に届いた通知は既に画面にあり、そのまま残る
+- **読めていないものに対して操作させない**: 設定コントロール (Target LUFS / Auto 既定 2 種 / 表示単位 / ゲイン表示) と破壊的操作 (全削除・行の ×) は markup で無効に出荷し、読み終えた load だけが有効化する。`saveSetting` も `settingsLoaded` でない書き込みを拒否する — markup が第 1 の拒否、ハンドラがその後ろの拒否。行の × は描画がその時点の状態で書くため、読込成功後の描画で有効になる
+- **初回読取は後から届いた変更に負ける**: 読取は変更通知より前に発行され、発行時点の値を返す。`loadAll` は get の前に `settingsRevision` / `channelRevision` を控え、動いていない側にだけ読んだ値を適用する。変更通知は種別の revision を 1 つ進め、チャンネル側は通知が運んだ `newValue` をそのまま描画・保持する (読み直すと初回読取と競合する 2 本目の読取になる)。設定側は差分ではなく全体を適用する — 一部だけ適用すると、触らなかったフィールドが revision ガードで markup 既定値のまま残る
+- **`renderChannels` は描画専用**: 渡された一覧を描くだけで、storage は読まない。保持していなければ何も描かない。自分で書き込んだ後 (行削除・全削除) も読み直さない — service worker の書き込みは変更通知として戻り、その通知が一覧を運んで再描画するため
 - **コンテキスト無効化の表示**: 拡張機能 (本体または別拡張) のリロードで content.js の `chrome.runtime` が無効化されると、popup からの `chrome.tabs.sendMessage` は `Receiving end does not exist` で reject される。Web Audio API と DOM オーバーレイは chrome.* に依存しないため、過去に適用したゲイン表示だけが残り続けて誤解を招く。popup の catch 節は「チャンネル未検出」ではなく `#reloadNeeded` (ja: 「拡張機能と接続できません。ページを再読み込みしてください (F5)」) を表示し、ユーザーに F5 を促す
 
 ## Commands
