@@ -7,6 +7,11 @@ import sys
 import tempfile
 import zlib
 
+# This directory is loaded as an unpacked extension, and Chrome refuses one
+# whose top level holds a name starting with "_". An import writes __pycache__
+# beside the module it reads, and that module is here.
+sys.dont_write_bytecode = True
+
 # gen_screenshots first: it is the one that answers 3 where pillow is missing,
 # and importing PIL here first would turn that into a traceback.
 import gen_screenshots
