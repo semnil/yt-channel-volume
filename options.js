@@ -16,6 +16,7 @@
   const overlayToggle = document.getElementById('overlayToggle');
   const clearAllBtn = document.getElementById('clearAllBtn');
   const channelListEl = document.getElementById('channelList');
+  const settingsErrorEl = document.getElementById('settingsError');
 
   let displayUnit = '%';
   let targetLufs = DEFAULT_TARGET_LUFS;
@@ -26,6 +27,14 @@
   let storageMigrated = false;
   // Deleting is offered once the load has read what it would delete from.
   let settingsLoaded = false;
+  // A load that did not arrive leaves the page saying so, and keeping it so.
+  let loadFailed = false;
+  // What a change notification has already put on the page. The initial read is
+  // issued before them and can return older values, so it applies what it read
+  // only where no notification has arrived since it was issued.
+  let settingsRevision = 0;
+  let channelRevision = 0;
+  let channelVolumes = null;
 
   function fmtGain(gain) {
     const f = formatGain(gain, displayUnit);
@@ -34,9 +43,28 @@
 
   // ── Settings ───────────────────────────────────────────────────────
 
-  async function loadSettings() {
-    const data = await chrome.storage.local.get(SETTINGS_KEY);
-    const s = data[SETTINGS_KEY] || {};
+  function setSettingsControlsDisabled(disabled) {
+    for (const control of [
+      targetSlider, defaultAutoVideoToggle, defaultAutoLiveToggle, overlayToggle, clearAllBtn
+    ]) {
+      control.disabled = disabled;
+    }
+    unitToggle.querySelectorAll('button').forEach(btn => { btn.disabled = disabled; });
+  }
+
+  // Both keys come from one read, so a page that shows what it read shows both
+  // or neither, and the line it puts up when it fails names that one read.
+  async function loadAll() {
+    const settingsAt = settingsRevision;
+    const channelsAt = channelRevision;
+    const data = await chrome.storage.local.get([SETTINGS_KEY, CHANNEL_VOLUMES_KEY]);
+    if (settingsAt === settingsRevision) applySettings(data[SETTINGS_KEY] || {});
+    settingsLoaded = true;
+    if (channelsAt === channelRevision) channelVolumes = data[CHANNEL_VOLUMES_KEY] || {};
+    renderChannels(channelVolumes);
+  }
+
+  function applySettings(s) {
     targetLufs = s.targetLufs ?? DEFAULT_TARGET_LUFS;
     displayUnit = s.displayUnit || '%';
     defaultAutoApplyVideo =
@@ -52,6 +80,8 @@
   }
 
   async function saveSetting(key, value) {
+    // A page that never read the settings does not get to write one back.
+    if (!settingsLoaded) return;
     const data = await chrome.storage.local.get(SETTINGS_KEY);
     const s = data[SETTINGS_KEY] || {};
     s[key] = value;
@@ -81,9 +111,11 @@
 
   // ── Channel list ───────────────────────────────────────────────────
 
-  async function renderChannels() {
-    const data = await chrome.storage.local.get(CHANNEL_VOLUMES_KEY);
-    const all = data[CHANNEL_VOLUMES_KEY] || {};
+  // Draws the list the page holds, and nothing else. A read of its own would be
+  // a second read racing the one that is already out, and it would land without
+  // anything to weigh it against; a page that holds no list yet draws none.
+  function renderChannels(all) {
+    if (!all) return;
     const entries = Object.entries(all);
 
     if (entries.length === 0) {
@@ -143,7 +175,8 @@
         } catch (err) {
           console.error('[YTCV] channel not deleted', err);
         }
-        renderChannels();
+        // The worker's write comes back as a change notification, which carries
+        // the list the table is redrawn from.
       });
     });
   }
@@ -166,7 +199,7 @@
     try {
       await saveSetting('autoApplyLoudnessVideoDefault', enabled);
       defaultAutoApplyVideo = enabled;
-      await renderChannels();
+      renderChannels(channelVolumes);
     } catch (_) {
       defaultAutoVideoToggle.checked = previous;
     } finally {
@@ -181,7 +214,7 @@
     try {
       await saveSetting('autoApplyLoudnessLiveDefault', enabled);
       defaultAutoApplyLive = enabled;
-      await renderChannels();
+      renderChannels(channelVolumes);
     } catch (_) {
       defaultAutoLiveToggle.checked = previous;
     } finally {
@@ -200,7 +233,6 @@
     } catch (err) {
       console.error('[YTCV] channels not cleared', err);
     }
-    renderChannels();
   });
 
   unitToggle.addEventListener('click', (e) => {
@@ -209,7 +241,7 @@
     displayUnit = btn.dataset.unit;
     updateUnitButtons();
     saveSetting('displayUnit', displayUnit);
-    renderChannels();
+    renderChannels(channelVolumes);
   });
 
   // ── Storage change listener ─────────────────────────────────────
@@ -217,39 +249,27 @@
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local') return;
+    // The page that could not read its own settings is telling the viewer to
+    // reload it. What another tab writes after that would stand on a page whose
+    // own read never landed, so none of it is taken.
+    if (loadFailed) return;
     // Another context may have folded the profile; the table has to stop
     // reading the map under the pre-unification rule.
     if (changes[UNIFIED_GAINS_KEY]?.newValue === true && !storageMigrated) {
       storageMigrated = true;
-      renderChannels();
+      renderChannels(channelVolumes);
     }
+    // The notification carries the map itself, so it is what the page holds and
+    // what the table draws; nothing is read back for it.
     if (changes[CHANNEL_VOLUMES_KEY]) {
-      renderChannels();
+      channelRevision++;
+      channelVolumes = changes[CHANNEL_VOLUMES_KEY].newValue || {};
+      renderChannels(channelVolumes);
     }
     if (changes[SETTINGS_KEY]) {
-      const s = changes[SETTINGS_KEY].newValue || {};
-      if (s.targetLufs !== undefined && s.targetLufs !== targetLufs) {
-        targetLufs = s.targetLufs;
-        targetSlider.value = targetLufs;
-        targetValueEl.textContent = targetLufs + ' LUFS';
-      }
-      if (s.displayUnit && s.displayUnit !== displayUnit) {
-        displayUnit = s.displayUnit;
-        updateUnitButtons();
-        renderChannels();
-      }
-      const nextDefaultVideo =
-        s.autoApplyLoudnessVideoDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS;
-      const nextDefaultLive =
-        s.autoApplyLoudnessLiveDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS;
-      if (nextDefaultVideo !== defaultAutoApplyVideo ||
-          nextDefaultLive !== defaultAutoApplyLive) {
-        defaultAutoApplyVideo = nextDefaultVideo;
-        defaultAutoApplyLive = nextDefaultLive;
-        defaultAutoVideoToggle.checked = defaultAutoApplyVideo;
-        defaultAutoLiveToggle.checked = defaultAutoApplyLive;
-        renderChannels();
-      }
+      settingsRevision++;
+      applySettings(changes[SETTINGS_KEY].newValue || {});
+      renderChannels(channelVolumes);
     }
   });
 
@@ -269,13 +289,16 @@
     // The table below reads channelVolumes either way; an un-folded profile
     // shows `Auto (—)` for the types whose gain is still in a legacy key.
     .catch(err => console.error('[YTCV] legacy auto gains not folded in', err))
-    .then(loadSettings)
-    // The rows are written after this, so they carry a delete button only when
-    // the load got this far; one that stopped earlier never writes them.
-    .then(() => { settingsLoaded = true; })
-    .then(renderChannels)
-    // Deleting every saved channel is offered once the list has been read; a
-    // load that never got there leaves the button as the markup ships it.
-    .then(() => { clearAllBtn.disabled = false; })
+    .then(loadAll)
+    // Everything that acts on what was read is offered once it has been read; a
+    // load that never got there leaves them as the markup ships them.
+    .then(() => { setSettingsControlsDisabled(false); })
+    .catch(err => {
+      // The page is shown either way; what it says about itself is the part
+      // that changes, and the controls stay as the markup ships them.
+      loadFailed = true;
+      settingsErrorEl.classList.remove('hidden');
+      console.error('[YTCV] settings not loaded', err);
+    })
     .finally(revealOptions);
 })();

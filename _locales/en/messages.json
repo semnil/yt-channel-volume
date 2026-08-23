@@ -35,6 +35,9 @@
   "reloadPageNeeded": {
     "message": "Can't reach the extension. Please reload this page (F5)."
   },
+  "settingsLoadFailed": {
+    "message": "Could not load the saved settings. Please reload the page."
+  },
   "settings": {
     "message": "Settings"
   },

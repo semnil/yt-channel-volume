@@ -72,6 +72,10 @@ h1 {
   margin-top: 2px;
 }
 
+.setting-row input[type="range"]:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
 .setting-row input[type="range"] {
   width: 180px;
   height: 4px;
@@ -124,8 +128,12 @@ h1 {
   background: #4ecdc4;
   color: #1a1a2e;
 }
-.toggle-group button:hover:not(.active) {
+.toggle-group button:hover:not(.active):not(:disabled) {
   color: #ccc;
+}
+.toggle-group button:disabled {
+  cursor: default;
+  opacity: 0.45;
 }
 .type-switches {
   display: flex;
@@ -240,6 +248,14 @@ h1 {
   font-size: 13px;
   padding: 12px 0;
 }
+
+.settings-error {
+  color: #ff6b9d;
+  font-size: 11px;
+  line-height: 1.4;
+  margin: -6px 0 8px;
+}
+.settings-error.hidden { display: none; }
 .toggle-switch {
   position: relative;
   width: 36px;
@@ -271,6 +287,8 @@ h1 {
   border-radius: 50%;
   transition: transform 0.2s, background 0.2s;
 }
+.toggle-switch input:disabled { cursor: default; }
+.toggle-switch input:disabled + .slider { opacity: 0.45; }
 .toggle-switch input:checked + .slider {
   background: #1b3a4b;
 }
@@ -286,6 +304,7 @@ h1 {
 
   <div class="section">
     <h2 data-i18n="settings"></h2>
+    <div id="settingsError" class="settings-error hidden" role="status" data-i18n="settingsLoadFailed"></div>
 
     <div class="setting-row">
       <div>
@@ -293,7 +312,7 @@ h1 {
         <div class="setting-desc" data-i18n="targetLufsDesc"></div>
       </div>
       <div style="display:flex; align-items:center;">
-        <input type="range" id="targetSlider" min="-30" max="-6" value="-18" step="1">
+        <input type="range" id="targetSlider" min="-30" max="-6" value="-18" step="1" disabled>
         <span id="targetValue" class="setting-value">-18 LUFS</span>
       </div>
     </div>
@@ -307,14 +326,14 @@ h1 {
         <div class="type-switch">
           <span id="defaultAutoVideoLabel" class="type-switch-label" data-i18n="typeVideo"></span>
           <label class="toggle-switch">
-            <input type="checkbox" id="defaultAutoVideoToggle" aria-labelledby="allChannelsAutoLabel defaultAutoVideoLabel">
+            <input type="checkbox" id="defaultAutoVideoToggle" aria-labelledby="allChannelsAutoLabel defaultAutoVideoLabel" disabled>
             <span class="slider"></span>
           </label>
         </div>
         <div class="type-switch">
           <span id="defaultAutoLiveLabel" class="type-switch-label" data-i18n="typeLive"></span>
           <label class="toggle-switch">
-            <input type="checkbox" id="defaultAutoLiveToggle" aria-labelledby="allChannelsAutoLabel defaultAutoLiveLabel">
+            <input type="checkbox" id="defaultAutoLiveToggle" aria-labelledby="allChannelsAutoLabel defaultAutoLiveLabel" disabled>
             <span class="slider"></span>
           </label>
         </div>
@@ -327,8 +346,8 @@ h1 {
         <div class="setting-desc" data-i18n="displayUnitDesc"></div>
       </div>
       <div class="toggle-group" id="unitToggle">
-        <button data-unit="%" class="active">%</button>
-        <button data-unit="dB">dB</button>
+        <button data-unit="%" class="active" disabled>%</button>
+        <button data-unit="dB" disabled>dB</button>
       </div>
     </div>
 
@@ -338,7 +357,7 @@ h1 {
         <div class="setting-desc" data-i18n="showGainOverlayDesc"></div>
       </div>
       <label class="toggle-switch">
-        <input type="checkbox" id="overlayToggle">
+        <input type="checkbox" id="overlayToggle" disabled>
         <span class="slider"></span>
       </label>
     </div>
