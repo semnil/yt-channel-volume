@@ -494,6 +494,16 @@ if (outDirDecl && sheetTable && langTuple) {
       `test-screenshots.py — ${(paths.stdout || '').trim().split('\n').filter(l => l.includes('FAIL')).join('; ')}`);
   }
   const ciYaml = fs.readFileSync('./.github/workflows/ci.yaml', 'utf8');
+  // What this file spawns skips itself where pillow is missing, so CI has to
+  // have it before the suite rather than after — in the same job, since a
+  // step in another one installs nothing here.
+  const testJob = ciYaml.slice(ciYaml.indexOf('\n  test:'));
+  const pillowInstalled = testJob.indexOf('pip install pillow==');
+  const suiteRun = testJob.indexOf('run: node test.js');
+  assert(pillowInstalled > -1, 'the test job installs pillow');
+  assert(suiteRun > -1, 'the test job runs node test.js');
+  assert(pillowInstalled < suiteRun,
+    'CI installs pillow before it runs the suite that spawns the check');
   const redrawInto = ciYaml.match(/gen_screenshots\.py --out (.+)/);
   const uploads = ciYaml.match(/path: (.+)\n\s+if-no-files-found/);
   assert(redrawInto, 'the CI redraw names a directory to write into');
