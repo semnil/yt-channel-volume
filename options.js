@@ -29,6 +29,12 @@
   let settingsLoaded = false;
   // A load that did not arrive leaves the page saying so, and keeping it so.
   let loadFailed = false;
+  // What a change notification has already put on the page. The initial read is
+  // issued before them and can return older values, so it applies what it read
+  // only where no notification has arrived since it was issued.
+  let settingsRevision = 0;
+  let channelRevision = 0;
+  let channelVolumes = null;
 
   function fmtGain(gain) {
     const f = formatGain(gain, displayUnit);
@@ -49,10 +55,13 @@
   // Both keys come from one read, so a page that shows what it read shows both
   // or neither, and the line it puts up when it fails names that one read.
   async function loadAll() {
+    const settingsAt = settingsRevision;
+    const channelsAt = channelRevision;
     const data = await chrome.storage.local.get([SETTINGS_KEY, CHANNEL_VOLUMES_KEY]);
-    applySettings(data[SETTINGS_KEY] || {});
+    if (settingsAt === settingsRevision) applySettings(data[SETTINGS_KEY] || {});
     settingsLoaded = true;
-    await renderChannels(data[CHANNEL_VOLUMES_KEY] || {});
+    if (channelsAt === channelRevision) channelVolumes = data[CHANNEL_VOLUMES_KEY] || {};
+    await renderChannels(channelVolumes);
   }
 
   function applySettings(s) {
@@ -249,35 +258,19 @@
     // reading the map under the pre-unification rule.
     if (changes[UNIFIED_GAINS_KEY]?.newValue === true && !storageMigrated) {
       storageMigrated = true;
-      renderChannels();
+      renderChannels(channelVolumes);
     }
+    // The notification carries the map itself, so it is what the page holds and
+    // what the table draws; nothing is read back for it.
     if (changes[CHANNEL_VOLUMES_KEY]) {
-      renderChannels();
+      channelRevision++;
+      channelVolumes = changes[CHANNEL_VOLUMES_KEY].newValue || {};
+      renderChannels(channelVolumes);
     }
     if (changes[SETTINGS_KEY]) {
-      const s = changes[SETTINGS_KEY].newValue || {};
-      if (s.targetLufs !== undefined && s.targetLufs !== targetLufs) {
-        targetLufs = s.targetLufs;
-        targetSlider.value = targetLufs;
-        targetValueEl.textContent = targetLufs + ' LUFS';
-      }
-      if (s.displayUnit && s.displayUnit !== displayUnit) {
-        displayUnit = s.displayUnit;
-        updateUnitButtons();
-        renderChannels();
-      }
-      const nextDefaultVideo =
-        s.autoApplyLoudnessVideoDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS;
-      const nextDefaultLive =
-        s.autoApplyLoudnessLiveDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS;
-      if (nextDefaultVideo !== defaultAutoApplyVideo ||
-          nextDefaultLive !== defaultAutoApplyLive) {
-        defaultAutoApplyVideo = nextDefaultVideo;
-        defaultAutoApplyLive = nextDefaultLive;
-        defaultAutoVideoToggle.checked = defaultAutoApplyVideo;
-        defaultAutoLiveToggle.checked = defaultAutoApplyLive;
-        renderChannels();
-      }
+      settingsRevision++;
+      applySettings(changes[SETTINGS_KEY].newValue || {});
+      renderChannels(channelVolumes);
     }
   });
 

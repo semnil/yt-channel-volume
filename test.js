@@ -331,6 +331,30 @@ assert(optionsSrc.indexOf('settingsLoaded = true') !== -1 &&
 // so the line it puts up names the read that failed rather than half of one.
 assert(/chrome\.storage\.local\.get\(\[SETTINGS_KEY, CHANNEL_VOLUMES_KEY\]\)/.test(optionsSrc),
   'the initial load reads the settings and the channels together');
+
+section('the initial read does not undo what arrived while it was out');
+// The read is issued before a change that lands during it, and returns what
+// storage held when it was issued, so applying it unconditionally puts the
+// older value back on a page that has already shown the newer one.
+assert(/const settingsAt = settingsRevision;[\s\S]{0,120}const channelsAt = channelRevision;[\s\S]{0,200}chrome\.storage\.local\.get\(\[SETTINGS_KEY, CHANNEL_VOLUMES_KEY\]\)/
+  .test(optionsSrc),
+  'the load records both revisions before it issues its read');
+assert(/if \(settingsAt === settingsRevision\) applySettings\(/.test(optionsSrc),
+  'and applies the settings it read only where none arrived since');
+assert(/if \(channelsAt === channelRevision\) channelVolumes = /.test(optionsSrc),
+  'and keeps the list it read only where none arrived since');
+assert(/if \(changes\[SETTINGS_KEY\]\) \{\s*settingsRevision\+\+;/.test(optionsSrc),
+  'a settings change counts as one that arrived');
+assert(/if \(changes\[CHANNEL_VOLUMES_KEY\]\) \{\s*channelRevision\+\+;/.test(optionsSrc),
+  'so does a channel change');
+// The notification carries the map, so reading it back would be a second read
+// racing the first one.
+assert(/channelVolumes = changes\[CHANNEL_VOLUMES_KEY\]\.newValue \|\| \{\};\s*renderChannels\(channelVolumes\);/
+  .test(optionsSrc),
+  'the channel change is drawn from what it carried');
+assert(/settingsRevision\+\+;\s*applySettings\(changes\[SETTINGS_KEY\]\.newValue \|\| \{\}\);/
+  .test(optionsSrc),
+  'a settings change is applied whole, so every control shows what arrived');
 assert(/\.ch-del:disabled\s*\{[^}]*opacity:/.test(optionsHtml),
   'the disabled row delete does not look live');
 assert(/\.ch-del:hover:not\(:disabled\)\s*\{/.test(optionsHtml),
@@ -480,7 +504,7 @@ section('options adopt a fold another context finished');
 const optionsListener = optionsSrc.slice(optionsSrc.indexOf('chrome.storage.onChanged.addListener'));
 assert(optionsListener.includes('UNIFIED_GAINS_KEY'),
   'the options listener watches the migration mark');
-assert(/UNIFIED_GAINS_KEY[\s\S]{0,160}storageMigrated = true[\s\S]{0,80}renderChannels\(\)/.test(optionsListener),
+assert(/UNIFIED_GAINS_KEY[\s\S]{0,160}storageMigrated = true[\s\S]{0,80}renderChannels\(channelVolumes\)/.test(optionsListener),
   'and adopting it re-renders the table under the current rule');
 assert(/resolveAutoApplySetting\([^)]*!storageMigrated\)/.test(optionsSrc),
   'the table resolves with the pre-unification rule until the fold has landed');
