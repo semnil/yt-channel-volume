@@ -537,6 +537,38 @@ assert(excluded.has('screenshots'),
 assert(excluded.has('.DS_Store'),
   'the finder metadata macOS drops beside the manifest stays out of the store zip');
 
+// Every check above reads EXCLUDE as text, which says nothing about whether
+// pack.py acts on it. This packs a tree built to carry one of each thing the
+// list names and reads back what landed in the zip.
+{
+  const box = fs.mkdtempSync(require('path').join(require('os').tmpdir(), 'ytcv-pack-'));
+  fs.copyFileSync('./pack.py', `${box}/pack.py`);
+  fs.writeFileSync(`${box}/manifest.json`, JSON.stringify({ version: '0.0.0' }));
+  fs.writeFileSync(`${box}/content.js`, '');
+  fs.writeFileSync(`${box}/.DS_Store`, '');
+  fs.mkdirSync(`${box}/__pycache__`);
+  fs.writeFileSync(`${box}/__pycache__/content.cpython-314.pyc`, '');
+  fs.mkdirSync(`${box}/docs`);
+  fs.writeFileSync(`${box}/docs/note.md`, '');
+  const packed = require('child_process').spawnSync('python3', ['pack.py'],
+    { cwd: box, encoding: 'utf8' });
+  if (packed.error) {
+    console.log(`  (pack run skipped: ${packed.error.message})`);
+  } else {
+    assert(packed.status === 0, `pack.py runs — ${(packed.stderr || '').trim()}`);
+    const listed = require('child_process').spawnSync('python3',
+      ['-c', 'import glob,zipfile;print(chr(10).join(zipfile.ZipFile(glob.glob("*.zip")[0]).namelist()))'],
+      { cwd: box, encoding: 'utf8' });
+    const names = (listed.stdout || '').trim().split('\n').filter(Boolean);
+    assert(names.includes('content.js'), 'pack.py packs what the extension is made of');
+    assert(!names.includes('.DS_Store'), 'pack.py drops the finder metadata');
+    assert(!names.some(name => name.startsWith('__pycache__/')), 'pack.py drops the bytecode cache');
+    assert(!names.some(name => name.startsWith('docs/')), 'pack.py drops the directories it names');
+    assert(!names.includes('pack.py'), 'pack.py leaves itself out');
+  }
+  fs.rmSync(box, { recursive: true, force: true });
+}
+
 // options.js has no DOM harness here, so its half of the cross-context
 // contract is asserted against the source.
 section('options adopt a fold another context finished');
