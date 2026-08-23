@@ -12,7 +12,7 @@ import tempfile
 UNAVAILABLE = 3
 
 try:
-    from PIL import Image, ImageChops, ImageDraw, ImageFont, __version__ as PIL_VERSION, features
+    from PIL import Image, ImageDraw, ImageFont, __version__ as PIL_VERSION, features
 except ImportError as err:
     print(f'{err}. Install pillow to draw the screenshots.', file=sys.stderr)
     sys.exit(UNAVAILABLE)
@@ -350,15 +350,31 @@ def render_all():
             for lang in LANGS for sheet, render in SHEETS.items()}
 
 
+USAGE = f'usage: {os.path.basename(__file__)} [--check] [--out <dir>]'
+
+
 def target_dir(args):
-    """Where to write: docs/screenshots, or the directory after --out."""
-    if '--out' not in args:
-        return OUT_DIR
-    after = args.index('--out') + 1
-    if after >= len(args) or not args[after]:
-        print('--out needs a directory to write into', file=sys.stderr)
+    """Where to write: docs/screenshots, or the directory after --out.
+
+    An argument this does not know is an error rather than a default: `--chek`
+    reaching the write path overwrites the images the run was meant to read,
+    which is the staleness it was called to find.
+    """
+    target = OUT_DIR
+    rest = list(args)
+    while rest:
+        arg = rest.pop(0)
+        if arg == '--check':
+            continue
+        if arg == '--out':
+            if not rest or not rest[0]:
+                print(f'--out needs a directory to write into\n{USAGE}', file=sys.stderr)
+                sys.exit(2)
+            target = os.path.abspath(rest.pop(0))
+            continue
+        print(f'unknown argument: {arg}\n{USAGE}', file=sys.stderr)
         sys.exit(2)
-    return os.path.abspath(args[after])
+    return target
 
 
 def under_root(target):
@@ -390,8 +406,25 @@ def check(images):
             committed = os.path.join(OUT_DIR, name)
             if not os.path.exists(committed):
                 stale.append(f'{name}: not committed')
-            elif ImageChops.difference(Image.open(fresh).convert('RGB'),
-                                       Image.open(committed).convert('RGB')).getbbox():
+                continue
+            try:
+                # RGBA: dropping alpha would call an image that differs only in
+                # its transparency the same one.
+                new, old = (Image.open(fresh).convert('RGBA'),
+                            Image.open(committed).convert('RGBA'))
+            except OSError as err:
+                # Whatever it is, it is not what the code draws. Raising here
+                # would take the remaining images and the orphan report with it.
+                stale.append(f'{name}: cannot be read as an image ({err})')
+                continue
+            if new.size != old.size:
+                # Sizes first: ImageChops.difference takes two of them without
+                # complaint and returns the overlap, so the rest goes unread.
+                stale.append(f'{name}: {old.size} where the code draws {new.size}')
+            elif new.tobytes() != old.tobytes():
+                # Pixels as bytes. difference().getbbox() looks at alpha alone
+                # once an alpha channel is there, and answers None for a colour
+                # that changed.
                 stale.append(f'{name}: differs from what the code draws now')
     finally:
         for name in os.listdir(scratch):
@@ -400,8 +433,12 @@ def check(images):
 
     here = os.path.relpath(OUT_DIR, ROOT)
     # No directory at all is the "none of them are committed" case above, which
-    # every image has already reported for itself.
-    committed = sorted(os.listdir(OUT_DIR)) if os.path.isdir(OUT_DIR) else []
+    # every image has already reported for itself. Only .png files are counted:
+    # what Finder leaves in a directory of images, and what an interrupted run
+    # leaves beside them, are not images anybody drew.
+    committed = sorted(name for name in os.listdir(OUT_DIR)
+                       if name.endswith('.png') and os.path.isfile(os.path.join(OUT_DIR, name))
+                       ) if os.path.isdir(OUT_DIR) else []
     orphans = [f'{here}/{name}' for name in committed if name not in images]
 
     for line in stale:
@@ -424,6 +461,9 @@ def check(images):
 if __name__ == '__main__':
     print(f'Font: {FAMILY} | pillow {PIL_VERSION} | freetype {features.version("freetype2")} '
           f'| raqm {features.check("raqm")}')
+    # Every argument is read before the branch, so a near miss of --check is an
+    # argument error rather than a redraw.
+    destination = target_dir(sys.argv[1:])
     if '--check' in sys.argv[1:]:
         sys.exit(check(render_all()))
-    write(render_all(), target_dir(sys.argv[1:]))
+    write(render_all(), destination)
