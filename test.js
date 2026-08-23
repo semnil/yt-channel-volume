@@ -266,6 +266,124 @@ for (const file of manifestFiles) {
   assert(fs.existsSync('./' + file), `${file} exists`);
 }
 
+section('README screenshots');
+const readmeSrc = fs.readFileSync('./README.md', 'utf8');
+const readmeImages = Array.from(
+  readmeSrc.matchAll(/!\[[^\]]*\]\(\s*([^)\s]+)(?:\s+"[^"]*")?\s*\)/g), m => m[1])
+  .filter(image => !/^https?:/.test(image));
+for (const image of readmeImages) {
+  assert(fs.existsSync('./' + image), `${image} is embedded in the README and must exist`);
+}
+
+// The generator's own source says where it writes and what it names the files;
+// reading it here is what ties the README, the committed images and the zip
+// together. A rename on either side has to break something.
+const genSrc = fs.readFileSync('./gen_screenshots.py', 'utf8');
+const outDirDecl = genSrc.match(/OUT_DIR = os\.path\.join\(ROOT, '([^']+)', '([^']+)'\)/);
+const sheetTable = genSrc.match(/SHEETS = \{([^}]+)\}/);
+const langTuple = genSrc.match(/LANGS = \(([^)]+)\)/);
+assert(outDirDecl, 'gen_screenshots.py declares OUT_DIR as os.path.join(ROOT, ...)');
+assert(sheetTable, 'gen_screenshots.py lists its sheets in SHEETS');
+assert(langTuple, 'gen_screenshots.py lists its languages in LANGS');
+if (outDirDecl && sheetTable && langTuple) {
+  const outDir = `${outDirDecl[1]}/${outDirDecl[2]}`;
+  const langs = Array.from(langTuple[1].matchAll(/'([^']+)'/g), m => m[1]);
+  const sheets = Array.from(sheetTable[1].matchAll(/'([^']+)':/g), m => m[1]);
+  const generated = new Set(
+    sheets.flatMap(sheet => langs.map(lang => `${outDir}/${sheet}_${lang}.png`)));
+  assert(generated.size > 0, 'gen_screenshots.py writes screenshots');
+  for (const file of generated) {
+    assert(fs.existsSync('./' + file), `${file} is generated and must be committed`);
+  }
+  const committed = fs.existsSync('./' + outDir) ? fs.readdirSync('./' + outDir) : [];
+  for (const name of committed) {
+    assert(generated.has(`${outDir}/${name}`),
+      `${outDir}/${name} is committed but nothing draws it`);
+  }
+
+  const embedded = readmeImages.filter(image => image.startsWith(outDir + '/'));
+  assert(embedded.length > 0, 'the README embeds screenshots');
+  for (const image of embedded) {
+    assert(generated.has(image), `${image} is one of the files gen_screenshots.py writes`);
+  }
+
+  // The mockups spell out UI text that lives in _locales, so it can drift.
+  const drawnLabels = {
+    auto_label: 'autoApplyLoudness',
+    target_desc: 'targetLufsDesc',
+    all_auto_label: 'allChannelsAutoApply',
+    all_auto_desc: 'allChannelsAutoApplyDesc',
+    unit_label: 'displayUnit',
+    unit_desc: 'displayUnitDesc',
+    overlay_label: 'showGainOverlay',
+    overlay_desc: 'showGainOverlayDesc',
+    clear_all: 'clearAll',
+  };
+  for (const lang of langs) {
+    const localeFile = `./_locales/${lang}/messages.json`;
+    assert(fs.existsSync(localeFile), `${localeFile} exists for the language the mockups draw`);
+    if (!fs.existsSync(localeFile)) { continue; }
+    const start = genSrc.indexOf(`'${lang}': {`);
+    const block = start === -1 ? '' : genSrc.slice(start, genSrc.indexOf('video_title', start));
+    const messages = JSON.parse(fs.readFileSync(localeFile, 'utf8'));
+    for (const [drawn, messageKey] of Object.entries(drawnLabels)) {
+      const value = block.match(new RegExp(`'${drawn}': '([^']*)'`));
+      assert(value && messages[messageKey] && value[1] === messages[messageKey].message,
+        `gen_screenshots.py draws ${lang} ${drawn} exactly as ${messageKey}`);
+    }
+  }
+
+  assert(excluded.has(outDir.split('/')[0]), 'the screenshots stay out of the store zip');
+
+  // Whether the committed images are the ones this code draws can only be
+  // answered by drawing them, which needs pillow. CI installs it and runs the
+  // same command as its own step, so a machine without it says so here.
+  const drawn = require('child_process').spawnSync(
+    'python3', ['gen_screenshots.py', '--check'], { encoding: 'utf8' });
+  if (drawn.error || drawn.status === 3) {
+    console.log(`  (pixel check skipped: ${(drawn.error || drawn.stderr || '').toString().trim()})`);
+  } else {
+    assert(drawn.status === 0,
+      `the committed screenshots are what gen_screenshots.py draws — ${(drawn.stderr || '').trim()}`);
+  }
+
+  // The face those images are drawn with is committed, and stays out of the zip.
+  const fontDir = genSrc.match(/FONT_DIR = os\.path\.join\(ROOT, '([^']+)', '([^']+)'\)/);
+  assert(fontDir, 'gen_screenshots.py declares FONT_DIR as os.path.join(ROOT, ...)');
+  if (fontDir) {
+    for (const face of Array.from(genSrc.matchAll(/os\.path\.join\(FONT_DIR, '([^']+)'\)/g), m => m[1])) {
+      assert(fs.existsSync(`./${fontDir[1]}/${fontDir[2]}/${face}`),
+        `${fontDir[1]}/${fontDir[2]}/${face} is the face the screenshots are drawn with`);
+    }
+    assert(excluded.has(fontDir[1]), 'the vendored font stays out of the store zip');
+  }
+
+  // CI redraws into an empty directory and uploads that one, so the artifact
+  // holds what the runner drew and nothing else that sits in docs/screenshots.
+  assert(genSrc.includes("'--out'"), 'gen_screenshots.py takes --out');
+  assert(excluded.has('test-screenshots.py'), 'the generator test stays out of the store zip');
+  const paths = require('child_process').spawnSync(
+    'python3', ['test-screenshots.py'], { encoding: 'utf8' });
+  if (paths.error || paths.status === 3) {
+    console.log(`  (path test skipped: ${(paths.error || paths.stderr || '').toString().trim()})`);
+  } else {
+    assert(paths.status === 0,
+      `test-screenshots.py — ${(paths.stdout || '').trim().split('\n').filter(l => l.includes('FAIL')).join('; ')}`);
+  }
+  const ciYaml = fs.readFileSync('./.github/workflows/ci.yaml', 'utf8');
+  const redrawInto = ciYaml.match(/gen_screenshots\.py --out (.+)/);
+  const uploads = ciYaml.match(/path: (.+)\n\s+if-no-files-found/);
+  assert(redrawInto, 'the CI redraw names a directory to write into');
+  assert(uploads, 'the CI upload names a path');
+  if (redrawInto && uploads) {
+    const dir = text => text.trim().replace(/\/$/, '');
+    assert(dir(uploads[1]) === dir(redrawInto[1]), 'CI uploads the directory it redrew into');
+    assert(!redrawInto[1].includes(outDir), 'the CI redraw does not write over the committed images');
+  }
+}
+assert(excluded.has('screenshots'),
+  'a screenshots/ left over from before the move stays out of the store zip');
+
 // options.js has no DOM harness here, so its half of the cross-context
 // contract is asserted against the source.
 section('options adopt a fold another context finished');

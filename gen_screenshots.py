@@ -1,5 +1,24 @@
-"""Generate Chrome Web Store screenshot mockups (640x400), ja + en."""
-from PIL import Image, ImageDraw, ImageFont
+"""Generate store / README screenshot mockups (640x400) into docs/screenshots, ja + en.
+
+`--check` renders into a temporary directory and compares with what is committed
+instead of writing. Exit 1 means the two differ, exit 3 that this machine cannot
+draw them. `--out <dir>` writes the six there instead of into docs/screenshots.
+"""
+import math
+import os
+import sys
+import tempfile
+
+UNAVAILABLE = 3
+
+try:
+    from PIL import Image, ImageChops, ImageDraw, ImageFont, __version__ as PIL_VERSION, features
+except ImportError as err:
+    print(f'{err}. Install pillow to draw the screenshots.', file=sys.stderr)
+    sys.exit(UNAVAILABLE)
+
+ROOT = os.path.dirname(os.path.abspath(__file__))
+OUT_DIR = os.path.join(ROOT, 'docs', 'screenshots')
 
 W, H = 640, 400
 BG = (15, 15, 35)
@@ -13,18 +32,76 @@ GRAY = (136, 136, 136)
 DIM = (85, 85, 85)
 BORDER = (42, 42, 74)
 
-# Fonts with Japanese support
-FONT = ImageFont.truetype('meiryo.ttc', 14)
-FONT_SM = ImageFont.truetype('meiryo.ttc', 11)
-FONT_LG = ImageFont.truetype('meiryo.ttc', 18)
-FONT_XL = ImageFont.truetype('meiryob.ttc', 22)
-FONT_TITLE = ImageFont.truetype('meiryob.ttc', 15)
-FONT_BOLD = ImageFont.truetype('meiryob.ttc', 14)
-FONT_XS = ImageFont.truetype('meiryo.ttc', 9)
+# The one face these mockups are drawn with, committed under tools/fonts so that
+# every machine and the CI runner rasterize the same bytes.
+FAMILY = 'M PLUS 1p'
+FONT_DIR = os.path.join(ROOT, 'tools', 'fonts')
+REGULAR = os.path.join(FONT_DIR, 'MPLUS1p-Regular.ttf')
+BOLD = os.path.join(FONT_DIR, 'MPLUS1p-Bold.ttf')
+
+for _face in (REGULAR, BOLD):
+    if not os.path.exists(_face):
+        print(f'{os.path.relpath(_face, ROOT)} is missing from this checkout.', file=sys.stderr)
+        sys.exit(UNAVAILABLE)
+
+
+def face(path, size):
+    """Basic layout on every machine: pillow reaches for raqm where it is
+    installed, and the two engines place these strings differently."""
+    return ImageFont.truetype(path, size, layout_engine=ImageFont.Layout.BASIC)
+
+
+FONT = face(REGULAR, 14)
+FONT_SM = face(REGULAR, 11)
+FONT_LG = face(REGULAR, 18)
+FONT_XL = face(BOLD, 22)
+FONT_TITLE = face(BOLD, 15)
+FONT_BOLD = face(BOLD, 14)
+FONT_XS = face(REGULAR, 9)
 
 
 def rr(draw, box, radius, fill):
     draw.rounded_rectangle(box, radius=radius, fill=fill)
+
+
+# Icons are drawn, not typed: the symbol glyphs for a gear and a fullscreen box
+# are missing from some of the font families above and would land as tofu.
+
+def gear(draw, cx, cy, r, color):
+    ring = r * 0.72
+    for i in range(8):
+        a = i * math.pi / 4
+        draw.line([(cx + math.cos(a) * ring, cy + math.sin(a) * ring),
+                   (cx + math.cos(a) * r, cy + math.sin(a) * r)], fill=color, width=3)
+    draw.ellipse([cx - ring, cy - ring, cx + ring, cy + ring], outline=color, width=3)
+
+
+def fullscreen(draw, cx, cy, size, color):
+    h = size / 2
+    arm = size / 3
+    for sx in (-1, 1):
+        for sy in (-1, 1):
+            x, y = cx + h * sx, cy + h * sy
+            draw.line([(x, y), (x - arm * sx, y)], fill=color, width=2)
+            draw.line([(x, y), (x, y - arm * sy)], fill=color, width=2)
+
+
+def toggle(draw, x, y, on):
+    """The extension's 36x20 switch: dark track, knob left when off, teal right when on."""
+    draw.rounded_rectangle([x, y, x+36, y+20], radius=10, fill=(27, 58, 75) if on else BORDER)
+    knob_x = x + 19 if on else x + 3
+    draw.ellipse([knob_x, y+3, knob_x+14, y+17], fill=TEAL if on else GRAY)
+
+
+def fit_value_font(draw, cards, max_w):
+    """Largest bold size at which every card's value + unit still fits its card."""
+    for size in (22, 20, 18, 17, 16, 15, 14):
+        font = face(BOLD, size)
+        if all(draw.textlength(val, font=font) + draw.textlength(unit, font=FONT_XS) <= max_w
+               for _, val, unit, _ in cards):
+            return font
+    raise SystemExit(f'{FAMILY} draws these wider than the {max_w}px card at every size: '
+                     + ', '.join(f'{val} {unit}' for _, val, unit, _ in cards))
 
 
 # ── Localized strings ────────────────────────────────────────────────
@@ -32,12 +109,16 @@ def rr(draw, box, radius, fill):
 STRINGS = {
     'ja': {
         'apply': '63% をチャンネルに適用 (Video)',
+        'auto_label': 'LUFS 自動適用',
         'manual': 'MANUAL VOLUME',
         'target_desc': 'Loudness から算出するゲインの基準値',
+        'all_auto_label': '全チャンネルの LUFS 自動適用',
+        'all_auto_desc': '個別設定がないチャンネルの既定値',
         'unit_label': '表示単位',
         'unit_desc': 'ゲイン値の表示形式',
         'overlay_label': 'ゲイン表示',
-        'overlay_desc': 'プレイヤーの音量バー横にゲインを表示',
+        'overlay_desc': 'プレイヤーの音量バー横に適用中のゲインを表示',
+        'clear_all': '全削除',
         'video_title': 'Sample Ch. - ピアノカバー集',
         'video_channel': 'Sample Ch.',
         'channels': [
@@ -48,12 +129,16 @@ STRINGS = {
     },
     'en': {
         'apply': 'Apply 63% to channel (Video)',
+        'auto_label': 'Auto-apply LUFS',
         'manual': 'MANUAL VOLUME',
-        'target_desc': 'Reference level for gain from Loudness',
+        'target_desc': 'Reference level for gain calculation from Loudness',
+        'all_auto_label': 'Auto-apply LUFS for all channels',
+        'all_auto_desc': 'Default for channels without an individual setting',
         'unit_label': 'Display unit',
         'unit_desc': 'Format for gain values',
         'overlay_label': 'Gain overlay',
-        'overlay_desc': 'Show gain next to volume bar',
+        'overlay_desc': 'Show applied gain next to the volume bar in the player',
+        'clear_all': 'Clear all',
         'video_title': 'Sample Ch. - Piano Cover Collection',
         'video_channel': 'Sample Ch.',
         'channels': [
@@ -76,7 +161,7 @@ def screenshot_popup(lang):
 
     # Header
     draw.text((px+16, py+12), 'YT Channel Volume', fill=TEAL, font=FONT_TITLE)
-    draw.text((px+pw-30, py+12), '\u2699', fill=GRAY, font=FONT_LG)
+    gear(draw, px+pw-24, py+22, 8, GRAY)
     draw.line([(px, py+38), (px+pw, py+38)], fill=BORDER)
 
     # Info section
@@ -90,18 +175,29 @@ def screenshot_popup(lang):
         ('SUGGESTED', '63', '%', YELLOW),
         ('CURRENT', '63', '%', PINK),
     ]
-    cx = px + 14
+    card_w, gap = 88, 6
+    value_font = fit_value_font(draw, cards, card_w - 14)
+    unit_dy = value_font.getmetrics()[0] - FONT_XS.getmetrics()[0]
+    cx = px + 12
     for label, val, unit, color in cards:
-        rr(draw, [cx, iy+38, cx+85, iy+88], 6, CARD_BG)
+        rr(draw, [cx, iy+38, cx+card_w, iy+88], 6, CARD_BG)
         draw.text((cx+8, iy+42), label, fill=GRAY, font=FONT_XS)
-        draw.text((cx+8, iy+56), val, fill=color, font=FONT_XL)
-        draw.text((cx+8+draw.textlength(val, font=FONT_XL), iy+62), unit, fill=GRAY, font=FONT_SM)
-        cx += 92
+        draw.text((cx+8, iy+56), val, fill=color, font=value_font)
+        draw.text((cx+8+draw.textlength(val, font=value_font), iy+56+unit_dy), unit,
+                  fill=GRAY, font=FONT_XS)
+        cx += card_w + gap
 
     draw.line([(px, iy+100), (px+pw, iy+100)], fill=BORDER)
 
+    # Per-channel automatic LUFS, off here — that is what leaves the apply
+    # button and the slider below it usable.
+    ay = iy + 100
+    draw.text((px+16, ay+11), s['auto_label'], fill=(204, 204, 204), font=FONT_SM)
+    toggle(draw, px+pw-52, ay+8, on=False)
+    draw.line([(px, ay+36), (px+pw, ay+36)], fill=BORDER)
+
     # Apply button
-    by = iy + 108
+    by = iy + 144
     rr(draw, [px+16, by, px+pw-16, by+32], 6, TEAL)
     tw = draw.textlength(s['apply'], font=FONT_BOLD)
     draw.text((px + (pw - tw) / 2, by+7), s['apply'], fill=CARD_BG, font=FONT_BOLD)
@@ -126,8 +222,7 @@ def screenshot_popup(lang):
         draw.text((bx + (bw-ptw)/2, sy+27), p, fill=GRAY, font=FONT_SM)
         bx += bw + 4
 
-    img.save(f'screenshots/popup_{lang}.png')
-    print(f'Generated screenshots/popup_{lang}.png')
+    return img
 
 
 def screenshot_settings(lang):
@@ -135,51 +230,70 @@ def screenshot_settings(lang):
     img = Image.new('RGB', (W, H), BG)
     draw = ImageDraw.Draw(img)
 
-    draw.text((40, 24), 'YT Channel Volume', fill=TEAL, font=FONT_XL)
+    draw.text((36, 16), 'YT Channel Volume', fill=TEAL, font=FONT_XL)
 
-    # Settings section
-    sy = 70
-    rr(draw, [30, sy, 610, sy+130], 10, CARD_BG)
-    draw.text((50, sy+16), 'SETTINGS', fill=GRAY, font=FONT_SM)
+    # Settings section \u2014 the four rows options.html lays out, in its order
+    sy = 54
+    rr(draw, [30, sy, 610, sy+186], 10, CARD_BG)
+    draw.text((50, sy+12), 'SETTINGS', fill=GRAY, font=FONT_SM)
 
-    # Target LUFS
-    draw.text((50, sy+40), 'Target LUFS', fill=(204, 204, 204), font=FONT)
-    draw.text((50, sy+58), s['target_desc'], fill=DIM, font=FONT_SM)
-    draw.rounded_rectangle([380, sy+45, 520, sy+51], radius=2, fill=BORDER)
-    draw.ellipse([440, sy+40, 456, sy+56], fill=TEAL)
-    draw.text((530, sy+40), '-18 LUFS', fill=TEAL, font=FONT_BOLD)
+    ry = sy + 34
+    for label, desc in ((('Target LUFS'), s['target_desc']),
+                        (s['all_auto_label'], s['all_auto_desc']),
+                        (s['unit_label'], s['unit_desc']),
+                        (s['overlay_label'], s['overlay_desc'])):
+        draw.text((50, ry), label, fill=(204, 204, 204), font=FONT)
+        draw.text((50, ry+17), desc, fill=DIM, font=FONT_SM)
+        ry += 38
 
-    draw.line([(50, sy+80), (590, sy+80)], fill=BORDER)
+    # Target LUFS slider
+    ry = sy + 34
+    draw.rounded_rectangle([400, ry+5, 520, ry+11], radius=2, fill=BORDER)
+    draw.ellipse([452, ry, 468, ry+16], fill=TEAL)
+    draw.text((530, ry), '-18 LUFS', fill=TEAL, font=FONT_BOLD)
+
+    # Video / Live defaults, both off
+    ry += 38
+    for type_label, x in ((('VIDEO'), 424), ('LIVE', 512)):
+        draw.text((x, ry+4), type_label, fill=GRAY, font=FONT_SM)
+        toggle(draw, x+42, ry, on=False)
 
     # Display unit
-    draw.text((50, sy+88), s['unit_label'], fill=(204, 204, 204), font=FONT)
-    draw.text((50, sy+106), s['unit_desc'], fill=DIM, font=FONT_SM)
-    rr(draw, [520, sy+92, 556, sy+112], 6, TEAL)
-    draw.text((528, sy+95), '%', fill=CARD_BG, font=FONT_BOLD)
-    rr(draw, [556, sy+92, 590, sy+112], 6, SECTION_BG)
-    draw.text((562, sy+95), 'dB', fill=GRAY, font=FONT_BOLD)
+    ry += 38
+    rr(draw, [520, ry, 556, ry+20], 6, TEAL)
+    draw.text((528, ry+3), '%', fill=CARD_BG, font=FONT_BOLD)
+    rr(draw, [556, ry, 590, ry+20], 6, SECTION_BG)
+    draw.text((562, ry+3), 'dB', fill=GRAY, font=FONT_BOLD)
+
+    # Gain overlay, on here \u2014 it is what the overlay screenshot shows
+    ry += 38
+    toggle(draw, 554, ry, on=True)
 
     # Saved Channels section
-    cy = sy + 150
-    rr(draw, [30, cy, 610, cy+170], 10, CARD_BG)
-    draw.text((50, cy+16), 'SAVED CHANNELS', fill=GRAY, font=FONT_SM)
+    cy = sy + 200
+    rr(draw, [30, cy, 610, cy+134], 10, CARD_BG)
+    draw.text((50, cy+12), 'SAVED CHANNELS', fill=GRAY, font=FONT_SM)
 
-    hy = cy + 40
-    draw.text((50, hy), 'Channel', fill=DIM, font=FONT_SM)
-    draw.text((380, hy), 'Video', fill=DIM, font=FONT_SM)
-    draw.text((470, hy), 'Live', fill=DIM, font=FONT_SM)
-    draw.line([(50, hy+18), (590, hy+18)], fill=BORDER)
+    # .clear-all-btn at rest: grey on a bordered 4px-radius box, 4px 10px padding
+    clear_w = draw.textlength(s['clear_all'], font=FONT_SM)
+    draw.rounded_rectangle([590-clear_w-20, cy+6, 590, cy+28], radius=4, outline=BORDER)
+    draw.text((590-clear_w-10, cy+11), s['clear_all'], fill=GRAY, font=FONT_SM)
+
+    hy = cy + 34
+    draw.text((50, hy), 'CHANNEL', fill=DIM, font=FONT_SM)
+    draw.text((380, hy), 'VIDEO', fill=DIM, font=FONT_SM)
+    draw.text((470, hy), 'LIVE', fill=DIM, font=FONT_SM)
+    draw.line([(50, hy+16), (590, hy+16)], fill=BORDER)
 
     ry = hy + 24
     for name, video, live in s['channels']:
         draw.text((50, ry), name, fill=TEAL, font=FONT)
         draw.text((380, ry), video, fill=PINK, font=FONT_BOLD)
         draw.text((470, ry), live, fill=PINK if live != '\u2014' else DIM, font=FONT_BOLD)
-        draw.text((570, ry), '\u00d7', fill=DIM, font=FONT_LG)
-        ry += 36
+        draw.text((570, ry-4), '\u00d7', fill=DIM, font=FONT_LG)
+        ry += 26
 
-    img.save(f'screenshots/settings_{lang}.png')
-    print(f'Generated screenshots/settings_{lang}.png')
+    return img
 
 
 def screenshot_overlay(lang):
@@ -211,19 +325,105 @@ def screenshot_overlay(lang):
     draw.text((vx+88, cy-8), '63%', fill=TEAL, font=FONT_BOLD)
 
     # Annotation
-    label = '\u2191 Gain overlay' if lang == 'en' else '\u2191 \u30b2\u30a4\u30f3\u8868\u793a'
+    label = '\u2193 Gain overlay' if lang == 'en' else '\u2193 \u30b2\u30a4\u30f3\u8868\u793a'
     draw.text((vx+78, cy-34), label, fill=TEAL, font=FONT_BOLD)
 
-    draw.text((W-100, cy-7), '\u2699  \u2b1c', fill=WHITE, font=FONT)
+    gear(draw, W-93, cy, 8, WHITE)
+    fullscreen(draw, W-63, cy, 15, WHITE)
 
     draw.text((20, 20), s['video_title'], fill=WHITE, font=FONT_LG)
     draw.text((20, 48), s['video_channel'], fill=GRAY, font=FONT)
 
-    img.save(f'screenshots/overlay_{lang}.png')
-    print(f'Generated screenshots/overlay_{lang}.png')
+    return img
 
 
-for lang in ('ja', 'en'):
-    screenshot_popup(lang)
-    screenshot_settings(lang)
-    screenshot_overlay(lang)
+SHEETS = {
+    'popup': screenshot_popup,
+    'settings': screenshot_settings,
+    'overlay': screenshot_overlay,
+}
+LANGS = ('ja', 'en')
+
+
+def render_all():
+    return {f'{sheet}_{lang}.png': render(lang)
+            for lang in LANGS for sheet, render in SHEETS.items()}
+
+
+def target_dir(args):
+    """Where to write: docs/screenshots, or the directory after --out."""
+    if '--out' not in args:
+        return OUT_DIR
+    after = args.index('--out') + 1
+    if after >= len(args) or not args[after]:
+        print('--out needs a directory to write into', file=sys.stderr)
+        sys.exit(2)
+    return os.path.abspath(args[after])
+
+
+def under_root(target):
+    """Whether a path can be shown relative to the repository."""
+    try:
+        return os.path.commonpath([ROOT, os.path.abspath(target)]) == ROOT
+    except ValueError:
+        # Windows: a path on another drive shares nothing with ROOT.
+        return False
+
+
+def write(images, target):
+    inside = under_root(target)
+    os.makedirs(target, exist_ok=True)
+    for name, img in images.items():
+        path = os.path.join(target, name)
+        img.save(path)
+        print(f'Generated {os.path.relpath(path, ROOT) if inside else path}')
+
+
+def check(images):
+    """Compare what the code draws now with what is committed, pixel by pixel."""
+    stale = []
+    scratch = tempfile.mkdtemp()
+    try:
+        for name, img in images.items():
+            fresh = os.path.join(scratch, name)
+            img.save(fresh)
+            committed = os.path.join(OUT_DIR, name)
+            if not os.path.exists(committed):
+                stale.append(f'{name}: not committed')
+            elif ImageChops.difference(Image.open(fresh).convert('RGB'),
+                                       Image.open(committed).convert('RGB')).getbbox():
+                stale.append(f'{name}: differs from what the code draws now')
+    finally:
+        for name in os.listdir(scratch):
+            os.remove(os.path.join(scratch, name))
+        os.rmdir(scratch)
+
+    here = os.path.relpath(OUT_DIR, ROOT)
+    # No directory at all is the "none of them are committed" case above, which
+    # every image has already reported for itself.
+    committed = sorted(os.listdir(OUT_DIR)) if os.path.isdir(OUT_DIR) else []
+    orphans = [f'{here}/{name}' for name in committed if name not in images]
+
+    for line in stale:
+        print(line, file=sys.stderr)
+    if stale:
+        print(f'Run `python3 {os.path.basename(__file__)}` and commit the result.',
+              file=sys.stderr)
+    for path in orphans:
+        print(f'{path}: drawn by nothing', file=sys.stderr)
+    if orphans:
+        # Generating writes the files it draws and touches nothing else, so
+        # these have to go by hand.
+        print('Delete: ' + ' '.join(orphans), file=sys.stderr)
+    if stale or orphans:
+        return 1
+    print(f'{len(images)} screenshots match the code that draws them.')
+    return 0
+
+
+if __name__ == '__main__':
+    print(f'Font: {FAMILY} | pillow {PIL_VERSION} | freetype {features.version("freetype2")} '
+          f'| raqm {features.check("raqm")}')
+    if '--check' in sys.argv[1:]:
+        sys.exit(check(render_all()))
+    write(render_all(), target_dir(sys.argv[1:]))

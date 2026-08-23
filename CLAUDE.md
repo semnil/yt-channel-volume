@@ -100,11 +100,14 @@ options.html / options.js (設定画面、別タブで表示)
 | `options.js` | 設定 logic. Target LUFS、表示単位、チャンネル管理 |
 | `_locales/` | i18n (ja, en) |
 | `icons/` | Extension icons (16/48/128 px) — 3-bar loudness meter |
+| `docs/screenshots/` | README 埋め込み・ストア掲載用スクリーンショット (ja, en)。`gen_screenshots.py` の出力 |
 | `gen_icons.py` | アイコン生成スクリプト (Python pillow) |
 | `pack.py` | Chrome Web Store 用 zip 生成 |
-| `gen_screenshots.py` | ストア掲載用スクリーンショット生成 |
+| `gen_screenshots.py` | スクリーンショット生成 (`docs/screenshots/` へ出力。描画フォントは `tools/fonts/` の M PLUS 1p 固定。`--check` は書き込まずコミット済み画像と画素比較し、pillow が無い環境では exit 3) |
+| `tools/fonts/` | 描画フォント M PLUS 1p (Regular / Bold) と OFL.txt。google/fonts の `ofl/mplus1p` から取得 (commit `66a36c8`)。CI と各マシンで同じ画素を得るためにリポジトリへ入れている |
 | `test.js` | ユニットテスト (node test.js) |
 | `test-navigation.js` | ナビゲーション・状態遷移テスト (node test-navigation.js) |
+| `test-screenshots.py` | `gen_screenshots.py` の出力先パス処理テスト (python3 test-screenshots.py。`node test.js` からも実行) |
 
 ## Key design decisions
 
@@ -151,12 +154,16 @@ options.html / options.js (設定画面、別タブで表示)
 # Regenerate icons
 python3 gen_icons.py
 
-# Regenerate store screenshots
+# Regenerate screenshots (README + store) into docs/screenshots/
 python3 gen_screenshots.py
+
+# Compare the committed screenshots with what the code draws (no writes)
+python3 gen_screenshots.py --check
 
 # Run tests
 node test.js
 node test-navigation.js
+python3 test-screenshots.py
 
 # Package for Chrome Web Store
 python3 pack.py
