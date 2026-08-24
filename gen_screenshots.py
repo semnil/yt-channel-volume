@@ -470,19 +470,28 @@ def write(images, target):
         return 1
     for name, img in images.items():
         path = os.path.join(target, name)
-        # Written beside the name and moved onto it: os.replace puts the file
-        # where the name is rather than where a link would lead, and a run that
-        # stops partway leaves the name it has not reached alone.
-        handle = tempfile.NamedTemporaryFile(dir=target, prefix=f'.{name}.', suffix='.tmp',
-                                             delete=False)
-        handle.close()
+        beside = None
         try:
-            img.save(handle.name, format='PNG')
-            os.replace(handle.name, path)
+            # Written beside the name and moved onto it: os.replace puts the
+            # file where the name is rather than where a link would lead, and a
+            # run that stops partway leaves the name it has not reached alone.
+            # Making that file is inside the boundary too — a directory that
+            # exists and will not take one answers here rather than by raising.
+            handle = tempfile.NamedTemporaryFile(dir=target, prefix=f'.{name}.', suffix='.tmp',
+                                                 delete=False)
+            beside = handle.name
+            handle.close()
+            img.save(beside, format='PNG')
+            os.replace(beside, path)
         except OSError as err:
-            os.remove(handle.name)
-            print(f'{shown(path)} cannot be written ({err.strerror})', file=sys.stderr)
-            return 1
+            if beside is not None and os.path.lexists(beside):
+                os.remove(beside)
+            if target == OUT_DIR:
+                print(f'{shown(path)} cannot be written ({err.strerror})', file=sys.stderr)
+                return 1
+            print(f'--out has nowhere to write: {target} ({err.strerror})\n{USAGE}',
+                  file=sys.stderr)
+            return 2
         print(f'Generated {shown(path)}')
     return 0
 

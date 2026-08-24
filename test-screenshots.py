@@ -49,6 +49,13 @@ class FakeImage:
             pass
 
 
+class RefusedImage:
+    """Fails where a full disk would: after the file beside the name is there."""
+
+    def save(self, path, format=None):  # noqa: A002 — pillow's own parameter name
+        raise OSError(28, 'No space left on device', path)
+
+
 IMAGES = {'popup_ja.png': FakeImage(), 'popup_en.png': FakeImage()}
 IMAGES_DRAWN = sorted(gen_screenshots.render_all())
 
@@ -814,6 +821,51 @@ try:
     check('usage:' in refused.stderr, 'and is told the shape of the command')
 finally:
     os.chmod(readonly, 0o755)
+    shutil.rmtree(box)
+
+box = tempfile.mkdtemp()
+try:
+    # Where the directory takes the file and the save fails anyway, what was
+    # written beside the name has to go: a run that stops is not a run that
+    # leaves its working files in a directory of images.
+    code = gen_screenshots.write({'popup_ja.png': RefusedImage()}, box)
+    check(code == 2, f'a save that fails is reported (exit {code})')
+    check(os.listdir(box) == [], f'and nothing is left beside the name ({os.listdir(box)})')
+finally:
+    shutil.rmtree(box)
+
+box = sandbox()
+readonly = os.path.join(box, 'readonly')
+try:
+    # This one exists, so nothing has to be made — what refuses is the file
+    # written beside the name, which is the first thing this run asks of it.
+    os.mkdir(readonly)
+    os.chmod(readonly, 0o555)
+    refused = run(box, '--out', readonly)
+    check(refused.returncode == 2,
+          f'a destination that will not take a file is an argument error (exit {refused.returncode})')
+    check('Traceback' not in refused.stderr, 'and says so without a traceback')
+    check('usage:' in refused.stderr, 'and is told the shape of the command')
+    check(os.listdir(readonly) == [], 'and nothing was left in it')
+finally:
+    os.chmod(readonly, 0o755)
+    shutil.rmtree(box)
+
+box = sandbox()
+tracked_readonly = os.path.join(box, 'docs', 'screenshots')
+try:
+    # The same directory as the one it draws into, where there is no argument
+    # to blame: this is the run failing, not the command being wrong.
+    os.chmod(tracked_readonly, 0o555)
+    refused = run(box)
+    check(refused.returncode == 1,
+          f'the tracked directory refusing a file is exit 1 (exit {refused.returncode})')
+    check('Traceback' not in refused.stderr, 'and says so without a traceback')
+    check('cannot be written' in refused.stderr, 'and names what could not be written')
+    check([name for name in os.listdir(tracked_readonly) if not name.endswith('.png')] == [],
+          'and left nothing of its own behind')
+finally:
+    os.chmod(tracked_readonly, 0o755)
     shutil.rmtree(box)
 
 box = sandbox()
