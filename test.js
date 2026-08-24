@@ -422,14 +422,12 @@ if (outDirDecl && sheetTable && langTuple) {
   // the name alone does not tell it from one.
   const imagesIn = dir => (fs.existsSync(dir) ? fs.readdirSync(dir) : []).filter(name =>
     /\.png$/i.test(name) && fs.statSync(`${dir}/${name}`, { throwIfNoEntry: false })?.isFile());
-  const leftover = `./${outDir}/tmpytcv-leftover.png`;
-  fs.mkdirSync(leftover);
-  try {
-    assert(!imagesIn('./' + outDir).includes('tmpytcv-leftover.png'),
-      'a leftover staging directory is not one of the committed images');
-  } finally {
-    fs.rmSync(leftover, { recursive: true, force: true });
-  }
+  const suffixBox = fs.mkdtempSync(require('path').join(require('os').tmpdir(), 'ytcv-shots-'));
+  fs.writeFileSync(`${suffixBox}/popup_ja.png`, '');
+  fs.mkdirSync(`${suffixBox}/tmpabc123.png`);
+  assert(imagesIn(suffixBox).join() === 'popup_ja.png',
+    'a leftover staging directory is not one of the images counted here');
+  fs.rmSync(suffixBox, { recursive: true, force: true });
   const committed = imagesIn('./' + outDir);
   for (const name of committed) {
     assert(generated.has(`${outDir}/${name}`),
