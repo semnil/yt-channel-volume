@@ -38,14 +38,19 @@ def check(condition, msg):
 
 
 class FakeImage:
-    """Stands in for a rendered sheet: this is about paths, not pixels."""
+    """Stands in for a rendered sheet: this is about paths, not pixels.
 
-    def save(self, path):
+    The name it is saved under is a temporary one now, so the format is named
+    rather than read off the extension.
+    """
+
+    def save(self, path, format=None):  # noqa: A002 — pillow's own parameter name
         with open(path, 'wb'):
             pass
 
 
 IMAGES = {'popup_ja.png': FakeImage(), 'popup_en.png': FakeImage()}
+IMAGES_DRAWN = sorted(gen_screenshots.render_all())
 
 
 def wrote_every_image(target):
@@ -673,6 +678,15 @@ try:
         check('Traceback' not in refused.stderr, f'and {" ".join(args)} says so without a traceback')
     check(tracked_bytes(box) == before, 'and no refused run wrote anything')
     check(os.path.isfile(afile), 'nor turned a file into a directory')
+    if LINKS:
+        # These two are answered by walking the names, before anything is asked
+        # to make a directory — os.makedirs would refuse them too, but only
+        # after the run had committed to writing, and with "File exists" for
+        # what is a link pointing nowhere.
+        for args in (['--out', broken], ['--out', os.sep.join([box, 'missing', '..', 'broken'])]):
+            refused = run(box, *args)
+            check('is not a directory' in refused.stderr,
+                  f'{" ".join(args)} is answered by the walk: {refused.stderr.strip()[:70]}')
     check(not os.path.exists(elsewhere + '2'), 'nor made the second of two destinations')
     check(not os.path.exists(os.path.join(box, 'escaped')), 'nor wrote where a path folded to')
     check(not os.path.exists(os.path.join(box, 'missing')), 'nor made a name it was told to pass')
@@ -704,6 +718,117 @@ try:
 finally:
     if box is not None:
         shutil.rmtree(box)
+
+print('drawing — what it will not write over')
+
+box = sandbox() if LINKS else None
+if box is None:
+    print('  (writing through a link: skipped, links need a privilege here)')
+try:
+    if box is not None:
+        # img.save follows a link and puts a PNG wherever it points, leaving
+        # the link in place: the run says it wrote six images while one of them
+        # went somewhere else, and every check afterwards says the same thing
+        # about the link again.
+        with open(os.path.join(box, 'elsewhere.bin'), 'wb') as handle:
+            handle.write(b'not an image, and not this run to overwrite')
+        was = open(os.path.join(box, 'elsewhere.bin'), 'rb').read()
+        os.remove(shot(box, 'popup_ja.png'))
+        os.symlink(os.path.join('..', '..', 'elsewhere.bin'), shot(box, 'popup_ja.png'))
+
+        drawn = run(box)
+        check(drawn.returncode == 1, f'a link under a drawn name is refused (exit {drawn.returncode})')
+        check('popup_ja.png: a symbolic link' in drawn.stderr, 'and the line says what it is')
+        check('Delete:' in drawn.stderr, 'and says what to do about it')
+        check(open(os.path.join(box, 'elsewhere.bin'), 'rb').read() == was,
+              'and what the link points at is untouched')
+        check(os.path.islink(shot(box, 'popup_ja.png')), 'and the link is still a link')
+        others = [name for name in os.listdir(os.path.join(box, 'docs', 'screenshots'))
+                  if name != 'popup_ja.png']
+        check(all(name.endswith('.png') for name in others),
+              f'and nothing was left half-written beside them ({others})')
+
+        # A link with nothing at the end of it is a link, not a name that was
+        # never committed.
+        os.remove(shot(box, 'popup_ja.png'))
+        os.symlink('gone.png', shot(box, 'popup_ja.png'))
+        dangling = run(box, '--check')
+        check('popup_ja.png: a symbolic link (points at gone.png)' in dangling.stderr,
+              'and a link pointing nowhere is named as a link')
+finally:
+    if box is not None:
+        shutil.rmtree(box)
+
+if LINKS:
+    # The check above is what says so; this is what makes it true even when a
+    # name turns into a link after it was looked at. write() is called here
+    # with that check stubbed out, and what the link points at has to survive
+    # anyway — os.replace puts the file where the name is, not where it leads.
+    box = tempfile.mkdtemp()
+    kept = os.path.join(box, 'elsewhere.bin')
+    try:
+        with open(kept, 'wb') as handle:
+            handle.write(b'not an image')
+        was = open(kept, 'rb').read()
+        os.symlink('elsewhere.bin', os.path.join(box, 'popup_ja.png'))
+        looked = gen_screenshots.not_a_plain_file
+        gen_screenshots.not_a_plain_file = lambda path: None
+        try:
+            code = gen_screenshots.write(IMAGES, box)
+        finally:
+            gen_screenshots.not_a_plain_file = looked
+        check(code == 0, f'writing runs with the check stubbed out (exit {code})')
+        check(open(kept, 'rb').read() == was, 'and what the link pointed at is untouched')
+        check(not os.path.islink(os.path.join(box, 'popup_ja.png')),
+              'and the name holds a file of its own now')
+        check(sorted(name for name in os.listdir(box) if name.endswith('.tmp')) == [],
+              'and nothing was left beside them')
+    finally:
+        shutil.rmtree(box)
+
+box = sandbox()
+try:
+    # Every name is written beside itself and moved onto its own name, so a
+    # run that finishes leaves nothing of its own behind.
+    elsewhere = os.path.join(box, 'elsewhere')
+    wrote = run(box, '--out', elsewhere)
+    check(wrote.returncode == 0, f'a plain run writes (exit {wrote.returncode})')
+    check(sorted(os.listdir(elsewhere)) == sorted(IMAGES_DRAWN),
+          f'and leaves only the six behind ({sorted(os.listdir(elsewhere))})')
+finally:
+    shutil.rmtree(box)
+
+print('drawing — a directory that will not have it')
+
+box = sandbox()
+readonly = os.path.join(box, 'readonly')
+try:
+    # The shape of the path is fine; what is left is what the filesystem says
+    # when asked to make the directory.
+    os.mkdir(readonly)
+    os.chmod(readonly, 0o555)
+    refused = run(box, '--out', os.path.join(readonly, 'shots'))
+    check(refused.returncode == 2,
+          f'a destination that cannot be made is an argument error (exit {refused.returncode})')
+    check('Traceback' not in refused.stderr, 'and says so without a traceback')
+    check('usage:' in refused.stderr, 'and is told the shape of the command')
+finally:
+    os.chmod(readonly, 0o755)
+    shutil.rmtree(box)
+
+box = sandbox()
+tracked = os.path.join(box, 'docs', 'screenshots')
+try:
+    # Which files are there is half of what --check answers.
+    os.chmod(tracked, 0o000)
+    unreadable = run(box, '--check')
+    check(unreadable.returncode == 1,
+          f'a tracked directory that cannot be read is reported (exit {unreadable.returncode})')
+    check('Traceback' not in unreadable.stderr, 'and says so without a traceback')
+    check('docs/screenshots cannot be read' in unreadable.stderr, 'and names it')
+finally:
+    os.chmod(tracked, 0o755)
+    shutil.rmtree(box)
 
 print('--check — an argument that is wrong, and what else is missing')
 

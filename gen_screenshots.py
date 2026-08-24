@@ -441,11 +441,49 @@ def write(images, target):
             print(f'Make {bad[0]} a directory again, then draw them.', file=sys.stderr)
             return 1
     inside = under_root(target)
-    os.makedirs(target, exist_ok=True)
+
+    def shown(path):
+        return os.path.relpath(path, ROOT) if inside else path
+
+    try:
+        os.makedirs(target, exist_ok=True)
+    except OSError as err:
+        # The shape of the path was walked before this; what is left is what
+        # the filesystem says when asked to make it.
+        if target == OUT_DIR:
+            print(f'{shown(target)} cannot be made ({err.strerror})', file=sys.stderr)
+            return 1
+        print(f'--out has nowhere to write: {target} ({err.strerror})\n{USAGE}', file=sys.stderr)
+        return 2
+    # A name that is not a plain file is not written through: img.save follows
+    # a link and puts a PNG wherever it points, leaving the link in place — so
+    # the run reports six images written while one of them went somewhere else
+    # entirely, and every check afterwards says the same thing again.
+    standing = [(name, not_a_plain_file(os.path.join(target, name))) for name in sorted(images)
+                if os.path.lexists(os.path.join(target, name))]
+    standing = [(name, why) for name, why in standing if why]
+    if standing:
+        for name, why in standing:
+            print(f'{shown(os.path.join(target, name))}: {why}', file=sys.stderr)
+        print('Delete: ' + ' '.join(shown(os.path.join(target, name)) for name, _ in standing),
+              file=sys.stderr)
+        return 1
     for name, img in images.items():
         path = os.path.join(target, name)
-        img.save(path)
-        print(f'Generated {os.path.relpath(path, ROOT) if inside else path}')
+        # Written beside the name and moved onto it: os.replace puts the file
+        # where the name is rather than where a link would lead, and a run that
+        # stops partway leaves the name it has not reached alone.
+        handle = tempfile.NamedTemporaryFile(dir=target, prefix=f'.{name}.', suffix='.tmp',
+                                             delete=False)
+        handle.close()
+        try:
+            img.save(handle.name, format='PNG')
+            os.replace(handle.name, path)
+        except OSError as err:
+            os.remove(handle.name)
+            print(f'{shown(path)} cannot be written ({err.strerror})', file=sys.stderr)
+            return 1
+        print(f'Generated {shown(path)}')
     return 0
 
 
@@ -676,9 +714,11 @@ def check(images):
             fresh = os.path.join(scratch, name)
             img.save(fresh)
             committed = os.path.join(OUT_DIR, name)
-            if not os.path.exists(committed):
+            if not os.path.lexists(committed):
                 stale.append(f'{name}: not committed')
                 continue
+            # lexists, so that a link with nothing at the end of it is named as
+            # a link rather than as a name nobody has committed.
             kind = not_a_plain_file(committed)
             if kind:
                 stale.append(f'{name}: {kind}')
@@ -746,10 +786,16 @@ def check(images):
     # what Finder leaves in a directory of images is not an image anybody drew.
     # A directory is what an interrupted run leaves; a link is not one, whatever
     # it points at.
-    committed = sorted(name for name in os.listdir(OUT_DIR)
-                       if name.lower().endswith('.png')
-                       and not is_directory(os.path.join(OUT_DIR, name))
-                       ) if os.path.isdir(OUT_DIR) else []
+    try:
+        committed = sorted(name for name in os.listdir(OUT_DIR)
+                           if name.lower().endswith('.png')
+                           and not is_directory(os.path.join(OUT_DIR, name))
+                           ) if os.path.isdir(OUT_DIR) else []
+    except OSError as err:
+        # Which files are there is half of what this run answers, and it is not
+        # a difference between images — say it and stop.
+        print(f'{here} cannot be read ({err.strerror})', file=sys.stderr)
+        return 1
     # A name that differs only in case is not one nothing draws: on a
     # case-insensitive filesystem it passes the pixel comparison, so saying to
     # delete it would have the reader delete the image that is drawn.
