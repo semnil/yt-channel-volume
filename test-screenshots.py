@@ -1,4 +1,6 @@
 """Where gen_screenshots writes, and what it reports. Run: python3 test-screenshots.py"""
+import contextlib
+import io
 import ntpath
 import os
 import posixpath
@@ -52,7 +54,13 @@ class FakeImage:
 class RefusedImage:
     """Fails where a full disk would: after the file beside the name is there."""
 
+    def __init__(self, shut=None):
+        # A directory to close on the way out, so that clearing away fails too.
+        self.shut = shut
+
     def save(self, path, format=None):  # noqa: A002 — pillow's own parameter name
+        if self.shut is not None:
+            os.chmod(self.shut, 0o555)
         raise OSError(28, 'No space left on device', path)
 
 
@@ -834,6 +842,28 @@ try:
 finally:
     shutil.rmtree(box)
 
+box = tempfile.mkdtemp()
+try:
+    # And where clearing away fails as well: raising there would bury the
+    # failure that stopped the run and take the exit code with it.
+    said = io.StringIO()
+    code = None
+    try:
+        with contextlib.redirect_stderr(said):
+            code = gen_screenshots.write({'popup_ja.png': RefusedImage(shut=box)}, box)
+    except OSError as raised:
+        check(False, f'clearing away raised over the failure it was clearing ({raised})')
+    os.chmod(box, 0o755)
+    check(code == 2, f'the save that failed is what is answered for (exit {code})')
+    check('No space left on device' in said.getvalue(),
+          f'and it is the failure that is reported ({said.getvalue().strip()[:70]})')
+    check('is left behind' in said.getvalue(), 'with what could not be cleared away named too')
+    left = os.listdir(box)
+    check(left != [], f'since it is still there ({left})')
+finally:
+    os.chmod(box, 0o755)
+    shutil.rmtree(box)
+
 box = sandbox()
 readonly = os.path.join(box, 'readonly')
 try:
@@ -861,7 +891,8 @@ try:
     check(refused.returncode == 1,
           f'the tracked directory refusing a file is exit 1 (exit {refused.returncode})')
     check('Traceback' not in refused.stderr, 'and says so without a traceback')
-    check('cannot be written' in refused.stderr, 'and names what could not be written')
+    check('cannot be written (Permission denied)' in refused.stderr,
+          f'and names what could not be written, and why ({refused.stderr.strip()[:70]})')
     check([name for name in os.listdir(tracked_readonly) if not name.endswith('.png')] == [],
           'and left nothing of its own behind')
 finally:

@@ -484,8 +484,15 @@ def write(images, target):
             img.save(beside, format='PNG')
             os.replace(beside, path)
         except OSError as err:
+            # Clearing away is its own thing that can fail, and it is never the
+            # failure to report: raising here would bury the one that stopped
+            # the run and take the exit code with it.
             if beside is not None and os.path.lexists(beside):
-                os.remove(beside)
+                try:
+                    os.remove(beside)
+                except OSError as sweeping:
+                    print(f'{shown(beside)} is left behind ({sweeping.strerror})',
+                          file=sys.stderr)
             if target == OUT_DIR:
                 print(f'{shown(path)} cannot be written ({err.strerror})', file=sys.stderr)
                 return 1
