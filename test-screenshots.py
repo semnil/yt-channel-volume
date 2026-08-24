@@ -253,9 +253,14 @@ finally:
 print('--check — what it refuses to write')
 
 def tracked_bytes(box):
+    """The committed images, by name. Files only, as --check counts them:
+    the staging directory an interrupted run leaves carries the suffix too.
+    """
     directory = os.path.join(box, 'docs', 'screenshots')
     out = {}
-    for name in sorted(n for n in os.listdir(directory) if n.lower().endswith('.png')):
+    for name in sorted(n for n in os.listdir(directory)
+                       if n.lower().endswith('.png')
+                       and os.path.isfile(os.path.join(directory, n))):
         with open(os.path.join(directory, name), 'rb') as handle:
             out[name] = handle.read()
     return out
@@ -275,8 +280,11 @@ def mark(box, name):
 
 box = sandbox()
 try:
+    os.mkdir(shot(box, 'tmpabc123.png'))
     mark(box, 'popup_ja.png')
     before = tracked_bytes(box)
+    check('tmpabc123.png' not in before,
+          'a leftover staging directory is not one of the tracked images')
     elsewhere = os.path.join(box, 'elsewhere')
     wrote = run(box, '--out', elsewhere)
     check(wrote.returncode == 0, f'--out is accepted (exit {wrote.returncode}: {wrote.stderr.strip()})')

@@ -416,11 +416,21 @@ if (outDirDecl && sheetTable && langTuple) {
   for (const file of generated) {
     assert(fs.existsSync('./' + file), `${file} is generated and must be committed`);
   }
-  // Only .png, which is what --check counts: neither what Finder leaves in a
-  // directory of images nor what an interrupted run leaves beside them is an
-  // image anybody drew.
-  const committed = (fs.existsSync('./' + outDir) ? fs.readdirSync('./' + outDir) : [])
-    .filter(name => /\.png$/i.test(name));
+  // Only .png files, which is what --check counts: neither what Finder leaves
+  // in a directory of images nor what an interrupted run leaves beside them is
+  // an image anybody drew, and the staging directory carries the suffix, so
+  // the name alone does not tell it from one.
+  const imagesIn = dir => (fs.existsSync(dir) ? fs.readdirSync(dir) : []).filter(name =>
+    /\.png$/i.test(name) && fs.statSync(`${dir}/${name}`, { throwIfNoEntry: false })?.isFile());
+  const leftover = `./${outDir}/tmpytcv-leftover.png`;
+  fs.mkdirSync(leftover);
+  try {
+    assert(!imagesIn('./' + outDir).includes('tmpytcv-leftover.png'),
+      'a leftover staging directory is not one of the committed images');
+  } finally {
+    fs.rmSync(leftover, { recursive: true, force: true });
+  }
+  const committed = imagesIn('./' + outDir);
   for (const name of committed) {
     assert(generated.has(`${outDir}/${name}`),
       `${outDir}/${name} is committed but nothing draws it`);
