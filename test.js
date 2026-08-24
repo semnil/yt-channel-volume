@@ -472,15 +472,35 @@ if (outDirDecl && sheetTable && langTuple) {
 
   // Chrome refuses to load an unpacked extension whose top level holds a name
   // starting with "_" outside this list, and that top level is where these
-  // children run. They run without -B, and without the variable that would
-  // decide this for them, so what they write answers for their source and
-  // nothing else.
+  // children run. They run without -B, and without either variable that would
+  // decide this for them — one turns the writing off, the other sends it out
+  // of the root this reads — so what they write answers for their source and
+  // nothing else. Windows matches variable names without regard to case, so
+  // the copy drops keys by their upper-cased name.
   const chromeAllows = ['_locales', '_platform_specific', '_metadata', '__MACOSX'];
   const reservedAtRoot = () => fs.readdirSync('.')
     .filter(name => name.startsWith('_') && !chromeAllows.includes(name));
-  const pyEnv = { ...process.env };
-  delete pyEnv.PYTHONDONTWRITEBYTECODE;
+  const pyDropped = ['PYTHONDONTWRITEBYTECODE', 'PYTHONPYCACHEPREFIX'];
+  const pyEnv = Object.fromEntries(Object.entries(process.env)
+    .filter(([name]) => !pyDropped.includes(name.toUpperCase())));
   fs.rmSync('./__pycache__', { recursive: true, force: true });
+
+  // A module that does not opt out, read with that same environment, writes
+  // its bytecode beside itself. Where it does not, the name check below is
+  // answering for the environment rather than for the source it is there to
+  // hold, and would stay green with the opt-out taken out.
+  const probeDir = fs.mkdtempSync(require('path').join(require('os').tmpdir(), 'ytcv-pyc-'));
+  fs.writeFileSync(`${probeDir}/ytcv_probe.py`, '');
+  const probe = require('child_process').spawnSync(
+    'python3', ['-c', 'import ytcv_probe'], { cwd: probeDir, encoding: 'utf8', env: pyEnv });
+  const wroteBeside = fs.existsSync(`${probeDir}/__pycache__`);
+  fs.rmSync(probeDir, { recursive: true, force: true });
+  if (probe.error) {
+    console.log(`  (bytecode control skipped: ${probe.error.message})`);
+  } else {
+    assert(wroteBeside,
+      'the environment these children get still writes bytecode where the module is');
+  }
 
   // Whether the committed images are the ones this code draws can only be
   // answered by drawing them, which needs pillow. CI installs it and runs the
