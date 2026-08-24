@@ -4,18 +4,24 @@
 instead of writing. Exit 1 means the two differ, exit 3 that this machine cannot
 draw them. `--out <dir>` writes the six there instead of into docs/screenshots.
 """
+import hashlib
 import math
 import os
+import stat
 import sys
 import tempfile
+import zlib
 
 UNAVAILABLE = 3
 
 try:
     from PIL import Image, ImageDraw, ImageFont, __version__ as PIL_VERSION, features
 except ImportError as err:
-    print(f'{err}. Install pillow to draw the screenshots.', file=sys.stderr)
-    sys.exit(UNAVAILABLE)
+    # Not the end of the run: an argument that is wrong deserves the answer for
+    # arguments (2), not the one for a machine that cannot draw (3).
+    CANNOT_DRAW = f'{err}. Install pillow to draw the screenshots.'
+else:
+    CANNOT_DRAW = None
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 OUT_DIR = os.path.join(ROOT, 'docs', 'screenshots')
@@ -39,25 +45,31 @@ FONT_DIR = os.path.join(ROOT, 'tools', 'fonts')
 REGULAR = os.path.join(FONT_DIR, 'MPLUS1p-Regular.ttf')
 BOLD = os.path.join(FONT_DIR, 'MPLUS1p-Bold.ttf')
 
-for _face in (REGULAR, BOLD):
-    if not os.path.exists(_face):
-        print(f'{os.path.relpath(_face, ROOT)} is missing from this checkout.', file=sys.stderr)
-        sys.exit(UNAVAILABLE)
-
-
 def face(path, size):
     """Basic layout on every machine: pillow reaches for raqm where it is
     installed, and the two engines place these strings differently."""
-    return ImageFont.truetype(path, size, layout_engine=ImageFont.Layout.BASIC)
+    try:
+        return ImageFont.truetype(path, size, layout_engine=ImageFont.Layout.BASIC)
+    except OSError as err:
+        # Which of the two faces failed is not in what was raised.
+        raise OSError(err.errno or 0, str(err), path) from err
 
 
-FONT = face(REGULAR, 14)
-FONT_SM = face(REGULAR, 11)
-FONT_LG = face(REGULAR, 18)
-FONT_XL = face(BOLD, 22)
-FONT_TITLE = face(BOLD, 15)
-FONT_BOLD = face(BOLD, 14)
-FONT_XS = face(REGULAR, 9)
+# The faces resolve where pillow is here, and a face that will not read is kept
+# the same way pillow's absence is: the arguments are answered first.
+if CANNOT_DRAW is None:
+    try:
+        FONT = face(REGULAR, 14)
+        FONT_SM = face(REGULAR, 11)
+        FONT_LG = face(REGULAR, 18)
+        FONT_XL = face(BOLD, 22)
+        FONT_TITLE = face(BOLD, 15)
+        FONT_BOLD = face(BOLD, 14)
+        FONT_XS = face(REGULAR, 9)
+    except OSError as err:
+        CANNOT_DRAW = (f'{os.path.relpath(err.filename, ROOT)} cannot be read ({err.strerror}). '
+                       'The screenshots in docs/screenshots are drawn with this face, and '
+                       'another one redraws all six.')
 
 
 def rr(draw, box, radius, fill):
@@ -377,7 +389,26 @@ def target_dir(args):
             if not rest or not rest[0] or rest[0].startswith('-'):
                 print(f'--out needs a directory to write into\n{USAGE}', file=sys.stderr)
                 sys.exit(2)
-            target = os.path.abspath(rest.pop(0))
+            if target is not None:
+                # Told twice and taking the second drops the first without
+                # saying anything about it.
+                print(f'--out takes one destination\n{USAGE}', file=sys.stderr)
+                sys.exit(2)
+            given = rest.pop(0)
+            blocked = cannot_hold_images(given if os.path.isabs(given)
+                                         else os.path.join(os.getcwd(), given))
+            if blocked:
+                # A destination that cannot become a directory is the argument
+                # being wrong, not the images differing. Unchecked, os.makedirs
+                # raises and exit 1 says "they differ".
+                print(f'--out has nowhere to write: {blocked} is not a directory\n{USAGE}',
+                      file=sys.stderr)
+                sys.exit(2)
+            # Where the kernel lands: abspath folds `link/..` by the text and
+            # would write beside the link while the check read what it points
+            # into.
+            target = where_it_lands(given if os.path.isabs(given)
+                                    else os.path.join(os.getcwd(), given))
             continue
         print(f'unknown argument: {arg}\n{USAGE}', file=sys.stderr)
         sys.exit(2)
@@ -400,16 +431,244 @@ def under_root(target):
 
 
 def write(images, target):
+    if target == OUT_DIR:
+        bad = not_a_directory(target)
+        if bad:
+            # Writing through a link reports docs/screenshots for bytes that
+            # landed outside the tree. Only the tracked destination is asked:
+            # --out was handed its own.
+            print(f'{bad[0]}: {bad[1]}', file=sys.stderr)
+            print(f'Make {bad[0]} a directory again, then draw them.', file=sys.stderr)
+            return 1
     inside = under_root(target)
     os.makedirs(target, exist_ok=True)
     for name, img in images.items():
         path = os.path.join(target, name)
         img.save(path)
         print(f'Generated {os.path.relpath(path, ROOT) if inside else path}')
+    return 0
+
+
+def path_parts(rest, sep=os.sep, altsep=os.altsep):
+    """The names in a path. Windows separates with / as well (pass splitdrive'd)."""
+    if altsep:
+        rest = rest.replace(altsep, sep)
+    return [part for part in rest.split(sep) if part]
+
+
+def walk_for_a_place(path):
+    """Walk the names as given; the first one that is not a directory, if any."""
+    drive, rest = os.path.splitdrive(path)
+    at = drive + os.sep
+    for part in path_parts(rest):
+        at = os.path.join(at, part)
+        if not os.path.lexists(at):
+            # Everything from here on is created.
+            return None
+        if not os.path.isdir(at):
+            return at
+    return None
+
+
+def where_it_lands(path):
+    """Where the kernel arrives, with the last name left as written.
+
+    A link on the way is followed — `link/..` is the parent of what the link
+    points into, not the directory the link sits in. The last name is left
+    alone so that a link pointing nowhere is not swapped for what it names.
+    """
+    return os.path.join(os.path.realpath(os.path.dirname(path)), os.path.basename(path))
+
+
+def cannot_hold_images(path):
+    """What stands in the way of writing there, if anything.
+
+    The names are walked as given: abspath folds `afile/..` away first, and the
+    file in the middle never reaches the check. Where the kernel lands is
+    walked too, since a `..` after a name that is not there yet walks back onto
+    one that is. lexists, not exists: a link that points nowhere is invisible to
+    the second and reaches os.makedirs all the same.
+    """
+    return walk_for_a_place(path) or walk_for_a_place(where_it_lands(path))
+
+
+def not_a_directory(path):
+    """The first name from ROOT to path that is not a directory, and why.
+
+    lstat answers for the last name in a path only, so a link one level up
+    hides everything under it: a repository records a link, not the six images.
+    """
+    at = ROOT
+    for part in path_parts(os.path.relpath(path, ROOT)):
+        at = os.path.join(at, part)
+        if not os.path.lexists(at):
+            # Nothing committed here is reported image by image.
+            return None
+        mode = os.lstat(at).st_mode
+        if stat.S_ISLNK(mode):
+            return os.path.relpath(at, ROOT), f'a symbolic link (points at {os.readlink(at)})'
+        if not stat.S_ISDIR(mode):
+            return os.path.relpath(at, ROOT), 'not a directory'
+    return None
+
+
+def not_a_plain_file(path):
+    """Why the committed name is not a file of its own, if it is not.
+
+    Generating writes plain files. os.path.exists, Image.open, open and
+    os.path.isfile all read through a link, so a link holding the same bytes
+    matches down to the pixels — while what a repository records for it is the
+    path it names.
+    """
+    mode = os.lstat(path).st_mode
+    if stat.S_ISREG(mode):
+        return None
+    if stat.S_ISLNK(mode):
+        return f'a symbolic link (points at {os.readlink(path)})'
+    return 'not a file'
+
+
+def is_directory(path):
+    """Whether the name itself is a directory. A link counts as a link.
+
+    os.path.isdir reads through a link, which drops a .png pointing at a
+    directory out of the listing the way an interrupted run's staging is.
+    """
+    return stat.S_ISDIR(os.lstat(path).st_mode)
+
+
+def header_size(kinds):
+    """The size IHDR claims, or None where there is no IHDR."""
+    for kind, _, first in kinds:
+        if kind == 'IHDR':
+            return int.from_bytes(first[0:4], 'big'), int.from_bytes(first[4:8], 'big')
+    return None
+
+
+def pixel_stream_fault(stream, pending, unpacked, cap, saw_idat, spare_after):
+    """Where the scanline stream does not line up with the end of the IDATs."""
+    if not saw_idat:
+        return None
+    if pending or (cap is not None and unpacked >= cap):
+        return 'more to unpack after the scanlines'
+    if not stream.eof:
+        return 'the IDAT stream does not end'
+    spare = len(stream.unused_data) + spare_after
+    if spare:
+        return f'{spare} bytes after the end of the IDAT stream'
+    return None
+
+
+def png_shape(path, expected=None, block=1 << 16):
+    """The chunks in order, the unpacked scanline length, and what does not read.
+
+    The chunks come back as (kind, digest of the body, first 16 bytes); IDAT
+    carries no body — pixels are compared as pixels, and how they were packed
+    is the compressor's business, so a run of IDAT folds into one entry.
+
+    expected is the drawn image's scanline length. Given one, unpacking stops
+    there; it is left out only when measuring what this run just wrote.
+
+    A decoder decides the format from the content, stops at IEND, skips the
+    chunks it does not know and stops once the scanlines are complete — so what
+    is wrong with a file often reaches neither the pixels nor the size. The file
+    is read a block at a time: the CRC, the digests and the unpacking all carry
+    on from where they were, so the size of what is read is not the size of what
+    is held.
+    """
+    kinds, unpacked, saw_idat, spare_after = [], 0, False, 0
+    stream = zlib.decompressobj()
+    cap = None if expected is None else expected + 1
+    pending = b''
+    with open(path, 'rb') as handle:
+        size = os.fstat(handle.fileno()).st_size
+        if handle.read(8) != b'\x89PNG\r\n\x1a\n':
+            return [], 0, 'not a PNG'
+        at = 8
+        while True:
+            head = handle.read(8)
+            if len(head) < 8:
+                return kinds, unpacked, 'no IEND'
+            length = int.from_bytes(head[:4], 'big')
+            raw = head[4:8]
+            kind = raw.decode('ascii', 'replace')
+            # A type is four letters, and a lowercase third one is the reserved
+            # bit, which the spec has given no meaning. Either one reads as a
+            # file and is not a PNG.
+            if not all(0x41 <= byte <= 0x5a or 0x61 <= byte <= 0x7a for byte in raw):
+                return kinds, unpacked, f'a chunk type at byte {at} that is not four letters ({raw!r})'
+            if raw[2] & 0x20:
+                return kinds, unpacked, f'{kind} has the reserved bit set'
+            crc, digest, first = zlib.crc32(raw), hashlib.sha256(), b''
+            left = length
+            while left:
+                piece = handle.read(min(block, left))
+                if not piece:
+                    return kinds, unpacked, f'{kind} runs past the end of the file'
+                left -= len(piece)
+                crc = zlib.crc32(piece, crc)
+                if kind != 'IDAT':
+                    digest.update(piece)
+                    first += piece[:16 - len(first)]
+                    continue
+                saw_idat = True
+                if stream.eof:
+                    # The stream is over. What follows is counted, not handed
+                    # over: zlib would keep appending it to unused_data, and the
+                    # size of the file would become the size of this run.
+                    spare_after += len(piece)
+                    continue
+                room = None if cap is None else cap - unpacked
+                if room is not None and room <= 0:
+                    return kinds, unpacked, 'more to unpack after the scanlines'
+                try:
+                    out = (stream.decompress(pending + piece) if room is None
+                           else stream.decompress(pending + piece, room))
+                except zlib.error as err:
+                    return kinds, unpacked, f'IDAT does not read as a zlib stream ({err})'
+                unpacked += len(out)
+                pending = stream.unconsumed_tail
+            tail = handle.read(4)
+            if len(tail) < 4:
+                return kinds, unpacked, f'{kind} runs past the end of the file'
+            if crc & 0xffffffff != int.from_bytes(tail, 'big'):
+                return kinds, unpacked, f'{kind} does not match its CRC'
+            if kind == 'IDAT':
+                if kinds[-1:] != [('IDAT', None, b'')]:
+                    kinds.append((kind, None, b''))
+            else:
+                # Everything but the pixels is matched against what was drawn,
+                # body and all: IHDR's compression method, say, changes without
+                # the decoder saying anything.
+                kinds.append((kind, digest.digest(), first))
+            at += 12 + length
+            if kind == 'IEND':
+                if length:
+                    return kinds, unpacked, f'IEND is {length} bytes where the spec gives it none'
+                spare = pixel_stream_fault(stream, pending, unpacked, cap, saw_idat, spare_after)
+                if spare:
+                    return kinds, unpacked, spare
+                trailing = size - at
+                return kinds, unpacked, f'{trailing} bytes after IEND' if trailing else None
 
 
 def check(images):
-    """Compare what the code draws now with what is committed, pixel by pixel."""
+    """Compare what is committed with what the code draws now, byte by byte.
+
+    Nothing is handed to the decoder until the bytes here have been read: where
+    pillow gives up — a text chunk it will not unpack, a header claiming more
+    pixels than it will decode — the whole run used to end with it, and the
+    images after that one and the scan for files nothing draws never happened.
+    """
+    here = os.path.relpath(OUT_DIR, ROOT)
+    bad = not_a_directory(OUT_DIR)
+    if bad:
+        # Before drawing: with this wrong, what the six say about themselves
+        # means nothing.
+        print(f'{bad[0]}: {bad[1]}', file=sys.stderr)
+        print(f'Make {bad[0]} a directory again, then run '
+              f'`python3 {os.path.basename(__file__)}`.', file=sys.stderr)
+        return 1
     stale = []
     scratch = tempfile.mkdtemp()
     try:
@@ -420,32 +679,59 @@ def check(images):
             if not os.path.exists(committed):
                 stale.append(f'{name}: not committed')
                 continue
+            kind = not_a_plain_file(committed)
+            if kind:
+                stale.append(f'{name}: {kind}')
+                continue
             # RGBA: dropping alpha would call an image that differs only in its
             # transparency the same one. What this run just drew is read
             # outside the guard — a failure there is this run's, not the
             # committed file's.
             new = Image.open(fresh).convert('RGBA')
+            drawn_kinds, drawn_pixels, drawn_fault = png_shape(fresh)
+            if drawn_fault:
+                raise SystemExit(f'what this run drew for {name} is not a PNG: {drawn_fault}')
             try:
-                opened = Image.open(committed)
-                # Read before converting: convert() hands back a plain image
-                # that has forgotten how many frames the file held.
-                frames = getattr(opened, 'n_frames', 1)
-                old = opened.convert('RGBA')
-            except (OSError, Image.DecompressionBombError) as err:
-                # Whatever it is, it is not what the code draws. Raising here
-                # would take the remaining images and the orphan report with
-                # it. A bomb header raises outside OSError, hence both.
+                kinds, _, fault = png_shape(committed, drawn_pixels)
+            except OSError as err:
+                # A file this process cannot open is this image's answer.
+                # Stopping on the first one takes the rest of the comparison
+                # and the scan for files nothing draws with it.
+                stale.append(f'{name}: cannot be read ({err})')
+                continue
+            if fault:
+                stale.append(f'{name}: {fault}')
+                continue
+            here_kinds = [kind for kind, _, _ in kinds]
+            drawn_only = [kind for kind, _, _ in drawn_kinds]
+            if here_kinds != drawn_only:
+                # An extra chunk, a second IHDR, the chunks that drive an
+                # animation: a decoder skips them or hands back the first
+                # frame, so the pixels match while the file has more in it.
+                stale.append(f'{name}: {" ".join(here_kinds)} where the code draws '
+                             f'{" ".join(drawn_only)}')
+                continue
+            if header_size(kinds) != header_size(drawn_kinds):
+                # The size is in IHDR, which is read here — so a header
+                # claiming more pixels than anyone drew is turned down before
+                # a decoder is asked to make room for it.
+                stale.append(f'{name}: {header_size(kinds)} where the code draws '
+                             f'{header_size(drawn_kinds)}')
+                continue
+            changed = [kind for (kind, body, _), (_, drawn_body, _) in zip(kinds, drawn_kinds)
+                       if body != drawn_body]
+            if changed:
+                stale.append(f'{name}: {" ".join(changed)} differs from what the code draws')
+                continue
+            try:
+                old = Image.open(committed).convert('RGBA')
+            except OSError as err:
+                # Past every byte-level check the content can still be broken
+                # (a filter type the spec does not define, say). One image is
+                # not the end of the run.
                 stale.append(f'{name}: cannot be read as an image ({err})')
                 continue
-            if frames != 1:
-                # Every comparison below reads the frame the file opens on, so
-                # an animation whose first frame matches would pass on it.
-                stale.append(f'{name}: {frames} frames where the code draws one')
-            elif new.size != old.size:
-                # Sizes first: ImageChops.difference takes two of them without
-                # complaint and returns the overlap, so the rest goes unread.
-                stale.append(f'{name}: {old.size} where the code draws {new.size}')
-            elif new.tobytes() != old.tobytes():
+            if new.tobytes() != old.tobytes():
                 # Pixels as bytes. difference().getbbox() looks at alpha alone
                 # once an alpha channel is there, and answers None for a colour
                 # that changed.
@@ -455,16 +741,37 @@ def check(images):
             os.remove(os.path.join(scratch, name))
         os.rmdir(scratch)
 
-    here = os.path.relpath(OUT_DIR, ROOT)
     # No directory at all is the "none of them are committed" case above, which
     # every image has already reported for itself. Only .png files are counted:
-    # what Finder leaves in a directory of images, and what an interrupted run
-    # leaves beside them, are not images anybody drew.
+    # what Finder leaves in a directory of images is not an image anybody drew.
+    # A directory is what an interrupted run leaves; a link is not one, whatever
+    # it points at.
     committed = sorted(name for name in os.listdir(OUT_DIR)
                        if name.lower().endswith('.png')
-                       and os.path.isfile(os.path.join(OUT_DIR, name))
+                       and not is_directory(os.path.join(OUT_DIR, name))
                        ) if os.path.isdir(OUT_DIR) else []
-    orphans = [f'{here}/{name}' for name in committed if name not in images]
+    # A name that differs only in case is not one nothing draws: on a
+    # case-insensitive filesystem it passes the pixel comparison, so saying to
+    # delete it would have the reader delete the image that is drawn.
+    by_spelling = {name.lower(): name for name in images}
+    present = set(committed)
+    orphans, spellings = [], {}
+    for name in committed:
+        if name in images:
+            continue
+        drawn_as = by_spelling.get(name.lower())
+        # With the right spelling beside it, this is not a name to fix but a
+        # spare file (a case-sensitive filesystem holds both at once).
+        if drawn_as and drawn_as not in present:
+            spellings.setdefault(drawn_as, []).append(name)
+        else:
+            orphans.append(f'{here}/{name}')
+    # Where two or more claim one name, which to keep is not something this can
+    # know — renaming them in turn drops the second onto the first.
+    misspelled = [(names[0], drawn_as) for drawn_as, names in sorted(spellings.items())
+                  if len(names) == 1]
+    contested = [(sorted(names), drawn_as) for drawn_as, names in sorted(spellings.items())
+                 if len(names) > 1]
 
     for line in stale:
         print(line, file=sys.stderr)
@@ -477,18 +784,33 @@ def check(images):
         # Generating writes the files it draws and touches nothing else, so
         # these have to go by hand.
         print('Delete: ' + ' '.join(orphans), file=sys.stderr)
-    if stale or orphans:
+    for name, drawn_as in misspelled:
+        print(f'{here}/{name}: spelled differently (the code draws {drawn_as})', file=sys.stderr)
+    if misspelled:
+        print('Rename: ' + ' '.join(f'{here}/{name} -> {drawn_as}'
+                                    for name, drawn_as in misspelled), file=sys.stderr)
+    for names, drawn_as in contested:
+        for name in names:
+            print(f'{here}/{name}: one of {len(names)} files claiming the name {drawn_as}',
+                  file=sys.stderr)
+        print(f'Keep one as {drawn_as} and delete the rest: '
+              + ' '.join(f'{here}/{name}' for name in names), file=sys.stderr)
+    if stale or orphans or misspelled:
         return 1
     print(f'{len(images)} screenshots match the code that draws them.')
     return 0
 
 
 if __name__ == '__main__':
+    # Every argument is read before the branch, so a near miss of --check is an
+    # argument error rather than a redraw — and before the answer for a machine
+    # that cannot draw, so that one does not stand in for it.
+    destination = target_dir(sys.argv[1:])
+    if CANNOT_DRAW is not None:
+        print(CANNOT_DRAW, file=sys.stderr)
+        sys.exit(UNAVAILABLE)
     print(f'Font: {FAMILY} | pillow {PIL_VERSION} | freetype {features.version("freetype2")} '
           f'| raqm {features.check("raqm")}')
-    # Every argument is read before the branch, so a near miss of --check is an
-    # argument error rather than a redraw.
-    destination = target_dir(sys.argv[1:])
     if '--check' in sys.argv[1:]:
         sys.exit(check(render_all()))
-    write(render_all(), destination)
+    sys.exit(write(render_all(), destination))
