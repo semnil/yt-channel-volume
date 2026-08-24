@@ -416,7 +416,19 @@ if (outDirDecl && sheetTable && langTuple) {
   for (const file of generated) {
     assert(fs.existsSync('./' + file), `${file} is generated and must be committed`);
   }
-  const committed = fs.existsSync('./' + outDir) ? fs.readdirSync('./' + outDir) : [];
+  // Only .png files, which is what --check counts: neither what Finder leaves
+  // in a directory of images nor what an interrupted run leaves beside them is
+  // an image anybody drew, and the staging directory carries the suffix, so
+  // the name alone does not tell it from one.
+  const imagesIn = dir => (fs.existsSync(dir) ? fs.readdirSync(dir) : []).filter(name =>
+    /\.png$/i.test(name) && fs.statSync(`${dir}/${name}`, { throwIfNoEntry: false })?.isFile());
+  const suffixBox = fs.mkdtempSync(require('path').join(require('os').tmpdir(), 'ytcv-shots-'));
+  fs.writeFileSync(`${suffixBox}/popup_ja.png`, '');
+  fs.mkdirSync(`${suffixBox}/tmpabc123.png`);
+  assert(imagesIn(suffixBox).join() === 'popup_ja.png',
+    'a leftover staging directory is not one of the images counted here');
+  fs.rmSync(suffixBox, { recursive: true, force: true });
+  const committed = imagesIn('./' + outDir);
   for (const name of committed) {
     assert(generated.has(`${outDir}/${name}`),
       `${outDir}/${name} is committed but nothing draws it`);
@@ -456,13 +468,43 @@ if (outDirDecl && sheetTable && langTuple) {
 
   assert(excluded.has(outDir.split('/')[0]), 'the screenshots stay out of the store zip');
 
+  // Chrome refuses to load an unpacked extension whose top level holds a name
+  // starting with "_" outside this list, and that top level is where these
+  // children run. They run without -B, and without either variable that would
+  // decide this for them — one turns the writing off, the other sends it out
+  // of the root this reads — so what they write answers for their source and
+  // nothing else. Windows matches variable names without regard to case, so
+  // the copy drops keys by their upper-cased name.
+  const chromeAllows = ['_locales', '_platform_specific', '_metadata', '__MACOSX'];
+  const reservedAtRoot = () => fs.readdirSync('.')
+    .filter(name => name.startsWith('_') && !chromeAllows.includes(name));
+  const pyDropped = ['PYTHONDONTWRITEBYTECODE', 'PYTHONPYCACHEPREFIX'];
+  const pyEnv = Object.fromEntries(Object.entries(process.env)
+    .filter(([name]) => !pyDropped.includes(name.toUpperCase())));
+  fs.rmSync('./__pycache__', { recursive: true, force: true });
+
+  // A module that does not opt out, read with that same environment, writes
+  // its bytecode beside itself. Where it does not, the name check below is
+  // answering for the environment rather than for the source it is there to
+  // hold, and would stay green with the opt-out taken out.
+  const probeDir = fs.mkdtempSync(require('path').join(require('os').tmpdir(), 'ytcv-pyc-'));
+  fs.writeFileSync(`${probeDir}/ytcv_probe.py`, '');
+  const probe = require('child_process').spawnSync(
+    'python3', ['-c', 'import ytcv_probe'], { cwd: probeDir, encoding: 'utf8', env: pyEnv });
+  const wroteBeside = fs.existsSync(`${probeDir}/__pycache__`);
+  fs.rmSync(probeDir, { recursive: true, force: true });
+  if (probe.error) {
+    console.log(`  (bytecode control skipped: ${probe.error.message})`);
+  } else {
+    assert(wroteBeside,
+      'the environment these children get still writes bytecode where the module is');
+  }
+
   // Whether the committed images are the ones this code draws can only be
   // answered by drawing them, which needs pillow. CI installs it and runs the
   // same command as its own step, so a machine without it says so here.
-  // -B: a __pycache__ at the extension root makes Chrome refuse to load the
-  // unpacked extension, and this runs from that root.
   const drawn = require('child_process').spawnSync(
-    'python3', ['-B', 'gen_screenshots.py', '--check'], { encoding: 'utf8' });
+    'python3', ['gen_screenshots.py', '--check'], { encoding: 'utf8', env: pyEnv });
   if (drawn.error || drawn.status === 3) {
     console.log(`  (pixel check skipped: ${(drawn.error || drawn.stderr || '').toString().trim()})`);
   } else {
@@ -486,13 +528,21 @@ if (outDirDecl && sheetTable && langTuple) {
   assert(genSrc.includes("'--out'"), 'gen_screenshots.py takes --out');
   assert(excluded.has('test-screenshots.py'), 'the generator test stays out of the store zip');
   const paths = require('child_process').spawnSync(
-    'python3', ['-B', 'test-screenshots.py'], { encoding: 'utf8' });
+    'python3', ['test-screenshots.py'], { encoding: 'utf8', env: pyEnv });
   if (paths.error || paths.status === 3) {
     console.log(`  (path test skipped: ${(paths.error || paths.stderr || '').toString().trim()})`);
   } else {
     assert(paths.status === 0,
       `test-screenshots.py — ${(paths.stdout || '').trim().split('\n').filter(l => l.includes('FAIL')).join('; ')}`);
   }
+
+  // __pycache__ is this suite's own leaving, so it goes rather than only being
+  // reported: left in place it is the thing that stops the next Load unpacked.
+  // Anything else wearing that name shape is someone else's and only reported.
+  const reserved = reservedAtRoot();
+  fs.rmSync('./__pycache__', { recursive: true, force: true });
+  assert(reserved.length === 0,
+    `the extension root carries no name Chrome reserves — ${reserved.join(', ')}`);
   const ciYaml = fs.readFileSync('./.github/workflows/ci.yaml', 'utf8');
   // What this file spawns skips itself where pillow is missing, so CI has to
   // have it before the suite rather than after — in the same job, since a
@@ -516,6 +566,40 @@ if (outDirDecl && sheetTable && langTuple) {
 }
 assert(excluded.has('screenshots'),
   'a screenshots/ left over from before the move stays out of the store zip');
+assert(excluded.has('.DS_Store'),
+  'the finder metadata macOS drops beside the manifest stays out of the store zip');
+
+// Every check above reads EXCLUDE as text, which says nothing about whether
+// pack.py acts on it. This packs a tree built to carry one of each thing the
+// list names and reads back what landed in the zip.
+{
+  const box = fs.mkdtempSync(require('path').join(require('os').tmpdir(), 'ytcv-pack-'));
+  fs.copyFileSync('./pack.py', `${box}/pack.py`);
+  fs.writeFileSync(`${box}/manifest.json`, JSON.stringify({ version: '0.0.0' }));
+  fs.writeFileSync(`${box}/content.js`, '');
+  fs.writeFileSync(`${box}/.DS_Store`, '');
+  fs.mkdirSync(`${box}/__pycache__`);
+  fs.writeFileSync(`${box}/__pycache__/content.cpython-314.pyc`, '');
+  fs.mkdirSync(`${box}/docs`);
+  fs.writeFileSync(`${box}/docs/note.md`, '');
+  const packed = require('child_process').spawnSync('python3', ['pack.py'],
+    { cwd: box, encoding: 'utf8' });
+  if (packed.error) {
+    console.log(`  (pack run skipped: ${packed.error.message})`);
+  } else {
+    assert(packed.status === 0, `pack.py runs — ${(packed.stderr || '').trim()}`);
+    const listed = require('child_process').spawnSync('python3',
+      ['-c', 'import glob,zipfile;print(chr(10).join(zipfile.ZipFile(glob.glob("*.zip")[0]).namelist()))'],
+      { cwd: box, encoding: 'utf8' });
+    const names = (listed.stdout || '').trim().split('\n').filter(Boolean);
+    assert(names.includes('content.js'), 'pack.py packs what the extension is made of');
+    assert(!names.includes('.DS_Store'), 'pack.py drops the finder metadata');
+    assert(!names.some(name => name.startsWith('__pycache__/')), 'pack.py drops the bytecode cache');
+    assert(!names.some(name => name.startsWith('docs/')), 'pack.py drops the directories it names');
+    assert(!names.includes('pack.py'), 'pack.py leaves itself out');
+  }
+  fs.rmSync(box, { recursive: true, force: true });
+}
 
 // options.js has no DOM harness here, so its half of the cross-context
 // contract is asserted against the source.

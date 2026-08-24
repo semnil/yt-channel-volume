@@ -7,6 +7,11 @@ import sys
 import tempfile
 import zlib
 
+# This directory is loaded as an unpacked extension, and Chrome refuses one
+# whose top level holds a name starting with "_". An import writes __pycache__
+# beside the module it reads, and that module is here.
+sys.dont_write_bytecode = True
+
 # gen_screenshots first: it is the one that answers 3 where pillow is missing,
 # and importing PIL here first would turn that into a traceback.
 import gen_screenshots
@@ -248,9 +253,14 @@ finally:
 print('--check — what it refuses to write')
 
 def tracked_bytes(box):
+    """The committed images, by name. Files only, as --check counts them:
+    the staging directory an interrupted run leaves carries the suffix too.
+    """
     directory = os.path.join(box, 'docs', 'screenshots')
     out = {}
-    for name in sorted(os.listdir(directory)):
+    for name in sorted(n for n in os.listdir(directory)
+                       if n.lower().endswith('.png')
+                       and os.path.isfile(os.path.join(directory, n))):
         with open(os.path.join(directory, name), 'rb') as handle:
             out[name] = handle.read()
     return out
@@ -270,8 +280,11 @@ def mark(box, name):
 
 box = sandbox()
 try:
+    os.mkdir(shot(box, 'tmpabc123.png'))
     mark(box, 'popup_ja.png')
     before = tracked_bytes(box)
+    check('tmpabc123.png' not in before,
+          'a leftover staging directory is not one of the tracked images')
     elsewhere = os.path.join(box, 'elsewhere')
     wrote = run(box, '--out', elsewhere)
     check(wrote.returncode == 0, f'--out is accepted (exit {wrote.returncode}: {wrote.stderr.strip()})')

@@ -5,7 +5,7 @@ import os
 EXCLUDE = {
     'CLAUDE.md', '.claude', 'gen_icons.py', 'gen_screenshots.py', 'pack.py', 'test.js', 'test-navigation.js',
     'test-screenshots.py',
-    '.git', '.github', '.gitignore', '__pycache__',
+    '.git', '.github', '.gitignore', '__pycache__', '.DS_Store',
     'AGENTS.md', 'docs', 'screenshots', 'tools',
     'PRIVACY_POLICY.md', 'PRIVACY_POLICY_JA.md', 'README.md',
 }
