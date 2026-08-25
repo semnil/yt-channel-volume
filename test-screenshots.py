@@ -51,6 +51,15 @@ class FakeImage:
             pass
 
 
+class ClosedPipe(io.StringIO):
+    """A stdout that goes away where the progress lines go, as a pipe does."""
+
+    def write(self, text):
+        if text.startswith('Generated'):
+            raise BrokenPipeError(32, 'Broken pipe')
+        return len(text)
+
+
 class RefusedImage:
     """Fails where a full disk would: after the file beside the name is there."""
 
@@ -82,12 +91,14 @@ def exit_code(args):
         return err.code
 
 
-check(gen_screenshots.target_dir([]) == gen_screenshots.OUT_DIR,
-      'no --out writes into docs/screenshots')
+# Whether --out named it travels with it: which exit code answers a refusal
+# follows what was handed over, and where it landed cannot tell them apart.
+check(gen_screenshots.target_dir([]) == (gen_screenshots.OUT_DIR, False),
+      'no --out writes into docs/screenshots, and says nobody named it')
 # Where the kernel lands, not where the text folds to: a link on the way
 # there is followed, so what is checked and what is written are one place.
 check(gen_screenshots.target_dir(['--out', os.sep + 'tmp' + os.sep + 'shots'])
-      == gen_screenshots.where_it_lands(os.sep + 'tmp' + os.sep + 'shots'),
+      == (gen_screenshots.where_it_lands(os.sep + 'tmp' + os.sep + 'shots'), True),
       '--out with a directory writes where that directory leads')
 check(exit_code(['--out']) == 2, '--out with nothing after it is an argument error')
 check(exit_code(['--out', '']) == 2,
@@ -120,7 +131,7 @@ try:
     check(reported is False, f'a path on another drive is reported as outside, not raised over ({reported!r})')
 
     try:
-        gen_screenshots.write(IMAGES, outside)
+        gen_screenshots.write(IMAGES, outside, named=True)
     except ValueError as err:
         check(False, f'write raised over a path on another drive: {err}')
     check(wrote_every_image(outside), 'writes every image when the target is on another drive')
@@ -182,6 +193,18 @@ def can_symlink():
 
 
 LINKS = can_symlink()
+# What shuts a directory or a file here. win32 does not keep one shut by its
+# mode, and root writes into it whatever the mode says.
+MODE_BITS = sys.platform != 'win32' and not (hasattr(os, 'getuid') and os.getuid() == 0)
+
+
+def without_mode_bits(what):
+    """True where a block needing mode bits cannot run, having said so."""
+    if MODE_BITS:
+        return False
+    print(f'  ({what}: skipped, mode bits do not shut one for this user)')
+    return True
+
 # resource is posix-only, and it is how the cost of a run is read from outside.
 try:
     import resource
@@ -398,6 +421,8 @@ def scanlines(path):
 # A decoder decides the format from the content, stops at IEND, skips what it
 # does not know and stops once it has the scanlines. Every one of these leaves
 # the pixels and the size of the image the code draws.
+if not MODE_BITS:
+    print('  (a file this process cannot read: skipped, mode bits do not shut one for this user)')
 for label, breakage, expected in (
     ('bytes after IEND',
      lambda p: open(p, 'ab').write(b'trailing'),
@@ -435,10 +460,11 @@ for label, breakage, expected in (
     ('an IEND carrying something',
      lambda p: give_iend_a_payload(p),
      'popup_ja.png: IEND is 7 bytes where the spec gives it none'),
+) + ((
     ('a file this process cannot read',
      lambda p: os.chmod(p, 0o000),
      'popup_ja.png: cannot be read'),
-):
+) if MODE_BITS else ()):
     box = sandbox()
     try:
         breakage(shot(box, 'popup_ja.png'))
@@ -789,7 +815,7 @@ if LINKS:
         looked = gen_screenshots.not_a_plain_file
         gen_screenshots.not_a_plain_file = lambda path: None
         try:
-            code = gen_screenshots.write(IMAGES, box)
+            code = gen_screenshots.write(IMAGES, box, named=True)
         finally:
             gen_screenshots.not_a_plain_file = looked
         check(code == 0, f'writing runs with the check stubbed out (exit {code})')
@@ -815,102 +841,397 @@ finally:
 
 print('drawing — a directory that will not have it')
 
-box = sandbox()
-readonly = os.path.join(box, 'readonly')
+box = None if without_mode_bits('a destination that cannot be made') else sandbox()
 try:
     # The shape of the path is fine; what is left is what the filesystem says
     # when asked to make the directory.
-    os.mkdir(readonly)
-    os.chmod(readonly, 0o555)
-    refused = run(box, '--out', os.path.join(readonly, 'shots'))
-    check(refused.returncode == 2,
-          f'a destination that cannot be made is an argument error (exit {refused.returncode})')
-    check('Traceback' not in refused.stderr, 'and says so without a traceback')
-    check('usage:' in refused.stderr, 'and is told the shape of the command')
+    if box is not None:
+        readonly = os.path.join(box, 'readonly')
+        os.mkdir(readonly)
+        os.chmod(readonly, 0o555)
+        refused = run(box, '--out', os.path.join(readonly, 'shots'))
+        check(refused.returncode == 2,
+              f'a destination that cannot be made is an argument error (exit {refused.returncode})')
+        check('Traceback' not in refused.stderr, 'and says so without a traceback')
+        check('usage:' in refused.stderr, 'and is told the shape of the command')
 finally:
-    os.chmod(readonly, 0o755)
-    shutil.rmtree(box)
+    if box is not None:
+        os.chmod(readonly, 0o755)
+        shutil.rmtree(box)
 
 box = tempfile.mkdtemp()
 try:
     # Where the directory takes the file and the save fails anyway, what was
     # written beside the name has to go: a run that stops is not a run that
     # leaves its working files in a directory of images.
-    code = gen_screenshots.write({'popup_ja.png': RefusedImage()}, box)
+    code = gen_screenshots.write({'popup_ja.png': RefusedImage()}, box, named=True)
     check(code == 2, f'a save that fails is reported (exit {code})')
     check(os.listdir(box) == [], f'and nothing is left beside the name ({os.listdir(box)})')
 finally:
     shutil.rmtree(box)
 
-box = tempfile.mkdtemp()
+box = None if without_mode_bits('clearing away that fails too') else tempfile.mkdtemp()
 try:
     # And where clearing away fails as well: raising there would bury the
     # failure that stopped the run and take the exit code with it.
-    said = io.StringIO()
-    code = None
-    try:
-        with contextlib.redirect_stderr(said):
-            code = gen_screenshots.write({'popup_ja.png': RefusedImage(shut=box)}, box)
-    except OSError as raised:
-        check(False, f'clearing away raised over the failure it was clearing ({raised})')
-    os.chmod(box, 0o755)
-    check(code == 2, f'the save that failed is what is answered for (exit {code})')
-    check('No space left on device' in said.getvalue(),
-          f'and it is the failure that is reported ({said.getvalue().strip()[:70]})')
-    check('is left behind' in said.getvalue(), 'with what could not be cleared away named too')
-    left = os.listdir(box)
-    check(left != [], f'since it is still there ({left})')
+    if box is not None:
+        said = io.StringIO()
+        code = None
+        try:
+            with contextlib.redirect_stderr(said):
+                code = gen_screenshots.write({'popup_ja.png': RefusedImage(shut=box)}, box,
+                                             named=True)
+        except OSError as raised:
+            check(False, f'clearing away raised over the failure it was clearing ({raised})')
+        os.chmod(box, 0o755)
+        check(code == 2, f'the save that failed is what is answered for (exit {code})')
+        check('No space left on device' in said.getvalue(),
+              f'and it is the failure that is reported ({said.getvalue().strip()[:70]})')
+        check('is left behind' in said.getvalue(),
+              'with what could not be cleared away named too')
+        left = os.listdir(box)
+        check(left != [], f'since it is still there ({left})')
 finally:
-    os.chmod(box, 0o755)
-    shutil.rmtree(box)
+    if box is not None:
+        os.chmod(box, 0o755)
+        shutil.rmtree(box)
 
-box = sandbox()
-readonly = os.path.join(box, 'readonly')
+box = None if without_mode_bits('a destination that will not take a file') else sandbox()
 try:
     # This one exists, so nothing has to be made — what refuses is the file
     # written beside the name, which is the first thing this run asks of it.
-    os.mkdir(readonly)
-    os.chmod(readonly, 0o555)
-    refused = run(box, '--out', readonly)
-    check(refused.returncode == 2,
-          f'a destination that will not take a file is an argument error (exit {refused.returncode})')
-    check('Traceback' not in refused.stderr, 'and says so without a traceback')
-    check('usage:' in refused.stderr, 'and is told the shape of the command')
-    check(os.listdir(readonly) == [], 'and nothing was left in it')
+    if box is not None:
+        readonly = os.path.join(box, 'readonly')
+        os.mkdir(readonly)
+        os.chmod(readonly, 0o555)
+        refused = run(box, '--out', readonly)
+        check(refused.returncode == 2,
+              f'a destination that will not take a file is an argument error '
+              f'(exit {refused.returncode})')
+        check('Traceback' not in refused.stderr, 'and says so without a traceback')
+        check('usage:' in refused.stderr, 'and is told the shape of the command')
+        check(os.listdir(readonly) == [], 'and nothing was left in it')
 finally:
-    os.chmod(readonly, 0o755)
-    shutil.rmtree(box)
+    if box is not None:
+        os.chmod(readonly, 0o755)
+        shutil.rmtree(box)
 
-box = sandbox()
-tracked_readonly = os.path.join(box, 'docs', 'screenshots')
+box = None if without_mode_bits('the tracked directory refusing a file') else sandbox()
 try:
     # The same directory as the one it draws into, where there is no argument
     # to blame: this is the run failing, not the command being wrong.
-    os.chmod(tracked_readonly, 0o555)
-    refused = run(box)
-    check(refused.returncode == 1,
-          f'the tracked directory refusing a file is exit 1 (exit {refused.returncode})')
-    check('Traceback' not in refused.stderr, 'and says so without a traceback')
-    check('cannot be written (Permission denied)' in refused.stderr,
-          f'and names what could not be written, and why ({refused.stderr.strip()[:70]})')
-    check([name for name in os.listdir(tracked_readonly) if not name.endswith('.png')] == [],
-          'and left nothing of its own behind')
+    if box is not None:
+        tracked_readonly = os.path.join(box, 'docs', 'screenshots')
+        os.chmod(tracked_readonly, 0o555)
+        refused = run(box)
+        check(refused.returncode == 1,
+              f'the tracked directory refusing a file is exit 1 (exit {refused.returncode})')
+        check('Traceback' not in refused.stderr, 'and says so without a traceback')
+        check('cannot be written (Permission denied)' in refused.stderr,
+              f'and names what could not be written, and why ({refused.stderr.strip()[:70]})')
+        check([name for name in os.listdir(tracked_readonly) if not name.endswith('.png')] == [],
+              'and left nothing of its own behind')
 finally:
-    os.chmod(tracked_readonly, 0o755)
-    shutil.rmtree(box)
+    if box is not None:
+        os.chmod(tracked_readonly, 0o755)
+        shutil.rmtree(box)
 
-box = sandbox()
-tracked = os.path.join(box, 'docs', 'screenshots')
+box = None if without_mode_bits('a tracked directory that cannot be read') else sandbox()
 try:
     # Which files are there is half of what --check answers.
-    os.chmod(tracked, 0o000)
-    unreadable = run(box, '--check')
-    check(unreadable.returncode == 1,
-          f'a tracked directory that cannot be read is reported (exit {unreadable.returncode})')
-    check('Traceback' not in unreadable.stderr, 'and says so without a traceback')
-    check('docs/screenshots cannot be read' in unreadable.stderr, 'and names it')
+    if box is not None:
+        tracked = os.path.join(box, 'docs', 'screenshots')
+        os.chmod(tracked, 0o000)
+        unreadable = run(box, '--check')
+        check(unreadable.returncode == 1,
+              f'a tracked directory that cannot be read is reported '
+              f'(exit {unreadable.returncode})')
+        check('Traceback' not in unreadable.stderr, 'and says so without a traceback')
+        check('docs/screenshots cannot be read' in unreadable.stderr, 'and names it')
 finally:
-    os.chmod(tracked, 0o755)
+    if box is not None:
+        os.chmod(tracked, 0o755)
+        shutil.rmtree(box)
+
+print('drawing — who the exit code is answering')
+
+box = None if without_mode_bits('who the exit code is answering') else sandbox()
+try:
+    # One directory refuses both runs. What differs is who is being answered:
+    # one wrote the destination down and the other did not, and reading that
+    # off where the run landed makes --out mean two things.
+    if box is not None:
+        tracked = os.path.join(box, 'docs', 'screenshots')
+        os.chmod(tracked, 0o555)
+        handed = run(box, '--out', tracked)
+        check(handed.returncode == 2,
+              f'--out naming the tracked directory answers the argument '
+              f'(exit {handed.returncode})')
+        check('usage:' in handed.stderr, 'and is told the shape of the command')
+        bare = run(box)
+        check(bare.returncode == 1,
+              f'and the same directory with no argument is the run failing '
+              f'(exit {bare.returncode})')
+        check('usage:' not in bare.stderr, 'with nothing to say about arguments')
+finally:
+    if box is not None:
+        os.chmod(tracked, 0o755)
+        shutil.rmtree(box)
+
+print('drawing — a replacement that stops among the six')
+
+box = tempfile.mkdtemp()
+try:
+    # The names are replaced one at a time, so a run that stops among them left
+    # some of this run's images beside the last run's. What was there is copied
+    # first and put back.
+    was = {}
+    for name in IMAGES:
+        with open(os.path.join(box, name), 'wb') as handle:
+            handle.write(b'the image that was there: ' + name.encode())
+        was[name] = open(os.path.join(box, name), 'rb').read()
+    said = io.StringIO()
+    with contextlib.redirect_stderr(said):
+        code = gen_screenshots.write({'popup_ja.png': FakeImage(), 'popup_en.png': RefusedImage()},
+                                     box, named=True)
+    check(code == 2, f'the save that failed is answered for (exit {code})')
+    still = {name: open(os.path.join(box, name), 'rb').read() for name in IMAGES}
+    check(still == was, 'and every name holds what it held before the run')
+    check(sorted(os.listdir(box)) == sorted(IMAGES),
+          f'with nothing of the run left behind ({sorted(os.listdir(box))})')
+finally:
+    shutil.rmtree(box)
+
+box = tempfile.mkdtemp()
+try:
+    # And where putting one back is refused as well: it is the only name left
+    # holding this run's image, it is named, and the copy taken of it is kept.
+    stuck = 'popup_ja.png'
+    for name in IMAGES:
+        with open(os.path.join(box, name), 'wb') as handle:
+            handle.write(b'the image that was there: ' + name.encode())
+    was = open(os.path.join(box, stuck), 'rb').read()
+    real_copy2 = shutil.copy2
+
+    def refusing_copy2(src, dst, *args, **kwargs):
+        if os.path.dirname(dst) == box and os.path.basename(dst) == stuck:
+            raise OSError(13, 'Permission denied', dst)
+        return real_copy2(src, dst, *args, **kwargs)
+
+    said = io.StringIO()
+    gen_screenshots.shutil.copy2 = refusing_copy2
+    code = None
+    try:
+        with contextlib.redirect_stderr(said):
+            code = gen_screenshots.write({stuck: FakeImage(), 'popup_en.png': RefusedImage()},
+                                         box, named=True)
+    except OSError as raised:
+        # Raising on the way back buries the failure it is undoing and takes
+        # the names it had not reached yet with it.
+        check(False, f'putting them back raised over the save that stopped the run ({raised})')
+    finally:
+        gen_screenshots.shutil.copy2 = real_copy2
+    told = said.getvalue()
+    check(code == 2, f'the save that failed is still what is answered for (exit {code})')
+    check(f'{stuck}: what was there cannot be put back' in told,
+          f'and the name that was left is named ({told.strip()[:80]})')
+    check('what was there is kept in' in told, 'and the copy taken of it is offered')
+    kept = [name for name in os.listdir(box) if os.path.isdir(os.path.join(box, name))]
+    check(len(kept) == 1, f'the copy is still there ({kept})')
+    check(kept and open(os.path.join(box, kept[0], stuck), 'rb').read() == was,
+          'and holds the image that was there')
+    check(open(os.path.join(box, 'popup_en.png'), 'rb').read().startswith(b'the image'),
+          'while the name it never reached is untouched')
+finally:
+    shutil.rmtree(box)
+
+box = None if without_mode_bits('an image the copy cannot be read from') else tempfile.mkdtemp()
+try:
+    # Taking the copy reads the image and writes the copy in the one call, so
+    # what it says names both ends. "cannot be written" would send the reader
+    # to the directory, which is not what is in the way here.
+    if box is not None:
+        for name in IMAGES:
+            with open(os.path.join(box, name), 'wb') as handle:
+                handle.write(b'the image that was there')
+        shut = os.path.join(box, 'popup_ja.png')
+        os.chmod(shut, 0o000)
+        said = io.StringIO()
+        with contextlib.redirect_stderr(said):
+            code = gen_screenshots.write(IMAGES, box, named=True)
+        os.chmod(shut, 0o644)
+        told = said.getvalue()
+        check(code == 2, f'a copy that cannot be taken stops the run (exit {code})')
+        check('popup_ja.png cannot be copied to' in told and 'Permission denied' in told,
+              f'and both ends of the copy are named ({told.strip()[:80]})')
+        check(sorted(os.listdir(box)) == sorted(IMAGES),
+              f'with nothing replaced and nothing left behind ({sorted(os.listdir(box))})')
+finally:
+    if box is not None:
+        shutil.rmtree(box)
+
+box = tempfile.mkdtemp()
+try:
+    # The other end of that call, where the image reads perfectly well: what
+    # refuses is the copy, and a message that says "cannot be read" would have
+    # the reader looking at the image.
+    for name in IMAGES:
+        with open(os.path.join(box, name), 'wb') as handle:
+            handle.write(b'the image that was there')
+    source = os.path.join(box, 'popup_ja.png')
+    real_copy2 = shutil.copy2
+
+    def full_disk(src, dst, *args, **kwargs):
+        if os.path.dirname(dst) != box:
+            raise OSError(28, 'No space left on device', dst)
+        return real_copy2(src, dst, *args, **kwargs)
+
+    said = io.StringIO()
+    gen_screenshots.shutil.copy2 = full_disk
+    try:
+        with contextlib.redirect_stderr(said):
+            code = gen_screenshots.write(IMAGES, box, named=True)
+    finally:
+        gen_screenshots.shutil.copy2 = real_copy2
+    told = said.getvalue()
+    check(open(source, 'rb').read() == b'the image that was there',
+          'the image reads, so the copy is what refused')
+    check(code == 2, f'a copy that will not fit stops the run (exit {code})')
+    # The copies are taken in name order, so the first one is where it stops.
+    check('popup_en.png cannot be copied to' in told and 'No space left on device' in told,
+          f'and both ends of the copy are named ({told.strip()[:80]})')
+    check(sorted(os.listdir(box)) == sorted(IMAGES),
+          f'with nothing replaced and nothing left behind ({sorted(os.listdir(box))})')
+finally:
+    shutil.rmtree(box)
+
+box = tempfile.mkdtemp()
+try:
+    # Replacing is not the only thing that stops a run: the progress line goes
+    # to a pipe that can close, and an interrupt arrives wherever it arrives.
+    # A name already replaced is no more this run's to leave behind for those.
+    names = ['first.png', 'second.png']
+    was = {}
+    for name in names:
+        with open(os.path.join(box, name), 'wb') as handle:
+            handle.write(b'the image that was there: ' + name.encode())
+        was[name] = open(os.path.join(box, name), 'rb').read()
+    said = io.StringIO()
+    raised = None
+    try:
+        with contextlib.redirect_stderr(said), contextlib.redirect_stdout(ClosedPipe()):
+            gen_screenshots.write({name: FakeImage() for name in names}, box, named=True)
+    except BrokenPipeError as broken:
+        raised = broken
+    check(raised is not None, 'the run is stopped by the line it cannot print')
+    still = {name: open(os.path.join(box, name), 'rb').read() for name in names}
+    check(still == was, 'and every name holds what it held before the run')
+    check(sorted(os.listdir(box)) == sorted(names),
+          f'with the copy taken away as well ({sorted(os.listdir(box))})')
+finally:
+    shutil.rmtree(box)
+
+box = tempfile.mkdtemp()
+try:
+    # An interrupt arrives wherever it arrives, and taking the copies is where
+    # it can arrive before a single name has been replaced: nothing to put
+    # back, and a copy nobody is owed.
+    names = ['first.png', 'second.png']
+    was = {}
+    for name in names:
+        with open(os.path.join(box, name), 'wb') as handle:
+            handle.write(b'the image that was there: ' + name.encode())
+        was[name] = open(os.path.join(box, name), 'rb').read()
+    calls = {'n': 0}
+    real_copy2 = shutil.copy2
+
+    def stopping_copy2(src, dst, *args, **kwargs):
+        calls['n'] += 1
+        if calls['n'] == 2:
+            raise KeyboardInterrupt('interrupted while taking the copies')
+        return real_copy2(src, dst, *args, **kwargs)
+
+    said = io.StringIO()
+    stopped = None
+    gen_screenshots.shutil.copy2 = stopping_copy2
+    try:
+        with contextlib.redirect_stderr(said), contextlib.redirect_stdout(io.StringIO()):
+            gen_screenshots.write({name: FakeImage() for name in names}, box, named=True)
+    except KeyboardInterrupt as interrupted:
+        stopped = interrupted
+    finally:
+        gen_screenshots.shutil.copy2 = real_copy2
+    check(stopped is not None, 'an interrupt taking the copies is raised on')
+    still = {name: open(os.path.join(box, name), 'rb').read() for name in names}
+    check(still == was, 'and every name holds what it held before the run')
+    check(sorted(os.listdir(box)) == sorted(names),
+          f'with the copy taken away too ({sorted(os.listdir(box))})')
+finally:
+    shutil.rmtree(box)
+
+box = tempfile.mkdtemp()
+try:
+    # And where that copy cannot be taken away: the interrupt is still the
+    # answer, and where the copy is left is said rather than left to be found.
+    names = ['first.png', 'second.png']
+    for name in names:
+        with open(os.path.join(box, name), 'wb') as handle:
+            handle.write(b'the image that was there: ' + name.encode())
+    calls = {'n': 0}
+    real_copy2, real_rmtree = shutil.copy2, shutil.rmtree
+
+    def stopping_copy2(src, dst, *args, **kwargs):
+        calls['n'] += 1
+        if calls['n'] == 2:
+            raise KeyboardInterrupt('interrupted while taking the copies')
+        return real_copy2(src, dst, *args, **kwargs)
+
+    def refusing_rmtree(path, *args, **kwargs):
+        raise OSError(13, 'Permission denied', path)
+
+    said = io.StringIO()
+    stopped = None
+    gen_screenshots.shutil.copy2 = stopping_copy2
+    gen_screenshots.shutil.rmtree = refusing_rmtree
+    try:
+        with contextlib.redirect_stderr(said), contextlib.redirect_stdout(io.StringIO()):
+            gen_screenshots.write({name: FakeImage() for name in names}, box, named=True)
+    except KeyboardInterrupt as interrupted:
+        stopped = interrupted
+    finally:
+        gen_screenshots.shutil.copy2 = real_copy2
+        gen_screenshots.shutil.rmtree = real_rmtree
+    check(stopped is not None, 'the interrupt is still what stopped the run')
+    check('is left behind' in said.getvalue(),
+          f'and the copy that could not be taken away is named ({said.getvalue().strip()[:80]})')
+    check([name for name in os.listdir(box) if name not in names] != [],
+          'since it is still there')
+finally:
+    shutil.rmtree(box)
+
+box = tempfile.mkdtemp()
+try:
+    # A run that finished says this directory holds the images and nothing
+    # else. --check counts .png files, so a copy left here is seen by nobody
+    # unless the run that left it says so.
+    real_rmtree = shutil.rmtree
+
+    def refusing_rmtree(path, *args, **kwargs):
+        raise OSError(13, 'Permission denied', path)
+
+    said = io.StringIO()
+    gen_screenshots.shutil.rmtree = refusing_rmtree
+    try:
+        with contextlib.redirect_stderr(said), contextlib.redirect_stdout(io.StringIO()):
+            code = gen_screenshots.write(IMAGES, box, named=True)
+    finally:
+        gen_screenshots.shutil.rmtree = real_rmtree
+    told = said.getvalue()
+    check(code == 2, f'a copy that cannot be taken away is answered for (exit {code})')
+    check('is left behind' in told, f'and named ({told.strip()[:80]})')
+    check([name for name in os.listdir(box) if name not in IMAGES] != [],
+          'since it is still there')
+finally:
     shutil.rmtree(box)
 
 print('--check — an argument that is wrong, and what else is missing')
