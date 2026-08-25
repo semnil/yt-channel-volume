@@ -937,6 +937,96 @@ finally:
     os.chmod(tracked, 0o755)
     shutil.rmtree(box)
 
+print('drawing — a replacement that stops among the six')
+
+box = tempfile.mkdtemp()
+try:
+    # The names are replaced one at a time, so a run that stops among them left
+    # some of this run's images beside the last run's. What was there is copied
+    # first and put back.
+    was = {}
+    for name in IMAGES:
+        with open(os.path.join(box, name), 'wb') as handle:
+            handle.write(b'the image that was there: ' + name.encode())
+        was[name] = open(os.path.join(box, name), 'rb').read()
+    said = io.StringIO()
+    with contextlib.redirect_stderr(said):
+        code = gen_screenshots.write({'popup_ja.png': FakeImage(), 'popup_en.png': RefusedImage()},
+                                     box, named=True)
+    check(code == 2, f'the save that failed is answered for (exit {code})')
+    still = {name: open(os.path.join(box, name), 'rb').read() for name in IMAGES}
+    check(still == was, 'and every name holds what it held before the run')
+    check(sorted(os.listdir(box)) == sorted(IMAGES),
+          f'with nothing of the run left behind ({sorted(os.listdir(box))})')
+finally:
+    shutil.rmtree(box)
+
+box = tempfile.mkdtemp()
+try:
+    # And where putting one back is refused as well: it is the only name left
+    # holding this run's image, it is named, and the copy taken of it is kept.
+    stuck = 'popup_ja.png'
+    for name in IMAGES:
+        with open(os.path.join(box, name), 'wb') as handle:
+            handle.write(b'the image that was there: ' + name.encode())
+    was = open(os.path.join(box, stuck), 'rb').read()
+    real_copy2 = shutil.copy2
+
+    def refusing_copy2(src, dst, *args, **kwargs):
+        if os.path.dirname(dst) == box and os.path.basename(dst) == stuck:
+            raise OSError(13, 'Permission denied', dst)
+        return real_copy2(src, dst, *args, **kwargs)
+
+    said = io.StringIO()
+    gen_screenshots.shutil.copy2 = refusing_copy2
+    code = None
+    try:
+        with contextlib.redirect_stderr(said):
+            code = gen_screenshots.write({stuck: FakeImage(), 'popup_en.png': RefusedImage()},
+                                         box, named=True)
+    except OSError as raised:
+        # Raising on the way back buries the failure it is undoing and takes
+        # the names it had not reached yet with it.
+        check(False, f'putting them back raised over the save that stopped the run ({raised})')
+    finally:
+        gen_screenshots.shutil.copy2 = real_copy2
+    told = said.getvalue()
+    check(code == 2, f'the save that failed is still what is answered for (exit {code})')
+    check(f'{stuck}: what was there cannot be put back' in told,
+          f'and the name that was left is named ({told.strip()[:80]})')
+    check('what was there is kept in' in told, 'and the copy taken of it is offered')
+    kept = [name for name in os.listdir(box) if os.path.isdir(os.path.join(box, name))]
+    check(len(kept) == 1, f'the copy is still there ({kept})')
+    check(kept and open(os.path.join(box, kept[0], stuck), 'rb').read() == was,
+          'and holds the image that was there')
+    check(open(os.path.join(box, 'popup_en.png'), 'rb').read().startswith(b'the image'),
+          'while the name it never reached is untouched')
+finally:
+    shutil.rmtree(box)
+
+box = tempfile.mkdtemp()
+try:
+    # Taking that copy reads. Calling a read it cannot do "cannot be written"
+    # sends the reader to the directory, which is not what is in the way.
+    for name in IMAGES:
+        with open(os.path.join(box, name), 'wb') as handle:
+            handle.write(b'the image that was there')
+    shut = os.path.join(box, 'popup_ja.png')
+    os.chmod(shut, 0o000)
+    said = io.StringIO()
+    with contextlib.redirect_stderr(said):
+        code = gen_screenshots.write(IMAGES, box, named=True)
+    os.chmod(shut, 0o644)
+    told = said.getvalue()
+    check(code == 2, f'a copy that cannot be taken stops the run (exit {code})')
+    check('popup_ja.png cannot be read (Permission denied)' in told,
+          f'and is named as a read ({told.strip()[:80]})')
+    check('cannot be written' not in told, 'and not as a write')
+    check(sorted(os.listdir(box)) == sorted(IMAGES),
+          f'with nothing replaced and nothing left behind ({sorted(os.listdir(box))})')
+finally:
+    shutil.rmtree(box)
+
 print('--check — an argument that is wrong, and what else is missing')
 
 box = sandbox()
