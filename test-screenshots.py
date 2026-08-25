@@ -51,6 +51,15 @@ class FakeImage:
             pass
 
 
+class ClosedPipe(io.StringIO):
+    """A stdout that goes away where the progress lines go, as a pipe does."""
+
+    def write(self, text):
+        if text.startswith('Generated'):
+            raise BrokenPipeError(32, 'Broken pipe')
+        return len(text)
+
+
 class RefusedImage:
     """Fails where a full disk would: after the file beside the name is there."""
 
@@ -1056,6 +1065,57 @@ try:
     check('cannot be written' not in told, 'and not as a write')
     check(sorted(os.listdir(box)) == sorted(IMAGES),
           f'with nothing replaced and nothing left behind ({sorted(os.listdir(box))})')
+finally:
+    shutil.rmtree(box)
+
+box = tempfile.mkdtemp()
+try:
+    # Replacing is not the only thing that stops a run: the progress line goes
+    # to a pipe that can close, and an interrupt arrives wherever it arrives.
+    # A name already replaced is no more this run's to leave behind for those.
+    names = ['first.png', 'second.png']
+    was = {}
+    for name in names:
+        with open(os.path.join(box, name), 'wb') as handle:
+            handle.write(b'the image that was there: ' + name.encode())
+        was[name] = open(os.path.join(box, name), 'rb').read()
+    said = io.StringIO()
+    raised = None
+    try:
+        with contextlib.redirect_stderr(said), contextlib.redirect_stdout(ClosedPipe()):
+            gen_screenshots.write({name: FakeImage() for name in names}, box, named=True)
+    except BrokenPipeError as broken:
+        raised = broken
+    check(raised is not None, 'the run is stopped by the line it cannot print')
+    still = {name: open(os.path.join(box, name), 'rb').read() for name in names}
+    check(still == was, 'and every name holds what it held before the run')
+    check(sorted(os.listdir(box)) == sorted(names),
+          f'with the copy taken away as well ({sorted(os.listdir(box))})')
+finally:
+    shutil.rmtree(box)
+
+box = tempfile.mkdtemp()
+try:
+    # A run that finished says this directory holds the images and nothing
+    # else. --check counts .png files, so a copy left here is seen by nobody
+    # unless the run that left it says so.
+    real_rmtree = shutil.rmtree
+
+    def refusing_rmtree(path, *args, **kwargs):
+        raise OSError(13, 'Permission denied', path)
+
+    said = io.StringIO()
+    gen_screenshots.shutil.rmtree = refusing_rmtree
+    try:
+        with contextlib.redirect_stderr(said), contextlib.redirect_stdout(io.StringIO()):
+            code = gen_screenshots.write(IMAGES, box, named=True)
+    finally:
+        gen_screenshots.shutil.rmtree = real_rmtree
+    told = said.getvalue()
+    check(code == 2, f'a copy that cannot be taken away is answered for (exit {code})')
+    check('is left behind' in told, f'and named ({told.strip()[:80]})')
+    check([name for name in os.listdir(box) if name not in IMAGES] != [],
+          'since it is still there')
 finally:
     shutil.rmtree(box)
 

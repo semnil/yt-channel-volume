@@ -460,6 +460,105 @@ def put_back(backup, target, replaced, was_there):
     return left
 
 
+def clear_away(backup, shown):
+    """Take the copy away. Returns what it could not do, or None."""
+    try:
+        shutil.rmtree(backup)
+    except OSError as err:
+        return f'{shown(backup)} is left behind ({err.strerror})'
+    return None
+
+
+def what_was_left(left, backup, shown):
+    """The lines for what could not be put back, and whether the copy is owed.
+
+    Only a name that had a plain file has anything in the copy: a name that had
+    nothing there is offered nothing by keeping it.
+    """
+    told = [f'{name}: {KEPT_AS[kind]} ({why})' for name, kind, why in left]
+    keep = any(kind == 'file' for _, kind, _ in left)
+    if keep:
+        told.append(f'what was there is kept in {shown(backup)}')
+    return told, keep
+
+
+def replace_them(images, target, backup, named, shown):
+    """Replace the names, putting back what was replaced if it cannot finish.
+
+    Returns (exit code, whether the copy is still owed to the reader). What
+    stops the run is not only the filesystem refusing a save: a progress line
+    that cannot be printed and an interrupt both arrive once names have been
+    replaced, and those are put back from the copy too before being raised on.
+    """
+    was_there = []
+    for name in sorted(images):
+        path = os.path.join(target, name)
+        if not os.path.lexists(path):
+            continue
+        try:
+            shutil.copy2(path, os.path.join(backup, name))
+        except OSError as err:
+            # Not being able to read it is not the same as not being able to
+            # write it, and nothing has been replaced yet.
+            return refused_to_write(
+                named, f'{shown(path)} cannot be read ({err.strerror})'), False
+        was_there.append(name)
+    replaced = []
+    try:
+        for name, img in images.items():
+            path = os.path.join(target, name)
+            beside = None
+            # Written down before the replace is attempted: one interrupted
+            # once the name has been taken is still one to put back.
+            replaced.append(name)
+            try:
+                # Written beside the name and moved onto it: os.replace puts the
+                # file where the name is rather than where a link would lead, and a
+                # run that stops partway leaves the name it has not reached alone.
+                # Making that file is inside the boundary too — a directory that
+                # exists and will not take one answers here rather than by raising.
+                handle = tempfile.NamedTemporaryFile(dir=target, prefix=f'.{name}.', suffix='.tmp',
+                                                     delete=False)
+                beside = handle.name
+                handle.close()
+                img.save(beside, format='PNG')
+                os.replace(beside, path)
+            except OSError as err:
+                left = put_back(backup, target, replaced, was_there)
+                told, keep = what_was_left(left, backup, shown)
+                return refused_to_write(
+                    named,
+                    '\n'.join([f'{shown(path)} cannot be written ({err.strerror})'] + told)), keep
+            finally:
+                # After os.replace there is nothing at that name; anything that
+                # stops the run before it leaves a file beside the name.
+                # Clearing it away is its own thing that can fail, and it is
+                # never the failure to report: raising here would bury the one
+                # that stopped the run and take the exit code with it.
+                if beside is not None and os.path.lexists(beside):
+                    try:
+                        os.remove(beside)
+                    except OSError as sweeping:
+                        print(f'{shown(beside)} is left behind ({sweeping.strerror})',
+                              file=sys.stderr)
+            print(f'Generated {shown(path)}')
+    except BaseException:
+        # Not the filesystem refusing a save — the progress line, an interrupt.
+        # The names already replaced are no more this run's to leave behind
+        # than they would be for a refusal, and this one is raised on, so the
+        # copy is dealt with here.
+        left = put_back(backup, target, replaced, was_there)
+        told, keep = what_was_left(left, backup, shown)
+        for line in told:
+            print(line, file=sys.stderr)
+        if not keep:
+            gone = clear_away(backup, shown)
+            if gone:
+                print(gone, file=sys.stderr)
+        raise
+    return 0, False
+
+
 def refused_to_write(named, why):
     """Say it, and answer whoever is being answered.
 
@@ -522,70 +621,20 @@ def write(images, target, named=False):
         # The first thing this run asks of the directory. A traceback here is
         # exit 1, which is the answer for images that differ.
         return refused_to_write(named, f'{shown(target)} cannot be written ({err.strerror})')
-    keep = False
-    try:
-        was_there = []
-        for name in sorted(images):
-            path = os.path.join(target, name)
-            if not os.path.lexists(path):
-                continue
-            try:
-                shutil.copy2(path, os.path.join(backup, name))
-            except OSError as err:
-                # Not being able to read it is not the same as not being able
-                # to write it, and nothing has been replaced yet.
-                return refused_to_write(named,
-                                        f'{shown(path)} cannot be read ({err.strerror})')
-            was_there.append(name)
-        replaced = []
-        for name, img in images.items():
-            path = os.path.join(target, name)
-            beside = None
-            # Written down before the replace is attempted: one interrupted
-            # once the name has been taken is still one to put back.
-            replaced.append(name)
-            try:
-                # Written beside the name and moved onto it: os.replace puts the
-                # file where the name is rather than where a link would lead, and a
-                # run that stops partway leaves the name it has not reached alone.
-                # Making that file is inside the boundary too — a directory that
-                # exists and will not take one answers here rather than by raising.
-                handle = tempfile.NamedTemporaryFile(dir=target, prefix=f'.{name}.', suffix='.tmp',
-                                                     delete=False)
-                beside = handle.name
-                handle.close()
-                img.save(beside, format='PNG')
-                os.replace(beside, path)
-            except OSError as err:
-                # Clearing away is its own thing that can fail, and it is never the
-                # failure to report: raising here would bury the one that stopped
-                # the run and take the exit code with it.
-                if beside is not None and os.path.lexists(beside):
-                    try:
-                        os.remove(beside)
-                    except OSError as sweeping:
-                        print(f'{shown(beside)} is left behind ({sweeping.strerror})',
-                              file=sys.stderr)
-                told = [f'{shown(path)} cannot be written ({err.strerror})']
-                left = put_back(backup, target, replaced, was_there)
-                for stuck, kind, why in left:
-                    told.append(f'{stuck}: {KEPT_AS[kind]} ({why})')
-                # What could not be put back is in the copy and nowhere else;
-                # a name that had nothing there has nothing to offer.
-                keep = any(kind == 'file' for _, kind, _ in left)
-                if keep:
-                    told.append(f'what was there is kept in {shown(backup)}')
-                return refused_to_write(named, '\n'.join(told))
-            print(f'Generated {shown(path)}')
-    finally:
-        if not keep:
-            try:
-                shutil.rmtree(backup)
-            except OSError as err:
-                # Not being able to clear it away does not change the answer;
-                # say that it is there.
-                print(f'{shown(backup)} is left behind ({err.strerror})', file=sys.stderr)
-    return 0
+    answer, keep = replace_them(images, target, backup, named, shown)
+    if keep:
+        # Named in what was said, so it stays where the reader was sent.
+        return answer
+    told = clear_away(backup, shown)
+    if told is None:
+        return answer
+    if answer:
+        # The run already has its answer; this is the other thing that happened.
+        print(told, file=sys.stderr)
+        return answer
+    # Exit 0 says this directory holds the six and nothing else, and --check
+    # counts .png files, so nothing downstream would say this either.
+    return refused_to_write(named, told)
 
 
 def path_parts(rest, sep=os.sep, altsep=os.altsep):
