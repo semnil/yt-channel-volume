@@ -1211,9 +1211,9 @@ finally:
 
 box = tempfile.mkdtemp()
 try:
-    # A run that finished says this directory holds the images and nothing
-    # else. --check counts .png files, so a copy left here is seen by nobody
-    # unless the run that left it says so.
+    # A run that finished says the copy it made did not outlive it. That copy
+    # is named and filled by the run, and --check counts .png files, so one
+    # left here is seen by nobody unless the run that left it says so.
     real_rmtree = shutil.rmtree
 
     def refusing_rmtree(path, *args, **kwargs):
@@ -1231,6 +1231,36 @@ try:
     check('is left behind' in told, f'and named ({told.strip()[:80]})')
     check([name for name in os.listdir(box) if name not in IMAGES] != [],
           'since it is still there')
+finally:
+    shutil.rmtree(box)
+
+print('drawing — what it finds in the directory')
+
+box = sandbox()
+try:
+    # What the run answers for is the copy it made. Something already in the
+    # directory is not this run's to remove, and not its to mention either:
+    # reading exit 0 as "the six and nothing else" reads more than is measured.
+    beside = os.path.join(box, 'docs', 'screenshots', 'sentinel.txt')
+    with open(beside, 'w', encoding='utf-8') as handle:
+        handle.write('not this run\n')
+
+    drew = run(box)
+    check(drew.returncode == 0, f'a run with something else there finishes (exit {drew.returncode})')
+    check(open(beside, encoding='utf-8').read() == 'not this run\n',
+          'and what was there is untouched')
+    check([name for name in os.listdir(os.path.dirname(beside))
+           if not name.lower().endswith('.png')] == ['sentinel.txt'],
+          'with nothing of the run beside it')
+    # Saying nothing is the other half of leaving it alone: a name the run
+    # prints is one the reader is being asked to do something about.
+    check('sentinel' not in drew.stdout + drew.stderr,
+          f'and the run says nothing about it ({(drew.stdout + drew.stderr).strip()[:70]})')
+
+    checked = run(box, '--check')
+    check(checked.returncode == 0, f'--check counts .png files (exit {checked.returncode})')
+    check('sentinel' not in checked.stdout + checked.stderr,
+          f'and says nothing about it either ({(checked.stdout + checked.stderr).strip()[:70]})')
 finally:
     shutil.rmtree(box)
 
