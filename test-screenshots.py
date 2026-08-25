@@ -184,6 +184,18 @@ def can_symlink():
 
 
 LINKS = can_symlink()
+# What shuts a directory or a file here. win32 does not keep one shut by its
+# mode, and root writes into it whatever the mode says.
+MODE_BITS = sys.platform != 'win32' and not (hasattr(os, 'getuid') and os.getuid() == 0)
+
+
+def without_mode_bits(what):
+    """True where a block needing mode bits cannot run, having said so."""
+    if MODE_BITS:
+        return False
+    print(f'  ({what}: skipped, mode bits do not shut one for this user)')
+    return True
+
 # resource is posix-only, and it is how the cost of a run is read from outside.
 try:
     import resource
@@ -400,6 +412,8 @@ def scanlines(path):
 # A decoder decides the format from the content, stops at IEND, skips what it
 # does not know and stops once it has the scanlines. Every one of these leaves
 # the pixels and the size of the image the code draws.
+if not MODE_BITS:
+    print('  (a file this process cannot read: skipped, mode bits do not shut one for this user)')
 for label, breakage, expected in (
     ('bytes after IEND',
      lambda p: open(p, 'ab').write(b'trailing'),
@@ -437,10 +451,11 @@ for label, breakage, expected in (
     ('an IEND carrying something',
      lambda p: give_iend_a_payload(p),
      'popup_ja.png: IEND is 7 bytes where the spec gives it none'),
+) + ((
     ('a file this process cannot read',
      lambda p: os.chmod(p, 0o000),
      'popup_ja.png: cannot be read'),
-):
+) if MODE_BITS else ()):
     box = sandbox()
     try:
         breakage(shot(box, 'popup_ja.png'))
@@ -817,21 +832,23 @@ finally:
 
 print('drawing — a directory that will not have it')
 
-box = sandbox()
-readonly = os.path.join(box, 'readonly')
+box = None if without_mode_bits('a destination that cannot be made') else sandbox()
 try:
     # The shape of the path is fine; what is left is what the filesystem says
     # when asked to make the directory.
-    os.mkdir(readonly)
-    os.chmod(readonly, 0o555)
-    refused = run(box, '--out', os.path.join(readonly, 'shots'))
-    check(refused.returncode == 2,
-          f'a destination that cannot be made is an argument error (exit {refused.returncode})')
-    check('Traceback' not in refused.stderr, 'and says so without a traceback')
-    check('usage:' in refused.stderr, 'and is told the shape of the command')
+    if box is not None:
+        readonly = os.path.join(box, 'readonly')
+        os.mkdir(readonly)
+        os.chmod(readonly, 0o555)
+        refused = run(box, '--out', os.path.join(readonly, 'shots'))
+        check(refused.returncode == 2,
+              f'a destination that cannot be made is an argument error (exit {refused.returncode})')
+        check('Traceback' not in refused.stderr, 'and says so without a traceback')
+        check('usage:' in refused.stderr, 'and is told the shape of the command')
 finally:
-    os.chmod(readonly, 0o755)
-    shutil.rmtree(box)
+    if box is not None:
+        os.chmod(readonly, 0o755)
+        shutil.rmtree(box)
 
 box = tempfile.mkdtemp()
 try:
@@ -844,98 +861,113 @@ try:
 finally:
     shutil.rmtree(box)
 
-box = tempfile.mkdtemp()
+box = None if without_mode_bits('clearing away that fails too') else tempfile.mkdtemp()
 try:
     # And where clearing away fails as well: raising there would bury the
     # failure that stopped the run and take the exit code with it.
-    said = io.StringIO()
-    code = None
-    try:
-        with contextlib.redirect_stderr(said):
-            code = gen_screenshots.write({'popup_ja.png': RefusedImage(shut=box)}, box,
-                                         named=True)
-    except OSError as raised:
-        check(False, f'clearing away raised over the failure it was clearing ({raised})')
-    os.chmod(box, 0o755)
-    check(code == 2, f'the save that failed is what is answered for (exit {code})')
-    check('No space left on device' in said.getvalue(),
-          f'and it is the failure that is reported ({said.getvalue().strip()[:70]})')
-    check('is left behind' in said.getvalue(), 'with what could not be cleared away named too')
-    left = os.listdir(box)
-    check(left != [], f'since it is still there ({left})')
+    if box is not None:
+        said = io.StringIO()
+        code = None
+        try:
+            with contextlib.redirect_stderr(said):
+                code = gen_screenshots.write({'popup_ja.png': RefusedImage(shut=box)}, box,
+                                             named=True)
+        except OSError as raised:
+            check(False, f'clearing away raised over the failure it was clearing ({raised})')
+        os.chmod(box, 0o755)
+        check(code == 2, f'the save that failed is what is answered for (exit {code})')
+        check('No space left on device' in said.getvalue(),
+              f'and it is the failure that is reported ({said.getvalue().strip()[:70]})')
+        check('is left behind' in said.getvalue(),
+              'with what could not be cleared away named too')
+        left = os.listdir(box)
+        check(left != [], f'since it is still there ({left})')
 finally:
-    os.chmod(box, 0o755)
-    shutil.rmtree(box)
+    if box is not None:
+        os.chmod(box, 0o755)
+        shutil.rmtree(box)
 
-box = sandbox()
-readonly = os.path.join(box, 'readonly')
+box = None if without_mode_bits('a destination that will not take a file') else sandbox()
 try:
     # This one exists, so nothing has to be made — what refuses is the file
     # written beside the name, which is the first thing this run asks of it.
-    os.mkdir(readonly)
-    os.chmod(readonly, 0o555)
-    refused = run(box, '--out', readonly)
-    check(refused.returncode == 2,
-          f'a destination that will not take a file is an argument error (exit {refused.returncode})')
-    check('Traceback' not in refused.stderr, 'and says so without a traceback')
-    check('usage:' in refused.stderr, 'and is told the shape of the command')
-    check(os.listdir(readonly) == [], 'and nothing was left in it')
+    if box is not None:
+        readonly = os.path.join(box, 'readonly')
+        os.mkdir(readonly)
+        os.chmod(readonly, 0o555)
+        refused = run(box, '--out', readonly)
+        check(refused.returncode == 2,
+              f'a destination that will not take a file is an argument error '
+              f'(exit {refused.returncode})')
+        check('Traceback' not in refused.stderr, 'and says so without a traceback')
+        check('usage:' in refused.stderr, 'and is told the shape of the command')
+        check(os.listdir(readonly) == [], 'and nothing was left in it')
 finally:
-    os.chmod(readonly, 0o755)
-    shutil.rmtree(box)
+    if box is not None:
+        os.chmod(readonly, 0o755)
+        shutil.rmtree(box)
 
-box = sandbox()
-tracked_readonly = os.path.join(box, 'docs', 'screenshots')
+box = None if without_mode_bits('the tracked directory refusing a file') else sandbox()
 try:
     # The same directory as the one it draws into, where there is no argument
     # to blame: this is the run failing, not the command being wrong.
-    os.chmod(tracked_readonly, 0o555)
-    refused = run(box)
-    check(refused.returncode == 1,
-          f'the tracked directory refusing a file is exit 1 (exit {refused.returncode})')
-    check('Traceback' not in refused.stderr, 'and says so without a traceback')
-    check('cannot be written (Permission denied)' in refused.stderr,
-          f'and names what could not be written, and why ({refused.stderr.strip()[:70]})')
-    check([name for name in os.listdir(tracked_readonly) if not name.endswith('.png')] == [],
-          'and left nothing of its own behind')
+    if box is not None:
+        tracked_readonly = os.path.join(box, 'docs', 'screenshots')
+        os.chmod(tracked_readonly, 0o555)
+        refused = run(box)
+        check(refused.returncode == 1,
+              f'the tracked directory refusing a file is exit 1 (exit {refused.returncode})')
+        check('Traceback' not in refused.stderr, 'and says so without a traceback')
+        check('cannot be written (Permission denied)' in refused.stderr,
+              f'and names what could not be written, and why ({refused.stderr.strip()[:70]})')
+        check([name for name in os.listdir(tracked_readonly) if not name.endswith('.png')] == [],
+              'and left nothing of its own behind')
 finally:
-    os.chmod(tracked_readonly, 0o755)
-    shutil.rmtree(box)
+    if box is not None:
+        os.chmod(tracked_readonly, 0o755)
+        shutil.rmtree(box)
 
-box = sandbox()
-tracked = os.path.join(box, 'docs', 'screenshots')
+box = None if without_mode_bits('a tracked directory that cannot be read') else sandbox()
 try:
     # Which files are there is half of what --check answers.
-    os.chmod(tracked, 0o000)
-    unreadable = run(box, '--check')
-    check(unreadable.returncode == 1,
-          f'a tracked directory that cannot be read is reported (exit {unreadable.returncode})')
-    check('Traceback' not in unreadable.stderr, 'and says so without a traceback')
-    check('docs/screenshots cannot be read' in unreadable.stderr, 'and names it')
+    if box is not None:
+        tracked = os.path.join(box, 'docs', 'screenshots')
+        os.chmod(tracked, 0o000)
+        unreadable = run(box, '--check')
+        check(unreadable.returncode == 1,
+              f'a tracked directory that cannot be read is reported '
+              f'(exit {unreadable.returncode})')
+        check('Traceback' not in unreadable.stderr, 'and says so without a traceback')
+        check('docs/screenshots cannot be read' in unreadable.stderr, 'and names it')
 finally:
-    os.chmod(tracked, 0o755)
-    shutil.rmtree(box)
+    if box is not None:
+        os.chmod(tracked, 0o755)
+        shutil.rmtree(box)
 
 print('drawing — who the exit code is answering')
 
-box = sandbox()
-tracked = os.path.join(box, 'docs', 'screenshots')
+box = None if without_mode_bits('who the exit code is answering') else sandbox()
 try:
     # One directory refuses both runs. What differs is who is being answered:
     # one wrote the destination down and the other did not, and reading that
     # off where the run landed makes --out mean two things.
-    os.chmod(tracked, 0o555)
-    handed = run(box, '--out', tracked)
-    check(handed.returncode == 2,
-          f'--out naming the tracked directory answers the argument (exit {handed.returncode})')
-    check('usage:' in handed.stderr, 'and is told the shape of the command')
-    bare = run(box)
-    check(bare.returncode == 1,
-          f'and the same directory with no argument is the run failing (exit {bare.returncode})')
-    check('usage:' not in bare.stderr, 'with nothing to say about arguments')
+    if box is not None:
+        tracked = os.path.join(box, 'docs', 'screenshots')
+        os.chmod(tracked, 0o555)
+        handed = run(box, '--out', tracked)
+        check(handed.returncode == 2,
+              f'--out naming the tracked directory answers the argument '
+              f'(exit {handed.returncode})')
+        check('usage:' in handed.stderr, 'and is told the shape of the command')
+        bare = run(box)
+        check(bare.returncode == 1,
+              f'and the same directory with no argument is the run failing '
+              f'(exit {bare.returncode})')
+        check('usage:' not in bare.stderr, 'with nothing to say about arguments')
 finally:
-    os.chmod(tracked, 0o755)
-    shutil.rmtree(box)
+    if box is not None:
+        os.chmod(tracked, 0o755)
+        shutil.rmtree(box)
 
 print('drawing — a replacement that stops among the six')
 
