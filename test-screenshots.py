@@ -154,7 +154,13 @@ def sandbox():
     shutil.copy2(os.path.join(gen_screenshots.ROOT, 'gen_screenshots.py'),
                  os.path.join(box, 'gen_screenshots.py'))
     shutil.copytree(gen_screenshots.FONT_DIR, os.path.join(box, 'tools', 'fonts'))
-    shutil.copytree(gen_screenshots.OUT_DIR, os.path.join(box, 'docs', 'screenshots'))
+    # The six the code draws, rather than whatever else the directory is
+    # holding: a .DS_Store there is allowed by .gitignore, and copied in it
+    # would be answered for as though this run had left it.
+    out = os.path.join(box, 'docs', 'screenshots')
+    os.makedirs(out)
+    for name in IMAGES_DRAWN:
+        shutil.copy2(os.path.join(gen_screenshots.OUT_DIR, name), os.path.join(out, name))
     return box
 
 
