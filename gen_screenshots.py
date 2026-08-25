@@ -498,10 +498,12 @@ def replace_them(images, target, backup, named, shown):
         try:
             shutil.copy2(path, os.path.join(backup, name))
         except OSError as err:
-            # Not being able to read it is not the same as not being able to
-            # write it, and nothing has been replaced yet.
+            # Reading the image and writing the copy are the one call, so which
+            # of the two refused is not known here. Both are named, and nothing
+            # has been replaced yet.
             return refused_to_write(
-                named, f'{shown(path)} cannot be read ({err.strerror})'), False
+                named,
+                f'{shown(path)} cannot be copied to {shown(backup)} ({err.strerror})'), False
         was_there.append(name)
     replaced = []
     try:

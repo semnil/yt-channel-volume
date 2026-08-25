@@ -1045,24 +1045,61 @@ try:
 finally:
     shutil.rmtree(box)
 
+box = None if without_mode_bits('an image the copy cannot be read from') else tempfile.mkdtemp()
+try:
+    # Taking the copy reads the image and writes the copy in the one call, so
+    # what it says names both ends. "cannot be written" would send the reader
+    # to the directory, which is not what is in the way here.
+    if box is not None:
+        for name in IMAGES:
+            with open(os.path.join(box, name), 'wb') as handle:
+                handle.write(b'the image that was there')
+        shut = os.path.join(box, 'popup_ja.png')
+        os.chmod(shut, 0o000)
+        said = io.StringIO()
+        with contextlib.redirect_stderr(said):
+            code = gen_screenshots.write(IMAGES, box, named=True)
+        os.chmod(shut, 0o644)
+        told = said.getvalue()
+        check(code == 2, f'a copy that cannot be taken stops the run (exit {code})')
+        check('popup_ja.png cannot be copied to' in told and 'Permission denied' in told,
+              f'and both ends of the copy are named ({told.strip()[:80]})')
+        check(sorted(os.listdir(box)) == sorted(IMAGES),
+              f'with nothing replaced and nothing left behind ({sorted(os.listdir(box))})')
+finally:
+    if box is not None:
+        shutil.rmtree(box)
+
 box = tempfile.mkdtemp()
 try:
-    # Taking that copy reads. Calling a read it cannot do "cannot be written"
-    # sends the reader to the directory, which is not what is in the way.
+    # The other end of that call, where the image reads perfectly well: what
+    # refuses is the copy, and a message that says "cannot be read" would have
+    # the reader looking at the image.
     for name in IMAGES:
         with open(os.path.join(box, name), 'wb') as handle:
             handle.write(b'the image that was there')
-    shut = os.path.join(box, 'popup_ja.png')
-    os.chmod(shut, 0o000)
+    source = os.path.join(box, 'popup_ja.png')
+    real_copy2 = shutil.copy2
+
+    def full_disk(src, dst, *args, **kwargs):
+        if os.path.dirname(dst) != box:
+            raise OSError(28, 'No space left on device', dst)
+        return real_copy2(src, dst, *args, **kwargs)
+
     said = io.StringIO()
-    with contextlib.redirect_stderr(said):
-        code = gen_screenshots.write(IMAGES, box, named=True)
-    os.chmod(shut, 0o644)
+    gen_screenshots.shutil.copy2 = full_disk
+    try:
+        with contextlib.redirect_stderr(said):
+            code = gen_screenshots.write(IMAGES, box, named=True)
+    finally:
+        gen_screenshots.shutil.copy2 = real_copy2
     told = said.getvalue()
-    check(code == 2, f'a copy that cannot be taken stops the run (exit {code})')
-    check('popup_ja.png cannot be read (Permission denied)' in told,
-          f'and is named as a read ({told.strip()[:80]})')
-    check('cannot be written' not in told, 'and not as a write')
+    check(open(source, 'rb').read() == b'the image that was there',
+          'the image reads, so the copy is what refused')
+    check(code == 2, f'a copy that will not fit stops the run (exit {code})')
+    # The copies are taken in name order, so the first one is where it stops.
+    check('popup_en.png cannot be copied to' in told and 'No space left on device' in told,
+          f'and both ends of the copy are named ({told.strip()[:80]})')
     check(sorted(os.listdir(box)) == sorted(IMAGES),
           f'with nothing replaced and nothing left behind ({sorted(os.listdir(box))})')
 finally:
