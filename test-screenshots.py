@@ -154,7 +154,13 @@ def sandbox():
     shutil.copy2(os.path.join(gen_screenshots.ROOT, 'gen_screenshots.py'),
                  os.path.join(box, 'gen_screenshots.py'))
     shutil.copytree(gen_screenshots.FONT_DIR, os.path.join(box, 'tools', 'fonts'))
-    shutil.copytree(gen_screenshots.OUT_DIR, os.path.join(box, 'docs', 'screenshots'))
+    # The six the code draws, rather than whatever else the directory is
+    # holding: a .DS_Store there is allowed by .gitignore, and copied in it
+    # would be answered for as though this run had left it.
+    out = os.path.join(box, 'docs', 'screenshots')
+    os.makedirs(out)
+    for name in IMAGES_DRAWN:
+        shutil.copy2(os.path.join(gen_screenshots.OUT_DIR, name), os.path.join(out, name))
     return box
 
 
@@ -1211,9 +1217,9 @@ finally:
 
 box = tempfile.mkdtemp()
 try:
-    # A run that finished says this directory holds the images and nothing
-    # else. --check counts .png files, so a copy left here is seen by nobody
-    # unless the run that left it says so.
+    # A run that finished says the copy it made did not outlive it. That copy
+    # is named and filled by the run, and --check counts .png files, so one
+    # left here is seen by nobody unless the run that left it says so.
     real_rmtree = shutil.rmtree
 
     def refusing_rmtree(path, *args, **kwargs):
@@ -1231,6 +1237,46 @@ try:
     check('is left behind' in told, f'and named ({told.strip()[:80]})')
     check([name for name in os.listdir(box) if name not in IMAGES] != [],
           'since it is still there')
+finally:
+    shutil.rmtree(box)
+
+print('drawing — what it finds in the directory')
+
+box = sandbox()
+try:
+    # What the run answers for is the copy it made. Something already in the
+    # directory is not this run's to remove, and not its to mention either:
+    # reading exit 0 as "the six and nothing else" reads more than is measured.
+    #
+    # Both halves are measured against the same directory with one thing
+    # changed. "Says nothing" is the whole of what the two runs print, not the
+    # absence of one name: a line that mentions the file without naming it says
+    # something too. What it leaves alone is looked at after each run, since a
+    # run that removes it quietly says nothing either.
+    beside = shot(box, 'sentinel.txt')
+    quiet = (run(box), run(box, '--check'))
+    check(quiet[0].returncode == 0 and quiet[1].returncode == 0,
+          f'the runs to compare against finish ({quiet[0].returncode}, {quiet[1].returncode})')
+
+    with open(beside, 'w', encoding='utf-8') as handle:
+        handle.write('not this run\n')
+
+    drew = run(box)
+    check(drew.returncode == 0, f'a run with something else there finishes (exit {drew.returncode})')
+    check((drew.stdout, drew.stderr) == (quiet[0].stdout, quiet[0].stderr),
+          f'and says exactly what it says with nothing there ({drew.stdout.strip()[:70]})')
+    check(os.path.exists(beside) and open(beside, encoding='utf-8').read() == 'not this run\n',
+          'with what was there still there, unchanged')
+
+    checked = run(box, '--check')
+    check(checked.returncode == 0, f'--check counts .png files (exit {checked.returncode})')
+    check((checked.stdout, checked.stderr) == (quiet[1].stdout, quiet[1].stderr),
+          f'and says the same as it says with nothing there ({checked.stdout.strip()[:70]})')
+    check(os.path.exists(beside) and open(beside, encoding='utf-8').read() == 'not this run\n',
+          'with what was there still there after that too')
+    check([name for name in os.listdir(os.path.dirname(beside))
+           if not name.lower().endswith('.png')] == ['sentinel.txt'],
+          'and nothing of either run beside it')
 finally:
     shutil.rmtree(box)
 

@@ -636,8 +636,10 @@ def write(images, target, named=False):
         # The run already has its answer; this is the other thing that happened.
         print(told, file=sys.stderr)
         return answer
-    # Exit 0 says this directory holds the six and nothing else, and --check
-    # counts .png files, so nothing downstream would say this either.
+    # Exit 0 says this run left no copy of its own behind; what was in the
+    # directory before it is not measured here. The copy is named and filled by
+    # this run, and --check counts .png files, so one that outlives the run has
+    # nobody else to report it.
     return refused_to_write(named, told)
 
 
