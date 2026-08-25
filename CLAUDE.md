@@ -105,7 +105,7 @@ options.html / options.js (設定画面、別タブで表示)
 | `docs/screenshots/` | README 埋め込み・ストア掲載用スクリーンショット (ja, en)。`gen_screenshots.py` の出力 |
 | `gen_icons.py` | アイコン生成スクリプト (Python pillow) |
 | `pack.py` | Chrome Web Store 用 zip 生成 |
-| `gen_screenshots.py` | スクリーンショット生成 (`docs/screenshots/` へ出力。描画フォントは `tools/fonts/` の M PLUS 1p 固定。`--check` は書き込まず、追跡先までのパスの各成分と画像が通常ファイルか → PNG 構造 (署名・チャンク・IDAT の zlib ストリーム) → チャンクの並び → IHDR の大きさ → IDAT 以外のバイト列 → RGBA 画素、の順に見る (デコーダに渡すのは最後)。差は exit 1、描けない環境は exit 3。`--out <dir>` は書き込み先を差し替える。知らない引数・`--check` と `--out` の同時指定 (順不同)・`--out` の重複・フラグの形をした値・ディレクトリになれない行き先は exit 2 で拒否する (`--chek` が上書きにならないように)。引数の間違いは pillow / 書体の読取失敗より先に答える (import と書体解決自体はモジュール読み込み時で、失敗は持ち帰って引数解析の後に exit 3)。追跡先までのパスに実体ディレクトリでない成分があれば、描画も `--check` も exit 1 で何もしない) |
+| `gen_screenshots.py` | スクリーンショット生成 (`docs/screenshots/` へ出力。描画フォントは `tools/fonts/` の M PLUS 1p 固定。`--check` は書き込まず、追跡先までのパスの各成分と画像が通常ファイルか → PNG 構造 (署名・チャンク・IDAT の zlib ストリーム) → チャンクの並び → IHDR の大きさ → IDAT 以外のバイト列 → RGBA 画素、の順に見る (デコーダに渡すのは最後)。差は exit 1、描けない環境は exit 3。`--out <dir>` は書き込み先を差し替える。知らない引数・`--check` と `--out` の同時指定 (順不同)・`--out` の重複・フラグの形をした値・ディレクトリになれない行き先は exit 2 で拒否する (`--chek` が上書きにならないように)。引数の間違いは pillow / 書体の読取失敗より先に答える (import と書体解決自体はモジュール読み込み時で、失敗は持ち帰って引数解析の後に exit 3)。追跡先までのパスに実体ディレクトリでない成分があれば、描画も `--check` も exit 1 で何もしない。ファイルシステムに断られたときも traceback にしない — `--out` で名指しされた行き先は exit 2 (それが追跡先と同じでも)、引数なしの追跡先は exit 1) |
 | `tools/fonts/` | 描画フォント M PLUS 1p (Regular / Bold) と OFL.txt。google/fonts の `ofl/mplus1p` から取得 (commit `66a36c8`)。CI と各マシンで同じ画素を得るためにリポジトリへ入れている |
 | `test.js` | ユニットテスト (node test.js) |
 | `test-navigation.js` | ナビゲーション・状態遷移テスト (node test-navigation.js) |

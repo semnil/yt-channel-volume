@@ -2,7 +2,9 @@
 
 `--check` renders into a temporary directory and compares with what is committed
 instead of writing. Exit 1 means the two differ, exit 3 that this machine cannot
-draw them. `--out <dir>` writes the six there instead of into docs/screenshots.
+draw them. `--out <dir>` writes the six there instead of into docs/screenshots;
+a destination handed over that cannot be written is exit 2, where the tracked
+one is exit 1.
 """
 import hashlib
 import math
@@ -369,7 +371,7 @@ USAGE = f'usage: {os.path.basename(__file__)} [--check] [--out <dir>]'
 
 
 def target_dir(args):
-    """Where to write: docs/screenshots, or the directory after --out.
+    """(where to write, whether --out named it). No --out is docs/screenshots.
 
     An argument this does not know is an error rather than a default: `--chek`
     reaching the write path overwrites the images the run was meant to read,
@@ -418,7 +420,7 @@ def target_dir(args):
         print(f'--check compares the committed screenshots and writes nothing, '
               f'so --out has nowhere to go\n{USAGE}', file=sys.stderr)
         sys.exit(2)
-    return OUT_DIR if target is None else target
+    return (OUT_DIR, False) if target is None else (target, True)
 
 
 def under_root(target):
@@ -430,13 +432,29 @@ def under_root(target):
         return False
 
 
-def write(images, target):
-    if target == OUT_DIR:
+def refused_to_write(named, why):
+    """Say it, and answer whoever is being answered.
+
+    --out was handed its destination, so a refusal there is the answer for
+    arguments (2); the tracked directory is this run failing to finish (1).
+    Which one it is follows what was handed over rather than where the run
+    landed: --out naming docs/screenshots is still someone reading back the
+    argument they wrote.
+    """
+    print(why, file=sys.stderr)
+    if not named:
+        return 1
+    print(USAGE, file=sys.stderr)
+    return 2
+
+
+def write(images, target, named=False):
+    if not named:
         bad = not_a_directory(target)
         if bad:
             # Writing through a link reports docs/screenshots for bytes that
             # landed outside the tree. Only the tracked destination is asked:
-            # --out was handed its own.
+            # --out has cannot_hold_images looking at what it was handed.
             print(f'{bad[0]}: {bad[1]}', file=sys.stderr)
             print(f'Make {bad[0]} a directory again, then draw them.', file=sys.stderr)
             return 1
@@ -450,11 +468,7 @@ def write(images, target):
     except OSError as err:
         # The shape of the path was walked before this; what is left is what
         # the filesystem says when asked to make it.
-        if target == OUT_DIR:
-            print(f'{shown(target)} cannot be made ({err.strerror})', file=sys.stderr)
-            return 1
-        print(f'--out has nowhere to write: {target} ({err.strerror})\n{USAGE}', file=sys.stderr)
-        return 2
+        return refused_to_write(named, f'{shown(target)} cannot be made ({err.strerror})')
     # A name that is not a plain file is not written through: img.save follows
     # a link and puts a PNG wherever it points, leaving the link in place — so
     # the run reports six images written while one of them went somewhere else
@@ -493,12 +507,7 @@ def write(images, target):
                 except OSError as sweeping:
                     print(f'{shown(beside)} is left behind ({sweeping.strerror})',
                           file=sys.stderr)
-            if target == OUT_DIR:
-                print(f'{shown(path)} cannot be written ({err.strerror})', file=sys.stderr)
-                return 1
-            print(f'--out has nowhere to write: {target} ({err.strerror})\n{USAGE}',
-                  file=sys.stderr)
-            return 2
+            return refused_to_write(named, f'{shown(path)} cannot be written ({err.strerror})')
         print(f'Generated {shown(path)}')
     return 0
 
@@ -867,7 +876,7 @@ if __name__ == '__main__':
     # Every argument is read before the branch, so a near miss of --check is an
     # argument error rather than a redraw — and before the answer for a machine
     # that cannot draw, so that one does not stand in for it.
-    destination = target_dir(sys.argv[1:])
+    destination, was_named = target_dir(sys.argv[1:])
     if CANNOT_DRAW is not None:
         print(CANNOT_DRAW, file=sys.stderr)
         sys.exit(UNAVAILABLE)
@@ -875,4 +884,4 @@ if __name__ == '__main__':
           f'| raqm {features.check("raqm")}')
     if '--check' in sys.argv[1:]:
         sys.exit(check(render_all()))
-    sys.exit(write(render_all(), destination))
+    sys.exit(write(render_all(), destination, was_named))

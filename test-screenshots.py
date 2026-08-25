@@ -82,12 +82,14 @@ def exit_code(args):
         return err.code
 
 
-check(gen_screenshots.target_dir([]) == gen_screenshots.OUT_DIR,
-      'no --out writes into docs/screenshots')
+# Whether --out named it travels with it: which exit code answers a refusal
+# follows what was handed over, and where it landed cannot tell them apart.
+check(gen_screenshots.target_dir([]) == (gen_screenshots.OUT_DIR, False),
+      'no --out writes into docs/screenshots, and says nobody named it')
 # Where the kernel lands, not where the text folds to: a link on the way
 # there is followed, so what is checked and what is written are one place.
 check(gen_screenshots.target_dir(['--out', os.sep + 'tmp' + os.sep + 'shots'])
-      == gen_screenshots.where_it_lands(os.sep + 'tmp' + os.sep + 'shots'),
+      == (gen_screenshots.where_it_lands(os.sep + 'tmp' + os.sep + 'shots'), True),
       '--out with a directory writes where that directory leads')
 check(exit_code(['--out']) == 2, '--out with nothing after it is an argument error')
 check(exit_code(['--out', '']) == 2,
@@ -120,7 +122,7 @@ try:
     check(reported is False, f'a path on another drive is reported as outside, not raised over ({reported!r})')
 
     try:
-        gen_screenshots.write(IMAGES, outside)
+        gen_screenshots.write(IMAGES, outside, named=True)
     except ValueError as err:
         check(False, f'write raised over a path on another drive: {err}')
     check(wrote_every_image(outside), 'writes every image when the target is on another drive')
@@ -789,7 +791,7 @@ if LINKS:
         looked = gen_screenshots.not_a_plain_file
         gen_screenshots.not_a_plain_file = lambda path: None
         try:
-            code = gen_screenshots.write(IMAGES, box)
+            code = gen_screenshots.write(IMAGES, box, named=True)
         finally:
             gen_screenshots.not_a_plain_file = looked
         check(code == 0, f'writing runs with the check stubbed out (exit {code})')
@@ -836,7 +838,7 @@ try:
     # Where the directory takes the file and the save fails anyway, what was
     # written beside the name has to go: a run that stops is not a run that
     # leaves its working files in a directory of images.
-    code = gen_screenshots.write({'popup_ja.png': RefusedImage()}, box)
+    code = gen_screenshots.write({'popup_ja.png': RefusedImage()}, box, named=True)
     check(code == 2, f'a save that fails is reported (exit {code})')
     check(os.listdir(box) == [], f'and nothing is left beside the name ({os.listdir(box)})')
 finally:
@@ -850,7 +852,8 @@ try:
     code = None
     try:
         with contextlib.redirect_stderr(said):
-            code = gen_screenshots.write({'popup_ja.png': RefusedImage(shut=box)}, box)
+            code = gen_screenshots.write({'popup_ja.png': RefusedImage(shut=box)}, box,
+                                         named=True)
     except OSError as raised:
         check(False, f'clearing away raised over the failure it was clearing ({raised})')
     os.chmod(box, 0o755)
@@ -909,6 +912,27 @@ try:
           f'a tracked directory that cannot be read is reported (exit {unreadable.returncode})')
     check('Traceback' not in unreadable.stderr, 'and says so without a traceback')
     check('docs/screenshots cannot be read' in unreadable.stderr, 'and names it')
+finally:
+    os.chmod(tracked, 0o755)
+    shutil.rmtree(box)
+
+print('drawing — who the exit code is answering')
+
+box = sandbox()
+tracked = os.path.join(box, 'docs', 'screenshots')
+try:
+    # One directory refuses both runs. What differs is who is being answered:
+    # one wrote the destination down and the other did not, and reading that
+    # off where the run landed makes --out mean two things.
+    os.chmod(tracked, 0o555)
+    handed = run(box, '--out', tracked)
+    check(handed.returncode == 2,
+          f'--out naming the tracked directory answers the argument (exit {handed.returncode})')
+    check('usage:' in handed.stderr, 'and is told the shape of the command')
+    bare = run(box)
+    check(bare.returncode == 1,
+          f'and the same directory with no argument is the run failing (exit {bare.returncode})')
+    check('usage:' not in bare.stderr, 'with nothing to say about arguments')
 finally:
     os.chmod(tracked, 0o755)
     shutil.rmtree(box)
