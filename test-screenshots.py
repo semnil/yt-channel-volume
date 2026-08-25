@@ -1241,26 +1241,36 @@ try:
     # What the run answers for is the copy it made. Something already in the
     # directory is not this run's to remove, and not its to mention either:
     # reading exit 0 as "the six and nothing else" reads more than is measured.
-    beside = os.path.join(box, 'docs', 'screenshots', 'sentinel.txt')
+    #
+    # Both halves are measured against the same directory with one thing
+    # changed. "Says nothing" is the whole of what the two runs print, not the
+    # absence of one name: a line that mentions the file without naming it says
+    # something too. What it leaves alone is looked at after each run, since a
+    # run that removes it quietly says nothing either.
+    beside = shot(box, 'sentinel.txt')
+    quiet = (run(box), run(box, '--check'))
+    check(quiet[0].returncode == 0 and quiet[1].returncode == 0,
+          f'the runs to compare against finish ({quiet[0].returncode}, {quiet[1].returncode})')
+
     with open(beside, 'w', encoding='utf-8') as handle:
         handle.write('not this run\n')
 
     drew = run(box)
     check(drew.returncode == 0, f'a run with something else there finishes (exit {drew.returncode})')
-    check(open(beside, encoding='utf-8').read() == 'not this run\n',
-          'and what was there is untouched')
-    check([name for name in os.listdir(os.path.dirname(beside))
-           if not name.lower().endswith('.png')] == ['sentinel.txt'],
-          'with nothing of the run beside it')
-    # Saying nothing is the other half of leaving it alone: a name the run
-    # prints is one the reader is being asked to do something about.
-    check('sentinel' not in drew.stdout + drew.stderr,
-          f'and the run says nothing about it ({(drew.stdout + drew.stderr).strip()[:70]})')
+    check((drew.stdout, drew.stderr) == (quiet[0].stdout, quiet[0].stderr),
+          f'and says exactly what it says with nothing there ({drew.stdout.strip()[:70]})')
+    check(os.path.exists(beside) and open(beside, encoding='utf-8').read() == 'not this run\n',
+          'with what was there still there, unchanged')
 
     checked = run(box, '--check')
     check(checked.returncode == 0, f'--check counts .png files (exit {checked.returncode})')
-    check('sentinel' not in checked.stdout + checked.stderr,
-          f'and says nothing about it either ({(checked.stdout + checked.stderr).strip()[:70]})')
+    check((checked.stdout, checked.stderr) == (quiet[1].stdout, quiet[1].stderr),
+          f'and says the same as it says with nothing there ({checked.stdout.strip()[:70]})')
+    check(os.path.exists(beside) and open(beside, encoding='utf-8').read() == 'not this run\n',
+          'with what was there still there after that too')
+    check([name for name in os.listdir(os.path.dirname(beside))
+           if not name.lower().endswith('.png')] == ['sentinel.txt'],
+          'and nothing of either run beside it')
 finally:
     shutil.rmtree(box)
 
