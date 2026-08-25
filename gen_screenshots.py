@@ -487,26 +487,27 @@ def replace_them(images, target, backup, named, shown):
 
     Returns (exit code, whether the copy is still owed to the reader). What
     stops the run is not only the filesystem refusing a save: a progress line
-    that cannot be printed and an interrupt both arrive once names have been
-    replaced, and those are put back from the copy too before being raised on.
+    that cannot be printed and an interrupt arrive wherever they arrive, and
+    from taking the copies onwards they are undone before being raised on —
+    the names go back, and a copy nobody is owed does not outlive the run.
     """
     was_there = []
-    for name in sorted(images):
-        path = os.path.join(target, name)
-        if not os.path.lexists(path):
-            continue
-        try:
-            shutil.copy2(path, os.path.join(backup, name))
-        except OSError as err:
-            # Reading the image and writing the copy are the one call, so which
-            # of the two refused is not known here. Both are named, and nothing
-            # has been replaced yet.
-            return refused_to_write(
-                named,
-                f'{shown(path)} cannot be copied to {shown(backup)} ({err.strerror})'), False
-        was_there.append(name)
     replaced = []
     try:
+        for name in sorted(images):
+            path = os.path.join(target, name)
+            if not os.path.lexists(path):
+                continue
+            try:
+                shutil.copy2(path, os.path.join(backup, name))
+            except OSError as err:
+                # Reading the image and writing the copy are the one call, so
+                # which of the two refused is not known here. Both are named,
+                # and nothing has been replaced yet.
+                return refused_to_write(
+                    named,
+                    f'{shown(path)} cannot be copied to {shown(backup)} ({err.strerror})'), False
+            was_there.append(name)
         for name, img in images.items():
             path = os.path.join(target, name)
             beside = None
@@ -548,7 +549,8 @@ def replace_them(images, target, backup, named, shown):
         # Not the filesystem refusing a save — the progress line, an interrupt.
         # The names already replaced are no more this run's to leave behind
         # than they would be for a refusal, and this one is raised on, so the
-        # copy is dealt with here.
+        # copy is dealt with here. Interrupted before a single replacement,
+        # there is nothing to put back and the copy is only this run's litter.
         left = put_back(backup, target, replaced, was_there)
         told, keep = what_was_left(left, backup, shown)
         for line in told:

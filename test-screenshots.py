@@ -1133,6 +1133,84 @@ finally:
 
 box = tempfile.mkdtemp()
 try:
+    # An interrupt arrives wherever it arrives, and taking the copies is where
+    # it can arrive before a single name has been replaced: nothing to put
+    # back, and a copy nobody is owed.
+    names = ['first.png', 'second.png']
+    was = {}
+    for name in names:
+        with open(os.path.join(box, name), 'wb') as handle:
+            handle.write(b'the image that was there: ' + name.encode())
+        was[name] = open(os.path.join(box, name), 'rb').read()
+    calls = {'n': 0}
+    real_copy2 = shutil.copy2
+
+    def stopping_copy2(src, dst, *args, **kwargs):
+        calls['n'] += 1
+        if calls['n'] == 2:
+            raise KeyboardInterrupt('interrupted while taking the copies')
+        return real_copy2(src, dst, *args, **kwargs)
+
+    said = io.StringIO()
+    stopped = None
+    gen_screenshots.shutil.copy2 = stopping_copy2
+    try:
+        with contextlib.redirect_stderr(said), contextlib.redirect_stdout(io.StringIO()):
+            gen_screenshots.write({name: FakeImage() for name in names}, box, named=True)
+    except KeyboardInterrupt as interrupted:
+        stopped = interrupted
+    finally:
+        gen_screenshots.shutil.copy2 = real_copy2
+    check(stopped is not None, 'an interrupt taking the copies is raised on')
+    still = {name: open(os.path.join(box, name), 'rb').read() for name in names}
+    check(still == was, 'and every name holds what it held before the run')
+    check(sorted(os.listdir(box)) == sorted(names),
+          f'with the copy taken away too ({sorted(os.listdir(box))})')
+finally:
+    shutil.rmtree(box)
+
+box = tempfile.mkdtemp()
+try:
+    # And where that copy cannot be taken away: the interrupt is still the
+    # answer, and where the copy is left is said rather than left to be found.
+    names = ['first.png', 'second.png']
+    for name in names:
+        with open(os.path.join(box, name), 'wb') as handle:
+            handle.write(b'the image that was there: ' + name.encode())
+    calls = {'n': 0}
+    real_copy2, real_rmtree = shutil.copy2, shutil.rmtree
+
+    def stopping_copy2(src, dst, *args, **kwargs):
+        calls['n'] += 1
+        if calls['n'] == 2:
+            raise KeyboardInterrupt('interrupted while taking the copies')
+        return real_copy2(src, dst, *args, **kwargs)
+
+    def refusing_rmtree(path, *args, **kwargs):
+        raise OSError(13, 'Permission denied', path)
+
+    said = io.StringIO()
+    stopped = None
+    gen_screenshots.shutil.copy2 = stopping_copy2
+    gen_screenshots.shutil.rmtree = refusing_rmtree
+    try:
+        with contextlib.redirect_stderr(said), contextlib.redirect_stdout(io.StringIO()):
+            gen_screenshots.write({name: FakeImage() for name in names}, box, named=True)
+    except KeyboardInterrupt as interrupted:
+        stopped = interrupted
+    finally:
+        gen_screenshots.shutil.copy2 = real_copy2
+        gen_screenshots.shutil.rmtree = real_rmtree
+    check(stopped is not None, 'the interrupt is still what stopped the run')
+    check('is left behind' in said.getvalue(),
+          f'and the copy that could not be taken away is named ({said.getvalue().strip()[:80]})')
+    check([name for name in os.listdir(box) if name not in names] != [],
+          'since it is still there')
+finally:
+    shutil.rmtree(box)
+
+box = tempfile.mkdtemp()
+try:
     # A run that finished says this directory holds the images and nothing
     # else. --check counts .png files, so a copy left here is seen by nobody
     # unless the run that left it says so.
