@@ -665,7 +665,7 @@ assert(!packaged.includes('.DS_Store'),
     }
     seeded.push(name);
   }
-  for (const name of ['README.md', 'README.ja.md', 'docs']) {
+  for (const name of ['README.md', 'README.ja.md', 'LICENSE', 'docs']) {
     assert(seeded.includes(name), `${name} is in the tree pack.py is pointed at`);
   }
 
