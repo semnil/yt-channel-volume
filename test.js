@@ -404,6 +404,54 @@ for (const name of packaged) {
     `${name} is packaged, so something the extension loads has to name it`);
 }
 
+// A name inside the package is POSIX whatever the host writes it on: the
+// manifest spells its references with forward slashes and a zip entry carries
+// them. Windows is where they would not be, so pack.py's own selection runs
+// here under Windows path semantics, with the real filesystem still answering.
+const WINDOWS_PATH_HARNESS = [
+    'import ntpath, os, builtins, types, importlib.util',
+    'spec = importlib.util.spec_from_file_location("packmod", "pack.py")',
+    'mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)',
+    'real, real_open, real_os = os.path, builtins.open, os',
+    'host = lambda p: p.replace(chr(92), "/")',
+    'win = lambda p: p.replace("/", chr(92))',
+    'class W:',
+    '    isabs, normpath, join, dirname = ntpath.isabs, ntpath.normpath, ntpath.join, ntpath.dirname',
+    '    realpath = staticmethod(lambda p: win(real.realpath(host(p))))',
+    '    isfile = staticmethod(lambda p: real.isfile(host(p)))',
+    '    isdir = staticmethod(lambda p: real.isdir(host(p)))',
+    '    abspath = staticmethod(lambda p: win(real.abspath(host(p))))',
+    'mod.os = types.SimpleNamespace(path=W, listdir=lambda p: real_os.listdir(host(p)),',
+    '                               remove=real_os.remove, sep=chr(92))',
+    'mod.open = lambda p, *a, **k: real_open(host(p), *a, **k)',
+    'print(chr(10).join(arc for _f, arc in mod.selected_files(win(real.abspath(".")))))'
+].join('\n');
+
+function namesOnWindows(cwd, where) {
+  const run = require('child_process').spawnSync('python3', ['-B', '-c', WINDOWS_PATH_HARNESS],
+    { cwd, encoding: 'utf8' });
+  if (run.error) {
+    console.log(`  (windows path check skipped for ${where}: ${run.error.message})`);
+    return null;
+  }
+  assert(run.status === 0,
+    `the windows path harness runs on ${where} — ${(run.stderr || '').trim()}`);
+  if (run.status !== 0) { return null; }
+  const names = (run.stdout || '').trim().split('\n').filter(Boolean);
+  const backslashed = names.filter(name => name.includes('\\'));
+  assert(backslashed.length === 0,
+    `every name inside ${where}'s package stays POSIX on Windows — ${backslashed.join(', ')}`);
+  return names;
+}
+
+{
+  const onWindows = namesOnWindows('.', 'this repository');
+  if (onWindows) {
+    assert(JSON.stringify(onWindows) === JSON.stringify(packaged),
+      `the package holds the same names on either host — ${onWindows.join(', ')}`);
+  }
+}
+
 section('README screenshots');
 // One README per language the generator draws, each embedding that language's
 // images. The list comes from the directory, so a README added without a home
@@ -625,8 +673,11 @@ assert(!packaged.includes('.DS_Store'),
   fs.writeFileSync(`${box}/utils.js`, '');
   fs.writeFileSync(`${box}/content.js`, '');
   fs.writeFileSync(`${box}/background.js`, '');
-  fs.writeFileSync(`${box}/options.html`, '<script src="options.js"></script>\n');
+  fs.writeFileSync(`${box}/options.html`,
+    '<script src="options.js"></script>\n<script src="sub/deep.js"></script>\n');
   fs.writeFileSync(`${box}/options.js`, '');
+  fs.mkdirSync(`${box}/sub`);
+  fs.writeFileSync(`${box}/sub/deep.js`, '');
   fs.writeFileSync(`${box}/popup.html`, '<script src="popup.js"></script>\n');
   fs.writeFileSync(`${box}/popup.js`, '');
   fs.mkdirSync(`${box}/icons`);
@@ -635,7 +686,8 @@ assert(!packaged.includes('.DS_Store'),
   fs.writeFileSync(`${box}/_locales/ja/messages.json`, '{}');
   const REFERENCED = [
     '_locales/ja/messages.json', 'background.js', 'content.js', 'icons/icon16.png',
-    'manifest.json', 'options.html', 'options.js', 'popup.html', 'popup.js', 'utils.js'
+    'manifest.json', 'options.html', 'options.js', 'popup.html', 'popup.js', 'sub/deep.js',
+    'utils.js'
   ];
 
   // Nothing references these, whatever their extension says. The root .md and
@@ -684,6 +736,11 @@ assert(!packaged.includes('.DS_Store'),
     for (const name of seeded) {
       assert(!names.some(entry => entry === name || entry.startsWith(name + '/')),
         `pack.py keeps ${name} out of the store zip`);
+    }
+    const boxOnWindows = namesOnWindows(box, 'the fixture');
+    if (boxOnWindows) {
+      assert(JSON.stringify(boxOnWindows.slice().sort()) === JSON.stringify(REFERENCED.slice().sort()),
+        `the fixture packs the same names on either host — ${boxOnWindows.join(', ')}`);
     }
   }
   fs.rmSync(box, { recursive: true, force: true });
