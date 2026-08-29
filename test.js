@@ -927,6 +927,24 @@ assert(!packaged.includes('.DS_Store'),
         `the package built before is left alone with ${broken}`);
       fs.rmSync(box, { recursive: true, force: true });
     }
+
+    // An argument nobody recognised is not an instruction to rewrite the package.
+    {
+      const box = buildMinimal();
+      const built = runPack(box, []);
+      assert(built.status === 0, `pack.py runs on the whole tree — ${(built.stderr || '').trim()}`);
+      const zip = `${box}/yt-channel-volume-0.0.0.zip`;
+      const stamp = fs.statSync(zip).mtimeMs;
+      for (const argument of [['--lst'], ['-l'], ['--help'], ['--list', 'extra']]) {
+        const refused = runPack(box, argument);
+        assert(refused.status !== 0, `pack.py refuses ${argument.join(' ')}`);
+        assert(!/^\s*\+ /m.test(refused.stdout || ''),
+          `pack.py packs nothing for ${argument.join(' ')}`);
+      }
+      assert(fs.statSync(zip).mtimeMs === stamp,
+        'the package standing there is not rewritten by an argument nobody recognised');
+      fs.rmSync(box, { recursive: true, force: true });
+    }
   }
 }
 
