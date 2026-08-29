@@ -388,12 +388,17 @@ for (const file of manifestFiles) {
 }
 
 section('README screenshots');
-const readmeSrc = fs.readFileSync('./README.md', 'utf8');
-const readmeImages = Array.from(
-  readmeSrc.matchAll(/!\[[^\]]*\]\(\s*([^)\s]+)(?:\s+"[^"]*")?\s*\)/g), m => m[1])
-  .filter(image => !/^https?:/.test(image));
+// One README per language the generator draws, each embedding that language's
+// images. The list comes from the directory, so a README added without a home
+// here is one this section still reads.
+const README_FILES = fs.readdirSync('.').filter(name => /^README(\.[a-z][a-z-]*)?\.md$/.test(name));
+const EMBED = /!\[[^\]]*\]\(\s*([^)\s]+)(?:\s+"[^"]*")?\s*\)|<img\b[^>]*\bsrc\s*=\s*["']([^"']+)["']/g;
+const readmeEmbeds = new Map(README_FILES.map(file => [file,
+  Array.from(fs.readFileSync('./' + file, 'utf8').matchAll(EMBED), m => m[1] || m[2])
+    .filter(image => !/^https?:/.test(image))]));
+const readmeImages = [...readmeEmbeds.values()].flat();
 for (const image of readmeImages) {
-  assert(fs.existsSync('./' + image), `${image} is embedded in the README and must exist`);
+  assert(fs.existsSync('./' + image), `${image} is embedded in a README and must exist`);
 }
 
 // The generator's own source says where it writes and what it names the files;
@@ -434,9 +439,25 @@ if (outDirDecl && sheetTable && langTuple) {
       `${outDir}/${name} is committed but nothing draws it`);
   }
 
-  const embedded = readmeImages.filter(image => image.startsWith(outDir + '/'));
-  assert(embedded.length > 0, 'the README embeds screenshots');
-  for (const image of embedded) {
+  // A count over the two files together is satisfied by either one of them, so
+  // each README is held to its own language's full set.
+  const suffixed = new Map(README_FILES.filter(name => name !== 'README.md')
+    .map(name => [name, name.slice('README.'.length, -'.md'.length)]));
+  const spare = langs.filter(lang => ![...suffixed.values()].includes(lang));
+  assert(README_FILES.includes('README.md') && spare.length === 1,
+    'exactly one language gen_screenshots.py draws is the unsuffixed README');
+  const readmeLang = new Map([['README.md', spare[0] || null], ...suffixed]);
+  assert(new Set(readmeLang.values()).size === langs.length
+    && langs.every(lang => [...readmeLang.values()].includes(lang)),
+    'every language gen_screenshots.py draws has a README of its own');
+  for (const [file, lang] of readmeLang) {
+    const shown = [...new Set((readmeEmbeds.get(file) || [])
+      .filter(image => image.startsWith(outDir + '/')))].sort();
+    const want = sheets.map(sheet => `${outDir}/${sheet}_${lang}.png`).sort();
+    assert(JSON.stringify(shown) === JSON.stringify(want),
+      `${file} embeds every ${lang} screenshot and no other language's`);
+  }
+  for (const image of readmeImages.filter(image => image.startsWith(outDir + '/'))) {
     assert(generated.has(image), `${image} is one of the files gen_screenshots.py writes`);
   }
 
@@ -580,8 +601,26 @@ assert(excluded.has('.DS_Store'),
   fs.writeFileSync(`${box}/.DS_Store`, '');
   fs.mkdirSync(`${box}/__pycache__`);
   fs.writeFileSync(`${box}/__pycache__/content.cpython-314.pyc`, '');
-  fs.mkdirSync(`${box}/docs`);
-  fs.writeFileSync(`${box}/docs/note.md`, '');
+  // Seeded from what the repository root carries, not from EXCLUDE: a list that
+  // also supplied the expectation would lose an entry from both halves at once
+  // and stay green.
+  const devMaterial = [
+    ...fs.readdirSync('.').filter(name => fs.statSync(name).isFile() && /\.(md|py)$/i.test(name)),
+    ...['docs', 'tools'].filter(name => fs.existsSync(name)),
+  ];
+  const seeded = [];
+  for (const name of devMaterial) {
+    if (fs.existsSync(`${box}/${name}`)) { continue; }
+    if (fs.statSync('./' + name).isDirectory()) {
+      fs.mkdirSync(`${box}/${name}`);
+      fs.writeFileSync(`${box}/${name}/seed`, '');
+    } else {
+      fs.writeFileSync(`${box}/${name}`, '');
+    }
+    seeded.push(name);
+  }
+  assert(seeded.includes('README.md') && seeded.includes('README.ja.md'),
+    'both READMEs are in the tree pack.py is pointed at');
   const packed = require('child_process').spawnSync('python3', ['pack.py'],
     { cwd: box, encoding: 'utf8' });
   if (packed.error) {
@@ -597,12 +636,54 @@ assert(excluded.has('.DS_Store'),
     assert(!names.some(name => name.startsWith('__pycache__/')), 'pack.py drops the bytecode cache');
     assert(!names.some(name => name.startsWith('docs/')), 'pack.py drops the directories it names');
     assert(!names.includes('pack.py'), 'pack.py leaves itself out');
+    for (const name of seeded) {
+      assert(!names.some(entry => entry === name || entry.startsWith(name + '/')),
+        `pack.py keeps ${name} out of the store zip`);
+    }
   }
   fs.rmSync(box, { recursive: true, force: true });
 }
 
 // options.js has no DOM harness here, so its half of the cross-context
 // contract is asserted against the source.
+section('documentation pairs');
+// The Chrome Web Store listing links to PRIVACY_POLICY.md by path, so the two
+// policy files keep the names they have.
+for (const file of ['PRIVACY_POLICY.md', 'PRIVACY_POLICY_JA.md']) {
+  assert(fs.existsSync('./' + file), `${file} keeps its name`);
+}
+assert(!fs.existsSync('./CLAUDE.ja.md'), 'CLAUDE.md has no Japanese counterpart');
+
+const headingLevels = text => {
+  const levels = [];
+  let fence = false;
+  for (const line of text.split('\n')) {
+    if (/^\s*```/.test(line)) { fence = !fence; continue; }
+    const head = fence ? null : line.match(/^(#{1,6}) /);
+    if (head) { levels.push(head[1].length); }
+  }
+  return levels;
+};
+const englishHeadings = headingLevels(fs.readFileSync('./README.md', 'utf8'));
+assert(englishHeadings.length > 0, 'README.md is a document with headings');
+for (const file of README_FILES.filter(name => name !== 'README.md')) {
+  assert(JSON.stringify(headingLevels(fs.readFileSync('./' + file, 'utf8')))
+    === JSON.stringify(englishHeadings),
+    `${file} carries the same headings as README.md, in the same order`);
+}
+
+// A file missing here is already named by the assertion above; reading it would
+// replace that name with a stack trace.
+for (const file of [...README_FILES, 'PRIVACY_POLICY.md', 'PRIVACY_POLICY_JA.md']
+  .filter(name => fs.existsSync('./' + name))) {
+  const targets = Array.from(fs.readFileSync('./' + file, 'utf8')
+    .matchAll(/\]\(\s*([^)\s#]+)/g), m => m[1])
+    .filter(target => !/^(https?:|mailto:)/.test(target));
+  for (const target of targets) {
+    assert(fs.existsSync('./' + target), `${file} links to ${target}, which must exist`);
+  }
+}
+
 section('options adopt a fold another context finished');
 const optionsListener = optionsSrc.slice(optionsSrc.indexOf('chrome.storage.onChanged.addListener'));
 assert(optionsListener.includes('UNIFIED_GAINS_KEY'),
