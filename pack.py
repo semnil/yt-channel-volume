@@ -1,33 +1,138 @@
 """Pack extension for Chrome Web Store submission."""
 import zipfile
 import os
+import json
+import re
+import sys
 
-EXCLUDE = {
-    'CLAUDE.md', '.claude', 'gen_icons.py', 'gen_screenshots.py', 'pack.py', 'test.js', 'test-navigation.js',
-    'test-screenshots.py',
-    '.git', '.github', '.gitignore', '__pycache__', '.DS_Store',
-    'AGENTS.md', 'docs', 'screenshots', 'tools',
-    'PRIVACY_POLICY.md', 'PRIVACY_POLICY_JA.md', 'README.md', 'README.ja.md',
-}
+# The package is what the extension loads: the manifest, everything the
+# manifest names, what those pages and workers pull in, and the locale files.
+# A file nobody references is not part of it, whatever it is called.
+LOCALE_DIR = '_locales'
+LOCALE_FILE = 'messages.json'
+SCRIPT_SRC = re.compile(r'<script[^>]+src="([^"]+)"')
+STYLE_HREF = re.compile(r'<link[^>]+href="([^"]+)"')
+IMPORT_SCRIPTS = re.compile(r'importScripts\(([^)]*)\)')
+QUOTED = re.compile(r'[\'"]([^\'"]+)[\'"]')
+REMOTE = ('http:', 'https:', '//', 'data:', 'chrome-extension:')
+
+
+def _resolve(root, relative):
+    """Absolute path of a packaged file, or None when it leaves the package.
+
+    The path is rejected when it is absolute, climbs out with .., or reaches
+    its target through a symbolic link at any point — the final name or a
+    parent directory alike.
+    """
+    if os.path.isabs(relative):
+        return None
+    normalized = os.path.normpath(relative)
+    real_root = os.path.realpath(root)
+    full = os.path.join(real_root, normalized)
+    if os.path.realpath(full) != full:
+        return None
+    return full
+
+
+def _packaged(root, relative):
+    full = _resolve(root, relative)
+    if full is None:
+        raise SystemExit(f'reference leaves the package: {relative}')
+    return full
+
+
+def _read(root, relative):
+    with open(os.path.join(root, relative), encoding='utf-8') as handle:
+        return handle.read()
+
+
+def _manifest_references(manifest):
+    for entry in manifest.get('content_scripts', []):
+        yield from entry.get('js', [])
+        yield from entry.get('css', [])
+    for entry in manifest.get('web_accessible_resources', []):
+        yield from entry.get('resources', [])
+    worker = manifest.get('background', {}).get('service_worker')
+    if worker:
+        yield worker
+    for key in ('options_page',):
+        if manifest.get(key):
+            yield manifest[key]
+    if manifest.get('options_ui', {}).get('page'):
+        yield manifest['options_ui']['page']
+    if manifest.get('action', {}).get('default_popup'):
+        yield manifest['action']['default_popup']
+    yield from manifest.get('icons', {}).values()
+    yield from manifest.get('action', {}).get('default_icon', {}).values()
+
+
+def _references_within(root, relative):
+    """Paths the given page or script pulls in, relative to the package root."""
+    base = os.path.dirname(relative)
+    found = []
+    if relative.endswith('.html'):
+        text = _read(root, relative)
+        found.extend(SCRIPT_SRC.findall(text))
+        found.extend(href for href in STYLE_HREF.findall(text) if href.endswith('.css'))
+    elif relative.endswith('.js'):
+        for call in IMPORT_SCRIPTS.findall(_read(root, relative)):
+            found.extend(QUOTED.findall(call))
+    for reference in found:
+        if reference.startswith(REMOTE):
+            continue
+        yield os.path.normpath(os.path.join(base, reference))
+
+
+def selected_files(root):
+    """Yield (path, arcname) for every file the package carries."""
+    pending = ['manifest.json']
+    pending.extend(_manifest_references(json.loads(_read(root, 'manifest.json'))))
+    selected = []
+    while pending:
+        relative = os.path.normpath(pending.pop(0))
+        if relative in selected:
+            continue
+        full = _packaged(root, relative)
+        if not os.path.isfile(full):
+            raise SystemExit(f'referenced file is missing or not a regular file: {relative}')
+        selected.append(relative)
+        pending.extend(_references_within(root, relative))
+
+    for relative in sorted(selected):
+        yield os.path.join(root, relative), relative
+
+    locales = os.path.join(root, LOCALE_DIR)
+    if os.path.isdir(locales):
+        for locale in sorted(os.listdir(locales)):
+            relative = os.path.join(LOCALE_DIR, locale, LOCALE_FILE)
+            full = _packaged(root, relative)
+            if os.path.isfile(full):
+                yield full, relative
+
 
 def pack():
     root = os.path.dirname(os.path.abspath(__file__))
-    import json
     with open(os.path.join(root, 'manifest.json')) as f:
         version = json.load(f)['version']
     out = f'yt-channel-volume-{version}.zip'
-    with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as zf:
-        for dirpath, dirnames, filenames in os.walk(root):
-            # Filter out excluded directories
-            dirnames[:] = [d for d in dirnames if d not in EXCLUDE]
-            for f in filenames:
-                if f in EXCLUDE or f.endswith('.zip'):
-                    continue
-                full = os.path.join(dirpath, f)
-                arcname = os.path.relpath(full, root)
-                zf.write(full, arcname)
-                print(f'  + {arcname}')
+    out_path = os.path.join(root, out)
+    if os.path.exists(out_path):
+        os.remove(out_path)
+    with zipfile.ZipFile(out_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for full, arcname in selected_files(root):
+            zf.write(full, arcname)
+            print(f'  + {arcname}')
     print(f'\n=> {out}')
 
+
+def list_files():
+    root = os.path.dirname(os.path.abspath(__file__))
+    for _full, arcname in selected_files(root):
+        print(arcname)
+
+
 if __name__ == '__main__':
-    pack()
+    if '--list' in sys.argv:
+        list_files()
+    else:
+        pack()

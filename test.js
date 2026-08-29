@@ -370,9 +370,13 @@ assert(/\.ch-del:hover:not\(:disabled\)\s*\{/.test(optionsHtml),
   'hover does not paint the disabled row delete');
 
 section('packaging');
-const packSrc = fs.readFileSync('./pack.py', 'utf8');
-const excludeBlock = packSrc.slice(packSrc.indexOf('EXCLUDE = {'), packSrc.indexOf('}', packSrc.indexOf('EXCLUDE = {')));
-const excluded = new Set(Array.from(excludeBlock.matchAll(/'([^']+)'/g), m => m[1]));
+// pack.py selects by reference rather than by name, so what it leaves out is
+// answered by running it rather than by reading a list.
+const listed = require('child_process').spawnSync('python3', ['-B', 'pack.py', '--list'],
+  { encoding: 'utf8' });
+assert(listed.status === 0, `pack.py --list runs — ${(listed.stderr || '').trim()}`);
+const packaged = listed.stdout.split('\n').map(line => line.trim()).filter(Boolean);
+const packagedUnder = prefix => packaged.some(name => name === prefix || name.startsWith(prefix + '/'));
 const manifestFiles = [
   ...(manifest.content_scripts || []).flatMap(script => script.js || []),
   manifest.background?.service_worker,
@@ -382,9 +386,22 @@ const manifestFiles = [
   ...Object.values(manifest.icons || {})
 ].filter(Boolean);
 for (const file of manifestFiles) {
-  assert(!excluded.has(file.split('/')[0]) && !excluded.has(file),
-    `${file} is referenced by the manifest and must be packed`);
+  assert(packaged.includes(file), `${file} is referenced by the manifest and must be packed`);
   assert(fs.existsSync('./' + file), `${file} exists`);
+}
+
+// The other direction: a packaged path that nothing loads is a file shipped to
+// users that nobody reviewed as part of the extension.
+const referenced = new Set(['manifest.json', ...manifestFiles]);
+for (const page of ['popup.html', 'options.html']) {
+  if (!fs.existsSync('./' + page)) { continue; }
+  for (const src of fs.readFileSync('./' + page, 'utf8').matchAll(/<script[^>]+src="([^"]+)"/g)) {
+    referenced.add(src[1]);
+  }
+}
+for (const name of packaged) {
+  assert(referenced.has(name) || /^_locales\/[^/]+\/messages\.json$/.test(name),
+    `${name} is packaged, so something the extension loads has to name it`);
 }
 
 section('README screenshots');
@@ -487,7 +504,7 @@ if (outDirDecl && sheetTable && langTuple) {
     }
   }
 
-  assert(excluded.has(outDir.split('/')[0]), 'the screenshots stay out of the store zip');
+  assert(!packagedUnder(outDir.split('/')[0]), 'the screenshots stay out of the store zip');
 
   // Chrome refuses to load an unpacked extension whose top level holds a name
   // starting with "_" outside this list, and that top level is where these
@@ -541,13 +558,13 @@ if (outDirDecl && sheetTable && langTuple) {
       assert(fs.existsSync(`./${fontDir[1]}/${fontDir[2]}/${face}`),
         `${fontDir[1]}/${fontDir[2]}/${face} is the face the screenshots are drawn with`);
     }
-    assert(excluded.has(fontDir[1]), 'the vendored font stays out of the store zip');
+    assert(!packagedUnder(fontDir[1]), 'the vendored font stays out of the store zip');
   }
 
   // CI redraws into an empty directory and uploads that one, so the artifact
   // holds what the runner drew and nothing else that sits in docs/screenshots.
   assert(genSrc.includes("'--out'"), 'gen_screenshots.py takes --out');
-  assert(excluded.has('test-screenshots.py'), 'the generator test stays out of the store zip');
+  assert(!packaged.includes('test-screenshots.py'), 'the generator test stays out of the store zip');
   const paths = require('child_process').spawnSync(
     'python3', ['test-screenshots.py'], { encoding: 'utf8', env: pyEnv });
   if (paths.error || paths.status === 3) {
@@ -585,31 +602,60 @@ if (outDirDecl && sheetTable && langTuple) {
     assert(!redrawInto[1].includes(outDir), 'the CI redraw does not write over the committed images');
   }
 }
-assert(excluded.has('screenshots'),
+assert(!packagedUnder('screenshots'),
   'a screenshots/ left over from before the move stays out of the store zip');
-assert(excluded.has('.DS_Store'),
+assert(!packaged.includes('.DS_Store'),
   'the finder metadata macOS drops beside the manifest stays out of the store zip');
 
-// Every check above reads EXCLUDE as text, which says nothing about whether
-// pack.py acts on it. This packs a tree built to carry one of each thing the
-// list names and reads back what landed in the zip.
+// The checks above read the package this repository produces. This one packs a
+// tree built to carry a referenced file of each kind beside an unreferenced one,
+// and reads back what landed in the zip.
 {
   const box = fs.mkdtempSync(require('path').join(require('os').tmpdir(), 'ytcv-pack-'));
   fs.copyFileSync('./pack.py', `${box}/pack.py`);
-  fs.writeFileSync(`${box}/manifest.json`, JSON.stringify({ version: '0.0.0' }));
+  fs.writeFileSync(`${box}/manifest.json`, JSON.stringify({
+    manifest_version: 3,
+    version: '0.0.0',
+    content_scripts: [{ js: ['utils.js', 'content.js'] }],
+    background: { service_worker: 'background.js' },
+    options_page: 'options.html',
+    action: { default_popup: 'popup.html', default_icon: { 16: 'icons/icon16.png' } },
+    icons: { 16: 'icons/icon16.png' }
+  }));
+  fs.writeFileSync(`${box}/utils.js`, '');
   fs.writeFileSync(`${box}/content.js`, '');
+  fs.writeFileSync(`${box}/background.js`, '');
+  fs.writeFileSync(`${box}/options.html`, '<script src="options.js"></script>\n');
+  fs.writeFileSync(`${box}/options.js`, '');
+  fs.writeFileSync(`${box}/popup.html`, '<script src="popup.js"></script>\n');
+  fs.writeFileSync(`${box}/popup.js`, '');
+  fs.mkdirSync(`${box}/icons`);
+  fs.writeFileSync(`${box}/icons/icon16.png`, '');
+  fs.mkdirSync(`${box}/_locales/ja`, { recursive: true });
+  fs.writeFileSync(`${box}/_locales/ja/messages.json`, '{}');
+  const REFERENCED = [
+    '_locales/ja/messages.json', 'background.js', 'content.js', 'icons/icon16.png',
+    'manifest.json', 'options.html', 'options.js', 'popup.html', 'popup.js', 'utils.js'
+  ];
+
+  // Nothing references these, whatever their extension says. The root .md and
+  // .py come from what the repository actually carries rather than from a list
+  // kept here, so a documentation file added upstairs is seeded here too.
   fs.writeFileSync(`${box}/.DS_Store`, '');
+  fs.writeFileSync(`${box}/.env`, 'TOKEN=secret');
+  fs.writeFileSync(`${box}/notes.html`, '<p>notes</p>');
+  fs.writeFileSync(`${box}/review-probe.js`, '');
+  fs.writeFileSync(`${box}/yt-channel-volume-0.0.0-old.zip`, '');
+  fs.writeFileSync(`${box}/icons/source.svg`, '');
+  fs.writeFileSync(`${box}/_locales/ja/notes.txt`, '');
   fs.mkdirSync(`${box}/__pycache__`);
   fs.writeFileSync(`${box}/__pycache__/content.cpython-314.pyc`, '');
-  // Seeded from what the repository root carries, not from EXCLUDE: a list that
-  // also supplied the expectation would lose an entry from both halves at once
-  // and stay green.
-  const devMaterial = [
+  const seeded = ['.DS_Store', '.env', 'notes.html', 'review-probe.js', 'icons/source.svg',
+    '_locales/ja/notes.txt', '__pycache__'];
+  for (const name of [
     ...fs.readdirSync('.').filter(name => fs.statSync(name).isFile() && /\.(md|py)$/i.test(name)),
-    ...['docs', 'tools'].filter(name => fs.existsSync(name)),
-  ];
-  const seeded = [];
-  for (const name of devMaterial) {
+    ...['LICENSE', 'docs', 'tools'].filter(name => fs.existsSync(name))
+  ]) {
     if (fs.existsSync(`${box}/${name}`)) { continue; }
     if (fs.statSync('./' + name).isDirectory()) {
       fs.mkdirSync(`${box}/${name}`);
@@ -619,23 +665,22 @@ assert(excluded.has('.DS_Store'),
     }
     seeded.push(name);
   }
-  assert(seeded.includes('README.md') && seeded.includes('README.ja.md'),
-    'both READMEs are in the tree pack.py is pointed at');
-  const packed = require('child_process').spawnSync('python3', ['pack.py'],
+  for (const name of ['README.md', 'README.ja.md', 'docs']) {
+    assert(seeded.includes(name), `${name} is in the tree pack.py is pointed at`);
+  }
+
+  const packed = require('child_process').spawnSync('python3', ['-B', 'pack.py'],
     { cwd: box, encoding: 'utf8' });
   if (packed.error) {
     console.log(`  (pack run skipped: ${packed.error.message})`);
   } else {
     assert(packed.status === 0, `pack.py runs — ${(packed.stderr || '').trim()}`);
-    const listed = require('child_process').spawnSync('python3',
-      ['-c', 'import glob,zipfile;print(chr(10).join(zipfile.ZipFile(glob.glob("*.zip")[0]).namelist()))'],
+    const read = require('child_process').spawnSync('python3',
+      ['-c', 'import zipfile;print(chr(10).join(zipfile.ZipFile("yt-channel-volume-0.0.0.zip").namelist()))'],
       { cwd: box, encoding: 'utf8' });
-    const names = (listed.stdout || '').trim().split('\n').filter(Boolean);
-    assert(names.includes('content.js'), 'pack.py packs what the extension is made of');
-    assert(!names.includes('.DS_Store'), 'pack.py drops the finder metadata');
-    assert(!names.some(name => name.startsWith('__pycache__/')), 'pack.py drops the bytecode cache');
-    assert(!names.some(name => name.startsWith('docs/')), 'pack.py drops the directories it names');
-    assert(!names.includes('pack.py'), 'pack.py leaves itself out');
+    const names = (read.stdout || '').trim().split('\n').filter(Boolean).sort();
+    assert(JSON.stringify(names) === JSON.stringify(REFERENCED.slice().sort()),
+      `pack.py carries the referenced files and nothing else — got ${names.join(', ')}`);
     for (const name of seeded) {
       assert(!names.some(entry => entry === name || entry.startsWith(name + '/')),
         `pack.py keeps ${name} out of the store zip`);
