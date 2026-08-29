@@ -479,6 +479,48 @@ function namesOnWindows(cwd, where) {
   return names;
 }
 
+// A drive letter reads as relative to posixpath, and on Windows it resolves
+// against the same drive — so `C:/content.js` would package what `content.js`
+// names, under a path Chrome does not accept. On this host it merely misses,
+// which is why the reference is put to pack.py under Windows path semantics.
+{
+  const driveProbe = [
+    'import ntpath, os, builtins, types, importlib.util',
+    'spec = importlib.util.spec_from_file_location("packmod", "pack.py")',
+    'mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)',
+    'real, real_open, real_os = os.path, builtins.open, os',
+    'ROOT = "C:" + chr(92) + "repo"',
+    'here = real.realpath(".")',
+    'host = lambda p: p.replace(ROOT, here).replace(chr(92), "/")',
+    'win = lambda p: p.replace(here, ROOT).replace("/", chr(92))',
+    'class W:',
+    '    isabs, normpath, join, dirname = ntpath.isabs, ntpath.normpath, ntpath.join, ntpath.dirname',
+    '    realpath = staticmethod(lambda p: win(real.realpath(host(p))))',
+    '    isfile = staticmethod(lambda p: real.isfile(host(p)))',
+    '    isdir = staticmethod(lambda p: real.isdir(host(p)))',
+    '    abspath = staticmethod(lambda p: win(real.abspath(host(p))))',
+    'mod.os = types.SimpleNamespace(path=W, listdir=lambda p: real_os.listdir(host(p)),',
+    '                               remove=real_os.remove, sep=chr(92))',
+    'mod.open = lambda p, *a, **k: real_open(host(p), *a, **k)',
+    'for name in ["content.js", "C:/content.js", "C:content.js", "c:content.js"]:',
+    '    print(name, mod._resolve(ROOT, name) is not None)'
+  ].join('\n');
+  const run = require('child_process').spawnSync('python3', ['-B', '-c', driveProbe],
+    { encoding: 'utf8' });
+  if (run.error) {
+    console.log(`  (drive-letter check skipped: ${run.error.message})`);
+  } else {
+    assert(run.status === 0, `the drive-letter probe runs — ${(run.stderr || '').trim()}`);
+    const answers = Object.fromEntries((run.stdout || '').trim().split('\n')
+      .filter(Boolean).map(line => line.split(' ')));
+    assert(answers['content.js'] === 'True',
+      'a path inside the package still resolves under Windows path semantics');
+    for (const named of ['C:/content.js', 'C:content.js', 'c:content.js']) {
+      assert(answers[named] === 'False', `${named} names a drive and is refused`);
+    }
+  }
+}
+
 {
   const onWindows = namesOnWindows('.', 'this repository');
   if (onWindows) {
@@ -840,10 +882,17 @@ assert(!packaged.includes('.DS_Store'),
       `the whole tree carries the licence and the default locale — ${listed.stdout.trim()}`);
     fs.rmSync(whole, { recursive: true, force: true });
 
-    for (const [missing, remove] of [
-      ['the licence', box => fs.rmSync(`${box}/LICENSE`)],
-      ["the default locale's messages", box => fs.rmSync(`${box}/_locales/ja/messages.json`)],
-      ['_locales itself', box => fs.rmSync(`${box}/_locales`, { recursive: true })]
+    const editManifest = (box, change) => {
+      const manifest = JSON.parse(fs.readFileSync(`${box}/manifest.json`, 'utf8'));
+      change(manifest);
+      fs.writeFileSync(`${box}/manifest.json`, JSON.stringify(manifest));
+    };
+    for (const [broken, breakIt] of [
+      ['the licence gone', box => fs.rmSync(`${box}/LICENSE`)],
+      ["the default locale's messages gone", box => fs.rmSync(`${box}/_locales/ja/messages.json`)],
+      ['_locales gone', box => fs.rmSync(`${box}/_locales`, { recursive: true })],
+      ['a manifest reference naming a drive rather than a path inside the package',
+        box => editManifest(box, m => { m.content_scripts = [{ js: ['C:/content.js'] }]; })]
     ]) {
       const box = buildMinimal();
       // A package built earlier stands here, so a refusal has something to spare.
@@ -851,16 +900,16 @@ assert(!packaged.includes('.DS_Store'),
       assert(built.status === 0, `pack.py runs on the whole tree — ${(built.stderr || '').trim()}`);
       const zip = `${box}/yt-channel-volume-0.0.0.zip`;
       const before = fs.statSync(zip).size;
-      remove(box);
+      breakIt(box);
       for (const args of [['--list'], []]) {
         const refused = runPack(box, args);
         assert(refused.status !== 0,
-          `pack.py ${args.join(' ')} refuses a package missing ${missing}`.replace('  ', ' '));
+          `pack.py ${args.join(' ')} refuses a package with ${broken}`.replace('  ', ' '));
         assert(!/^\s*\+ /m.test(refused.stdout || ''),
-          `pack.py names nothing as packed when ${missing} is missing`);
+          `pack.py names nothing as packed with ${broken}`);
       }
       assert(fs.existsSync(zip) && fs.statSync(zip).size === before,
-        `the package built before is left alone when ${missing} is missing`);
+        `the package built before is left alone with ${broken}`);
       fs.rmSync(box, { recursive: true, force: true });
     }
   }
