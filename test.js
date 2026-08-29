@@ -390,8 +390,22 @@ for (const file of manifestFiles) {
   assert(fs.existsSync('./' + file), `${file} exists`);
 }
 
-// The other direction: a packaged path that nothing loads is a file shipped to
-// users that nobody reviewed as part of the extension.
+// Files the package carries although nothing in it loads them. pack.py names
+// them in DISTRIBUTION_FILES, and reading that list here holds the two together.
+const packSrc = fs.readFileSync('./pack.py', 'utf8');
+const distributionBlock = packSrc.match(/^DISTRIBUTION_FILES = \(([^)]*)\)/m);
+assert(distributionBlock, 'pack.py names what a copy carries in DISTRIBUTION_FILES');
+const distribution = Array.from((distributionBlock?.[1] || '').matchAll(/'([^']+)'/g), m => m[1]);
+assert(distribution.includes('LICENSE'),
+  'the licence text travels with the copies the licence covers');
+for (const name of distribution) {
+  assert(fs.existsSync('./' + name), `${name} exists`);
+  assert(packaged.includes(name), `${name} is in the store package`);
+}
+
+// The other direction: a packaged path that nothing loads and that no licence
+// requires is a file shipped to users that nobody reviewed as part of the
+// extension.
 const referenced = new Set(['manifest.json', ...manifestFiles]);
 for (const page of ['popup.html', 'options.html']) {
   if (!fs.existsSync('./' + page)) { continue; }
@@ -400,7 +414,8 @@ for (const page of ['popup.html', 'options.html']) {
   }
 }
 for (const name of packaged) {
-  assert(referenced.has(name) || /^_locales\/[^/]+\/messages\.json$/.test(name),
+  assert(referenced.has(name) || distribution.includes(name)
+    || /^_locales\/[^/]+\/messages\.json$/.test(name),
     `${name} is packaged, so something the extension loads has to name it`);
 }
 
@@ -684,8 +699,9 @@ assert(!packaged.includes('.DS_Store'),
   fs.writeFileSync(`${box}/icons/icon16.png`, '');
   fs.mkdirSync(`${box}/_locales/ja`, { recursive: true });
   fs.writeFileSync(`${box}/_locales/ja/messages.json`, '{}');
+  fs.writeFileSync(`${box}/LICENSE`, 'MIT License\n');
   const REFERENCED = [
-    '_locales/ja/messages.json', 'background.js', 'content.js', 'icons/icon16.png',
+    'LICENSE', '_locales/ja/messages.json', 'background.js', 'content.js', 'icons/icon16.png',
     'manifest.json', 'options.html', 'options.js', 'popup.html', 'popup.js', 'sub/deep.js',
     'utils.js'
   ];
@@ -706,7 +722,7 @@ assert(!packaged.includes('.DS_Store'),
     '_locales/ja/notes.txt', '__pycache__'];
   for (const name of [
     ...fs.readdirSync('.').filter(name => fs.statSync(name).isFile() && /\.(md|py)$/i.test(name)),
-    ...['LICENSE', 'docs', 'tools'].filter(name => fs.existsSync(name))
+    ...['docs', 'tools'].filter(name => fs.existsSync(name))
   ]) {
     if (fs.existsSync(`${box}/${name}`)) { continue; }
     if (fs.statSync('./' + name).isDirectory()) {
@@ -717,9 +733,10 @@ assert(!packaged.includes('.DS_Store'),
     }
     seeded.push(name);
   }
-  for (const name of ['README.md', 'README.ja.md', 'LICENSE', 'docs']) {
+  for (const name of ['README.md', 'README.ja.md', 'docs']) {
     assert(seeded.includes(name), `${name} is in the tree pack.py is pointed at`);
   }
+  assert(!seeded.includes('LICENSE'), 'the licence is expected in the zip, not kept out of it');
 
   const packed = require('child_process').spawnSync('python3', ['-B', 'pack.py'],
     { cwd: box, encoding: 'utf8' });
