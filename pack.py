@@ -7,7 +7,7 @@ EXCLUDE = {
     'test-screenshots.py',
     '.git', '.github', '.gitignore', '__pycache__', '.DS_Store',
     'AGENTS.md', 'docs', 'screenshots', 'tools',
-    'PRIVACY_POLICY.md', 'PRIVACY_POLICY_JA.md', 'README.md',
+    'PRIVACY_POLICY.md', 'PRIVACY_POLICY_JA.md', 'README.md', 'README.ja.md',
 }
 
 def pack():

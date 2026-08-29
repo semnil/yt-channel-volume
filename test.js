@@ -388,12 +388,17 @@ for (const file of manifestFiles) {
 }
 
 section('README screenshots');
-const readmeSrc = fs.readFileSync('./README.md', 'utf8');
-const readmeImages = Array.from(
-  readmeSrc.matchAll(/!\[[^\]]*\]\(\s*([^)\s]+)(?:\s+"[^"]*")?\s*\)/g), m => m[1])
-  .filter(image => !/^https?:/.test(image));
+// Both members of the pair embed screenshots — the English README the _en
+// images and the Japanese one the _ja images — so both are read here. Reading
+// one leaves the other's paths unguarded.
+const README_FILES = ['./README.md', './README.ja.md'];
+const readmeImages = README_FILES.flatMap(file =>
+  Array.from(
+    fs.readFileSync(file, 'utf8')
+      .matchAll(/!\[[^\]]*\]\(\s*([^)\s]+)(?:\s+"[^"]*")?\s*\)/g), m => m[1])
+    .filter(image => !/^https?:/.test(image)));
 for (const image of readmeImages) {
-  assert(fs.existsSync('./' + image), `${image} is embedded in the README and must exist`);
+  assert(fs.existsSync('./' + image), `${image} is embedded in a README and must exist`);
 }
 
 // The generator's own source says where it writes and what it names the files;
@@ -435,7 +440,7 @@ if (outDirDecl && sheetTable && langTuple) {
   }
 
   const embedded = readmeImages.filter(image => image.startsWith(outDir + '/'));
-  assert(embedded.length > 0, 'the README embeds screenshots');
+  assert(embedded.length > 0, 'the READMEs embed screenshots');
   for (const image of embedded) {
     assert(generated.has(image), `${image} is one of the files gen_screenshots.py writes`);
   }
