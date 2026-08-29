@@ -1,50 +1,50 @@
 # yt-channel-volume
 
-YouTube 動画の Content Loudness を表示し、ユーザー操作でチャンネル単位のゲインを保存・適用する Chrome 拡張機能 (MV3)。
-保存済みゲインは Content Loudness のないライブ配信にも自動適用される。
-YouTube プレイヤーのボリュームスライダーには触れず、Web Audio API の GainNode で制御する。
+Chrome extension (MV3) that shows a YouTube video's Content Loudness and saves and applies a per-channel gain on a user gesture.
+A saved gain is applied automatically to live streams that carry no Content Loudness.
+It leaves the YouTube player's volume slider alone and controls the level with a Web Audio API GainNode.
 
 ## Architecture
 
 ```
 page-bridge.js (MAIN world content script, document_start)
-├── Object.defineProperty: ytInitialPlayerResponse セット時フック
-├── Fetch hook: /youtubei/v1/player レスポンスインターセプト (SPA ナビ対応)
-├── extractFromYtPlayer: ytd-watch-flexy / movie_player から取得 (SPA ナビ対応)
-├── isLiveContent: videoDetails.isLiveContent を抽出
-└── postMessage → content.js へ loudnessDb + isLiveContent + channelId + author を中継
+├── Object.defineProperty: hooks the assignment of ytInitialPlayerResponse
+├── Fetch hook: intercepts /youtubei/v1/player responses (covers SPA navigation)
+├── extractFromYtPlayer: reads from ytd-watch-flexy / movie_player (covers SPA navigation)
+├── isLiveContent: extracts videoDetails.isLiveContent
+└── postMessage → relays loudnessDb + isLiveContent + channelId + author to content.js
 
 background.js (service worker)
 ├── importScripts('utils.js')
-└── `store:<op>` メッセージを受けて channelVolumes を書く唯一のコンテキスト
+└── the only context that writes channelVolumes, on a `store:<op>` message
     (saveChannelGain / saveChannelAutoApply / deleteChannel / clearChannels /
      adoptHandleEntry / migrateLegacyGains)
 
 utils.js → content.js (ISOLATED world content scripts, document_idle)
-├── postMessage listener: page-bridge.js から loudnessDb 受信
-├── requestLoudnessWithRetry: on-demand で page-bridge.js にリトライ要求
-├── Gain calculation (手動適用 / チャンネル別 LUFS 自動適用。保存先はどちらも同じ種別別ゲイン)
+├── postMessage listener: receives loudnessDb from page-bridge.js
+├── requestLoudnessWithRetry: asks page-bridge.js again on demand
+├── Gain calculation (manual apply / per-channel automatic LUFS apply. Both store into the same per-type gain)
 │   ├── contentLUFS = -14 + loudnessDb (YouTube reference = -14 LUFS)
 │   ├── compensationDb = targetLUFS - contentLUFS
 │   └── gain = 10^(compensationDb / 20), clamped [0, 6], NaN/Inf → 1.0
-├── Web Audio API: <video> → MediaElementSource → GainNode → destination (遅延接続)
-├── Gain overlay: .ytp-volume-area にゲイン値を表示 (設定で ON/OFF)
-├── Channel detection (UC 限定): canonical / #owner a[href*="/channel/"] / meta tag → page-bridge channelId (UC 形式)
-│   ├── @handle リンクは SPA 遷移中に stale になるため一切拒否。UC が DOM にない場合は bridge 待ち
-│   └── 表示名: page-bridge author (videoDetails.author, 権威ソース) → DOM (#owner #channel-name a, フォールバック)
-├── Navigation: triggerApply (async mutex) で applyVideoVolume を直接実行 (デバウンスなし)
-│   ├── Triggers: yt-navigate-finish, popstate, visibilitychange, MutationObserver, 初回ロード
-│   ├── Observer: video 要素変更 + URL video ID 変更のみ検知 (null guard で初回発火を抑制)
-│   ├── _applyRunning mutex で同時実行防止。forceDetect も triggerApply 経由
-│   └── videoId 変更時に currentChannel をクリアし、stale チャンネル情報の漏洩を防止
-├── videoType: 'live' (配信/アーカイブ) or 'video' (動画/ショート) で別ゲイン管理
-├── Cross-tab sync: chrome.storage.onChanged で channelVolumes 変更を受信し、現在チャンネル × videoType のゲインを即適用 (ポーリングなし、自タブ dedup は currentGain 比較)
+├── Web Audio API: <video> → MediaElementSource → GainNode → destination (connected lazily)
+├── Gain overlay: shows the gain value in .ytp-volume-area (switched on and off in the options)
+├── Channel detection (UC only): canonical / #owner a[href*="/channel/"] / meta tag → page-bridge channelId (UC form)
+│   ├── @handle links go stale during SPA navigation and are rejected outright. Waits for the bridge when the DOM carries no UC
+│   └── Display name: page-bridge author (videoDetails.author, authoritative source) → DOM (#owner #channel-name a, fallback)
+├── Navigation: triggerApply (async mutex) runs applyVideoVolume directly (no debounce)
+│   ├── Triggers: yt-navigate-finish, popstate, visibilitychange, MutationObserver, first load
+│   ├── Observer: watches video element changes + URL video ID changes alone (a null guard suppresses the first fire)
+│   ├── _applyRunning mutex prevents concurrent runs. forceDetect also goes through triggerApply
+│   └── Clears currentChannel when the videoId changes, so stale channel information does not leak
+├── videoType: 'live' (stream/archive) or 'video' (video/Shorts) hold separate gains
+├── Cross-tab sync: chrome.storage.onChanged delivers channelVolumes changes and the gain for the current channel × videoType is applied at once (no polling, self-tab dedup by currentGain comparison)
 └── Storage
     ├── autoLoudnessSettings: { targetLufs, displayUnit, showGainOverlay, autoApplyLoudnessVideoDefault, autoApplyLoudnessLiveDefault }
     ├── channelVolumes: { [channelId]: { name, gainLive, gainVideo, autoApplyLoudnessLive, autoApplyLoudnessVideo, url } }
-    └── unifiedGains: マイグレーション済みの印 (top-level key)
+    └── unifiedGains: the migration-done marker (top-level key)
 
-utils.js (shared, content / popup / options / background で読み込み + tests)
+utils.js (shared, loaded by content / popup / options / background + tests)
 ├── Constants: storage keys, YT_REFERENCE_LUFS, DEFAULT_TARGET_LUFS
 ├── Gain utilities: gainToPercent, percentToGain, gainToDb, formatGain, formatAutoGain, calcGain
 ├── Storage utilities: isContextValid, updateChannelVolumes, CHANNEL_WRITES, getChannelGain, setChannelGain, applyChannelIdentity, normalizeStoredGain, migrateLegacyAutoGains
@@ -53,104 +53,104 @@ utils.js (shared, content / popup / options / background で読み込み + tests
 └── HTML escape: esc()
 
 popup.html / popup.js
-├── Loudness / Suggested / Current 表示 (読み取り専用)
-├── Auto有効・LUFS未検出時はCurrentにFallbackバッジを表示 (値は保存済みゲインそのもの)
-├── ライブ配信中のみ表示する LIVE バッジ
-├── 「チャンネルに適用」ボタン (loudnessDb からゲイン算出・種別ごとに保存)
-├── 現在視聴中の種別だけ表示する、チャンネル × Video/Live 別「LUFS 自動適用」トグル
-├── Manual Volume: スライダー (0–600%) + プリセット。Auto有効・LUFS検出済みでは無効、LUFS未検出時はフォールバック調整に使用
-├── 非 watch ページでは UI 非表示
-└── retryGetState: loudness 未取得時のポーリングフォールバック
+├── Loudness / Suggested / Current display (read-only)
+├── Fallback badge on Current while Auto is on and no LUFS was detected (the value is the saved gain itself)
+├── LIVE badge, shown only while a live stream is playing
+├── "Apply to channel" button (computes the gain from loudnessDb and saves it per type)
+├── Per-channel × Video/Live "Auto-apply LUFS" toggle, showing only the type being watched
+├── Manual Volume: slider (0–600%) + presets. Disabled while Auto is on and LUFS was detected; used for fallback adjustment when no LUFS was detected
+├── UI hidden on pages other than watch
+└── retryGetState: polling fallback while the loudness has not arrived
 
-options.html / options.js (設定画面、別タブで表示)
-├── Target LUFS スライダー (-30 ~ -6 LUFS, default -18)
-├── 全チャンネルのLUFS自動適用 (Video / Live別、default OFF、個別Autoフラグのない種別が継承)
-├── 表示単位トグル (% / dB)
-├── ゲイン表示トグル (プレイヤーのボリュームバー横に表示、default OFF)
-├── Saved Channels テーブル (Video / Live 2列。Auto時は `Auto (保存済みゲイン)`、チャンネルリンク付き、削除可)
-├── 読込が終わるまで画面を隠し、設定コントロールと削除 (全削除・行の ×) は無効で出荷する
-├── 初回読取は 2 キーを 1 回の get で読み、種別ごとの revision で新しい変更通知に負ける
-└── storage.onChanged でリアルタイム同期 (通知が運んだ一覧をそのまま描画)
+options.html / options.js (settings screen, opened in its own tab)
+├── Target LUFS slider (-30 to -6 LUFS, default -18)
+├── Auto-apply LUFS for all channels (Video / Live separately, default OFF, inherited by a type with no individual Auto flag)
+├── Display unit toggle (% / dB)
+├── Gain overlay toggle (shown next to the player's volume bar, default OFF)
+├── Saved Channels table (Video / Live in two columns. Under Auto it reads `Auto (saved gain)`, with a channel link, deletable)
+├── Ships with the screen hidden until the load finishes and with the settings controls and the deletions (clear all, the × on a row) disabled
+├── The first read takes 2 keys in one get and loses to a newer change notification through a per-type revision
+└── Real-time sync through storage.onChanged (renders the list the notification carried, as it is)
 ```
 
 ## i18n
 
-- `_locales/ja/messages.json` — デフォルト日本語
-- `_locales/en/messages.json` — 英語
-- manifest の name/description は `__MSG_` 参照
-- popup/options の UI 文字列は `data-i18n` 属性 + `chrome.i18n.getMessage`
+- `_locales/ja/messages.json` — default Japanese
+- `_locales/en/messages.json` — English
+- The manifest's name/description use `__MSG_` references
+- popup/options UI strings use a `data-i18n` attribute + `chrome.i18n.getMessage`
 
 ## User workflow
 
-1. チャンネルの動画を開く → Content Loudness が表示される
-2. ポップアップに表示された現在種別の「LUFS 自動適用」をONにする → 対象種別の検出可能な動画へTarget LUFSに対応するゲインを適用
-3. LUFS 未検出のライブ配信などでは保存済みの種別別ゲインへフォールバック (Auto が最後に算出したゲインもここに入る)
-4. Autoが現在の検出済みLUFSを適用していない場合は、「チャンネルに適用」や Manual Volume で種別別ゲインを保存可能
+1. Open a video from the channel → the Content Loudness is shown
+2. Turn on "Auto-apply LUFS" for the current type in the popup → videos of that type where the loudness can be detected get the gain that corresponds to Target LUFS
+3. Where no LUFS is detected, a live stream for instance, it falls back to the saved per-type gain (the last gain Auto computed also lives there)
+4. Where Auto is not applying the currently detected LUFS, "Apply to channel" and Manual Volume can save a per-type gain
 
 ## File overview
 
 | File | Role |
 |------|------|
 | `manifest.json` | MV3 manifest. permissions: storage, activeTab. host: youtube.com |
-| `background.js` | Service worker. channelVolumes への書き込みを一手に引き受ける (`store:<op>`) |
-| `page-bridge.js` | MAIN world. loudnessDb 抽出 (define/fetch/ytplayer) → postMessage |
-| `content.js` | ISOLATED world. ゲイン管理、Audio chain、チャンネル検出、Storage |
-| `utils.js` | 共通定数・ユーティリティ (content / popup / options / service worker で共有) |
+| `background.js` | Service worker. Takes sole charge of writing channelVolumes (`store:<op>`) |
+| `page-bridge.js` | MAIN world. loudnessDb extraction (define/fetch/ytplayer) → postMessage |
+| `content.js` | ISOLATED world. Gain management, audio chain, channel detection, storage |
+| `utils.js` | Shared constants and utilities (shared by content / popup / options / service worker) |
 | `popup.html` | Popup UI |
-| `popup.js` | Popup logic. 情報表示、適用操作、手動ボリューム |
-| `options.html` | 設定画面 UI |
-| `options.js` | 設定 logic. Target LUFS、表示単位、チャンネル管理 |
+| `popup.js` | Popup logic. Information display, apply gestures, manual volume |
+| `options.html` | Settings screen UI |
+| `options.js` | Settings logic. Target LUFS, display unit, channel management |
 | `_locales/` | i18n (ja, en) |
 | `icons/` | Extension icons (16/48/128 px) — 3-bar loudness meter |
-| `docs/screenshots/` | README 埋め込み・ストア掲載用スクリーンショット (ja, en)。`gen_screenshots.py` の出力。6 枚は 1 枚ずつ隣へ書いて名前へ move するが、置き換えは 6 回に分かれるため、上書きする分を先に控えてから始め、途中で止まったら置き換え済みの名前を控えから戻す (前が無かった名前は取り除く)。止まる理由は保存の失敗に限らない (進捗行を印字できない・割り込み) ため、控えを取り始めてから置き換えを終えるまでを 1 つの取引として扱う (1 枚も置き換えていなければ戻すものが無く、控えも残さない)。戻すこと自体を断られたときは、その名前と前が何だったかを言い、控えの中身が要るときだけ控えを残して場所を名乗る。控えを片付けられなかったときは exit 0 にしない (exit 0 が言えるのは「この走行が置いた控えは残っていない」までで、元からある非 PNG については何も言わず、触りもしない — `--check` も .png しか数えない) |
-| `gen_icons.py` | アイコン生成スクリプト (Python pillow) |
-| `pack.py` | Chrome Web Store 用 zip 生成 |
-| `gen_screenshots.py` | スクリーンショット生成 (`docs/screenshots/` へ出力。描画フォントは `tools/fonts/` の M PLUS 1p 固定。`--check` は書き込まず、追跡先までのパスの各成分と画像が通常ファイルか → PNG 構造 (署名・チャンク・IDAT の zlib ストリーム) → チャンクの並び → IHDR の大きさ → IDAT 以外のバイト列 → RGBA 画素、の順に見る (デコーダに渡すのは最後)。差は exit 1、描けない環境は exit 3。`--out <dir>` は書き込み先を差し替える。知らない引数・`--check` と `--out` の同時指定 (順不同)・`--out` の重複・フラグの形をした値・ディレクトリになれない行き先は exit 2 で拒否する (`--chek` が上書きにならないように)。引数の間違いは pillow / 書体の読取失敗より先に答える (import と書体解決自体はモジュール読み込み時で、失敗は持ち帰って引数解析の後に exit 3)。追跡先までのパスに実体ディレクトリでない成分があれば、描画も `--check` も exit 1 で何もしない。ファイルシステムに断られたときも traceback にしない — `--out` で名指しされた行き先は exit 2 (それが追跡先と同じでも)、引数なしの追跡先は exit 1。断られた場所ごとに言い分ける (控えのために読めない・行き先へ書けない)) |
-| `tools/fonts/` | 描画フォント M PLUS 1p (Regular / Bold) と OFL.txt。google/fonts の `ofl/mplus1p` から取得 (commit `66a36c8`)。CI と各マシンで同じ画素を得るためにリポジトリへ入れている |
-| `test.js` | ユニットテスト (node test.js) |
-| `test-navigation.js` | ナビゲーション・状態遷移テスト (node test-navigation.js) |
-| `test-screenshots.py` | `gen_screenshots.py` の引数・出力先・`--check` がturn down する形のテスト (python3 test-screenshots.py。`node test.js` からも実行。symlink が作れない環境と `resource` の無い環境では該当分を skip と表示する) |
+| `docs/screenshots/` | Screenshots embedded in the README and used in the store listing (ja, en). Output of `gen_screenshots.py`. The six images are written one at a time beside their name and then moved onto it, and because the replacement is split into six, whatever is about to be overwritten is copied aside first and a run that stops partway restores the names it already replaced from those copies (a name that had nothing before it is removed). A stop is not only a failed save (a progress line that cannot be printed, an interrupt), so taking the first copy through finishing the last replacement is treated as one transaction (with no image replaced there is nothing to restore and no copy is left behind). When the restore itself is refused, the run states that name and what stood there before, and keeps the copy — naming where it is — while its contents are still needed. A run that could not clear its copies does not exit 0 (exit 0 says no more than "this run left none of the copies it made", says nothing about the non-PNG files that were already there and leaves them alone — `--check` counts nothing but .png either) |
+| `gen_icons.py` | Icon generation script (Python pillow) |
+| `pack.py` | Builds the zip for the Chrome Web Store |
+| `gen_screenshots.py` | Screenshot generation (writes into `docs/screenshots/`. The drawing font is fixed to M PLUS 1p from `tools/fonts/`. `--check` writes nothing and looks, in this order, at each component of the path to the tracked location and at whether the image is a regular file → PNG structure (signature, chunks, the IDAT zlib stream) → chunk order → the IHDR dimensions → the bytes outside IDAT → RGBA pixels (the decoder comes last). A difference is exit 1, an environment that cannot draw is exit 3. `--out <dir>` replaces the write destination. An unknown argument, `--check` and `--out` given together (in either order), a repeated `--out`, a value shaped like a flag, and a destination that cannot become a directory are refused with exit 2 (so that `--chek` is not an overwrite). An argument mistake is answered ahead of a pillow or font load failure (the import and the font resolution themselves happen at module load, and the failure is carried and turned into exit 3 after argument parsing). If a component of the path to the tracked location is not a real directory, both drawing and `--check` do nothing and exit 1. A refusal from the filesystem is not a traceback either — a destination named by `--out` is exit 2 (even where it is the same as the tracked location), the tracked location with no argument is exit 1. Each refused location is reported in its own words (cannot read it for the copy, cannot write to the destination)) |
+| `tools/fonts/` | The drawing font M PLUS 1p (Regular / Bold) and OFL.txt. Taken from `ofl/mplus1p` in google/fonts (commit `66a36c8`). Committed to the repository so that CI and each machine produce the same pixels |
+| `test.js` | Unit tests (node test.js) |
+| `test-navigation.js` | Navigation and state-transition tests (node test-navigation.js) |
+| `test-screenshots.py` | Tests for `gen_screenshots.py`'s arguments, output destination, and the shapes `--check` turns down (python3 test-screenshots.py. Also run from `node test.js`. Where symlinks cannot be created and where `resource` is absent, the affected cases are reported as skipped) |
 
 ## Key design decisions
 
 - **GainNode, not HTMLMediaElement.volume**: volume property caps at 1.0. GainNode allows 0.0–6.0 (0–600%)
-- **チャンネル・種別別 LUFS 自動適用**: 現在の種別に対応する `autoApplyLoudnessVideo` / `autoApplyLoudnessLive` が true で loudnessDb を取得できた場合は、Target LUFS から算出した動画固有ゲインを適用し、それを `channelVolumes` の種別別ゲインとして保存する。検出できない場合とAuto OFFの場合はその保存済みゲインを使う。旧 `autoApplyLoudness` は両種別 true として読み替える
-- **Auto と手動でゲインを分けない**: 保存先はどちらも `channelVolumes.{id}.gainVideo` / `gainLive` の1値。Auto の ON/OFF を切り替えても、LUFS を検出できない動画で適用されるゲインは変わらない
-- **全チャンネル既定値と個別設定**: `autoApplyLoudnessVideoDefault` / `autoApplyLoudnessLiveDefault` は、種別ごとの個別Autoフラグが存在しない場合に適用。手動保存 (「チャンネルに適用」/ Manual Volume) はその時点のAuto状態を個別フラグとして書き込むため、以後は全チャンネル既定値に追従しない。Auto自身のゲイン保存はフラグを書かず既定値への追従を保つ。既定値変更時に`channelVolumes`は書き換えない
-- **MAIN world + ISOLATED world 分離**: YouTube の CSP が inline script を禁止するため、loudnessDb 抽出は `page-bridge.js` (MAIN world, `document_start`) で実行
-- **3経路の loudnessDb 取得**: (1) `Object.defineProperty` で変数セット検知、(2) fetch hook (`/youtubei/v1/player`)、(3) YouTube player DOM 内部データ (`ytd-watch-flexy.__data` / `movie_player.getPlayerResponse`)
-- **isLiveNow の補完**: `_capturedResp` の `isLiveNow` がページロード時点で固定されるため、request ハンドラで `movie_player.getPlayerResponse()` から最新の `isLiveNow` を補完する (待機→配信開始遷移に対応)。content.js の `forceDetect` (popup 開封時) で bridge に再問い合わせし、応答で `currentIsLiveNow` が更新された場合に `stateChanged` 経由で popup へ通知
-- **videoId フィルタ**: fetch hook で他動画のプリフェッチ応答を除外
-- **watch ページ限定**: MutationObserver / scheduleApply / AudioContext 生成は `/watch` のみ
-- **チャンネル × 種別保存**: `gainLive` (配信/アーカイブ) と `gainVideo` (動画/ショート/プレミア公開) を別管理。videoType は `videoDetails.isLiveContent` のみで判定し (`isLiveContent ? 'live' : 'video'`)、loudnessDb は判定に使わない。ライブ配信とそのアーカイブは `isLiveContent=true` で live、プレミア公開は `isLiveContent=false` のため video 扱い
-- **YouTube loudness normalization 考慮**: loudnessDb > 0 の場合、YouTube が -14 LUFS に減衰済み → effectiveLufs = -14。loudnessDb <= 0 の場合はそのまま
-- **移行完了までチャンネル状態を解決しない**: content.js は起動時の fold を `storageReady` として保持し、`applyPreferredGain()` は先頭でこれを待つ。`applyAutomaticLoudnessGain()` も `storageSettled` が false の間は false を返して待つ側へ落とす。移行前のマップは「ゲインあり・Autoフラグなし = Auto OFF」の旧形式で、現在の規則 (フラグが無ければ全チャンネル既定値) で解決すると Auto が引き取って手動ゲインを算出値で上書きしてしまう (popup の `forceDetect` が fold より先に届くと起きる)
-- **fold が失敗した間は旧規則で解決する**: 成功を `storageMigrated` で持ち、false の間は `resolveAutoApplySetting(..., unmigrated)` が「保存済みゲイン = Auto OFF」の旧規則を使う (options.js の一覧表示も同じ)。失敗を成功扱いにすると、印もフラグも保存されないまま Auto が手動ゲインを上書きする。`triggerApply()` は `storageMigrated` が false の間 fold を再試行し (`foldInFlight` で 1 本に束ねる)、一時的な書き込み失敗は次の apply で回復する
-- **fold 前は Auto のゲインを保存しない**: 未 fold の間フラグなしゲインを書くと、旧手動ゲインと同じ形になり次の fold が Auto OFF に固定してしまう。算出したゲインは再生には当て、保存は `storageMigrated` が true になってからにする (手動保存はその時点の Auto 状態を明示フラグとして書くので、fold 前でも区別がつき保存してよい)
-- **移行済みの印はクロスタブで取り込む**: `storageMigrated` は自分の fold 応答だけでなく `chrome.storage.onChanged` の `unifiedGains` からも true にする。正準状態は storage 側の印で、自タブの fold が失敗しても別タブが完了させていれば以後は現行規則で解決する必要がある (旧規則のまま残ると、別タブが保存したフラグなし Auto ゲインを手動ゲインと誤読し、そのタブで手動保存すると Auto OFF が固定される)。content.js は同じイベント内で再解決し、options.js は一覧を再描画する
-- **旧キー削除は移行の一部ではない**: `clearLegacyKeys()` は失敗しても `migrateLegacyAutoGains()` を失敗させない。印とゲインは既に保存済みで、残ったキーは誰も読まない。ここで失敗を返すと呼び出し側が旧規則へ戻る。残骸は次回の呼び出しが掃く
-- **Storage migration**: 旧形式 `{ gain }` → `{ gainLive, gainVideo }` への自動マイグレーション。`migrateLegacyAutoGains()` が起動時に 1 プロファイル 1 回だけ走り、フラグのない保存済みゲインに明示OFFを記録して旧判定 (保存済みゲイン=暗黙OFF) を保存する。旧 `autoLoudnessFallback:<channelId>:<type>` / `autoLoudnessFallbacks` があればAuto有効な種別の学習値をゲインへ畳み込んで削除する。実行済みの印は top-level の `unifiedGains` キー (Autoもフラグなしでゲインを書くため、2回目が走るとAutoの学習値を明示OFFに固定してしまう。設定オブジェクト内に置くと、マイグレーション前に読んだ設定書き込みが印を消す)。orphan `@handle` エントリは author 名一致による backfill で UC に統合 (id 形状ベースのマイグレーションは SPA 遷移で cross-channel corruption を引き起こすため廃止)
-- **Channel ID 統一**: `detectChannel()` は UC 形式のみ返す。DOM の `@handle` リンクは SPA 遷移中に stale (前チャンネルを指す) になるため identifier として拒否。page-bridge.js の `videoDetails.channelId` (UC 形式) がフォールバック
-- **チャンネル表示名の選択**: bridge の `videoDetails.author` を権威ソースとする (現在の動画の player response 由来で SPA 遷移後も正確)。DOM `getChannelDisplayName()` はフォールバックのみ (stale 可能性あり)
+- **Per-channel, per-type automatic LUFS apply**: where the `autoApplyLoudnessVideo` / `autoApplyLoudnessLive` that matches the current type is true and a loudnessDb was obtained, the video-specific gain computed from Target LUFS is applied and saved as that type's gain in `channelVolumes`. Where the loudness cannot be detected and where Auto is OFF, that saved gain is used. The legacy `autoApplyLoudness` is read as true for both types
+- **Auto and manual do not get separate gains**: both save into the single value at `channelVolumes.{id}.gainVideo` / `gainLive`. Toggling Auto on or off does not change the gain applied to a video whose LUFS cannot be detected
+- **All-channel defaults and individual settings**: `autoApplyLoudnessVideoDefault` / `autoApplyLoudnessLiveDefault` apply where the type has no individual Auto flag. A manual save ("Apply to channel" / Manual Volume) writes the Auto state at that moment as an individual flag, so the channel stops following the all-channel default from then on. Auto's own gain save writes no flag and keeps the channel following the default. Changing a default does not rewrite `channelVolumes`
+- **MAIN world / ISOLATED world split**: YouTube's CSP forbids inline script, so the loudnessDb extraction runs in `page-bridge.js` (MAIN world, `document_start`)
+- **Three routes to loudnessDb**: (1) `Object.defineProperty` detects the variable being set, (2) a fetch hook (`/youtubei/v1/player`), (3) the YouTube player's internal DOM data (`ytd-watch-flexy.__data` / `movie_player.getPlayerResponse`)
+- **Filling in isLiveNow**: `_capturedResp`'s `isLiveNow` is fixed as of page load, so the request handler fills in the current `isLiveNow` from `movie_player.getPlayerResponse()` (this covers the waiting → stream start transition). content.js's `forceDetect` (on popup open) asks the bridge again, and where the response updates `currentIsLiveNow` the popup is notified through `stateChanged`
+- **videoId filter**: the fetch hook drops prefetch responses for other videos
+- **watch pages only**: the MutationObserver, scheduleApply and the AudioContext creation happen on `/watch` alone
+- **Saved per channel × type**: `gainLive` (stream/archive) and `gainVideo` (video/Shorts/premiere) are managed separately. videoType is decided from `videoDetails.isLiveContent` alone (`isLiveContent ? 'live' : 'video'`), and loudnessDb takes no part in the decision. A live stream and its archive are `isLiveContent=true` and count as live; a premiere is `isLiveContent=false` and so counts as video
+- **Accounting for YouTube's loudness normalization**: where loudnessDb > 0, YouTube has already attenuated to -14 LUFS → effectiveLufs = -14. Where loudnessDb <= 0, it is used as it stands
+- **Do not resolve channel state until the migration finishes**: content.js holds the startup fold as `storageReady`, and `applyPreferredGain()` waits on it before anything else. `applyAutomaticLoudnessGain()` also returns false while `storageSettled` is false, dropping to the waiting side. A map from before the migration is in the old form, "has a gain, has no Auto flag = Auto OFF", and resolving it under the current rule (no flag means the all-channel default) lets Auto take it over and overwrite a manual gain with a computed one (which happens when the popup's `forceDetect` arrives ahead of the fold)
+- **Resolve under the old rule while the fold has failed**: success is held in `storageMigrated`, and while it is false `resolveAutoApplySetting(..., unmigrated)` uses the old rule that a saved gain means Auto OFF (the listing in options.js does the same). Treating a failure as a success lets Auto overwrite a manual gain with neither the marker nor a flag saved. `triggerApply()` retries the fold while `storageMigrated` is false (`foldInFlight` collapses the retries into one), and a one-off write failure recovers on the next apply
+- **Do not save Auto's gain before the fold**: writing a flagless gain while unfolded produces the same shape as an old manual gain, and the next fold would pin it to Auto OFF. The computed gain is applied to playback, and the save waits until `storageMigrated` is true (a manual save writes the Auto state at that moment as an explicit flag, so it stays distinguishable before the fold and may be saved)
+- **The migration marker is taken in across tabs**: `storageMigrated` is set to true by `unifiedGains` arriving through `chrome.storage.onChanged` as well as by this tab's own fold response. The canonical state is the marker on the storage side: where this tab's fold fails but another tab has completed it, resolution has to follow the current rule from then on (left on the old rule, it misreads a flagless Auto gain saved by another tab as a manual gain, and a manual save in that tab then pins Auto OFF). content.js re-resolves within the same event and options.js re-renders the list
+- **Deleting the legacy keys is not part of the migration**: `clearLegacyKeys()` failing does not fail `migrateLegacyAutoGains()`. The marker and the gains are saved already, and nobody reads the keys that remain. Returning a failure here sends the caller back to the old rule. The leftovers are swept by the next call
+- **Storage migration**: automatic migration from the old `{ gain }` form to `{ gainLive, gainVideo }`. `migrateLegacyAutoGains()` runs once per profile at startup and records an explicit OFF on a saved gain that has no flag, saving the old judgement (a saved gain means an implicit OFF). Where `autoLoudnessFallback:<channelId>:<type>` / `autoLoudnessFallbacks` exist, the learned value of a type with Auto on is folded into the gain and the key deleted. The marker for having run is the top-level `unifiedGains` key (Auto writes a gain without a flag too, so a second run would pin Auto's learned value to an explicit OFF; put inside the settings object, a settings write issued from a read taken before the migration erases the marker). An orphan `@handle` entry is merged into UC by a backfill that matches on the author name (a migration based on the id shape was dropped because it causes cross-channel corruption on SPA navigation)
+- **One channel ID form**: `detectChannel()` returns the UC form alone. A DOM `@handle` link goes stale during SPA navigation (pointing at the previous channel) and is rejected as an identifier. `videoDetails.channelId` from page-bridge.js (UC form) is the fallback
+- **Choosing the channel display name**: the bridge's `videoDetails.author` is the authoritative source (it comes from the current video's player response and stays correct after an SPA navigation). The DOM `getChannelDisplayName()` is a fallback only (it can be stale)
 - **YouTube reference = -14 LUFS**: `contentLUFS = -14 + loudnessDb`
-- **Default target = -18 LUFS**: ユーザー設定可能 (-30 ~ -6 LUFS)
+- **Default target = -18 LUFS**: user-configurable (-30 to -6 LUFS)
 - **createMediaElementSource**: called once per `<video>`. Cannot be called again — conflicts with other extensions
-- **Channel ID formats**: `UC...` (canonical) が正規 ID。`detectChannel()` は `@handle` を拒否し UC のみ返す。DOM に UC がない場合は bridge の `videoDetails.channelId` を待つ
-- **notifyPopup 重複抑制**: state key 比較で no-op 送信を防止。key には `isLiveNow` を含み、待機→配信開始の遷移でも popup へ通知が発火する
-- **クロスタブ同期**: `chrome.storage.onChanged` で `channelVolumes` 変更を受信。チャンネル・種別別の自動適用フラグと種別別ゲインを即時反映し、リモート削除時は 1.0 にリセット
-- **channelVolumes の書き手は service worker だけ**: content.js / options.js は `chrome.runtime.sendMessage({ type: 'store:<op>' })` で background.js に依頼し、自分では read-modify-write しない。`channelVolumes` は 1 キーにマップ全体が入るため、複数タブが同時に読んで書き戻すと後勝ちで他チャンネルのエントリが消える (Autoが動画ごとに保存するので重なりは日常的に起きる)。worker 側は `updateChannelVolumes()` の Promise チェーンで直列化し、マイグレーションもキュー内でマップを読み直すため実行中に保存されたゲインを巻き戻さない
-- **NaN/Infinity ガード**: ゲイン計算結果が非有限値なら 1.0 にフォールバック
-- **遅延オーディオチェーン**: ゲインが 1.0 (パススルー) の場合は `createMediaElementSource` を呼ばない → Live Caption のちらつきを回避。`connectedVideo` (audio chain) と `_lastProcessedVideo` (検出済み video) を分離管理
-- **triggerApply 設計**: `setTimeout` デバウンスを廃止し、async mutex (`_applyRunning`) で同時実行を防止。`yt-navigate-finish` / `popstate` / `visibilitychange` / observer / 初回ロード の全トリガーから直接呼び出し。バックグラウンドタブの throttle やライブチャットの高頻度 DOM 更新の影響を受けない
-- **ゲインオーバーレイ**: `.ytp-volume-area` にゲイン値を表示。SPA ナビでの DOM 再構築にも対応 (`document.contains` で detach 検知)
-- **失敗を握り潰さない**: メッセージ処理は `handleMessage()` を try/catch で包み、`respondOnce()` で必ず 1 回だけ応答する。`commitGain()` は Promise チェーンより前に同期実行され、他拡張が `<video>` を専有していると `createMediaElementSource` が throw するため、catch が Promise だけを見ていると応答が届かない。非同期側 (`forceDetect` の `sendDetectedState`、`setTargetLufs`) も同じ `respondOnce` へ成功・失敗の両方を接続する (無応答だと popup が初期化中のまま止まる)。失敗は `reportFailure()` で console へ出す。Autoのゲイン保存失敗は再生中のゲインを変えないため、`applyPreferredGain` の中で捕らえて呼び出し元 (`forceDetect` の応答経路) を巻き込まない
-- **手動ゲインは保存できて初めてゲイン**: `setGain` / `applyLoudness` は保存失敗時に `restoreGainAfterFailedSave()` が `applyPreferredGain()` を通して保存済みの値を読み直して適用し、その完了後に `{ ok: false }` を返す。スライダーは `input` の `setGainLive` で先にプレビューを当てているため「直前の値」は既に未保存の新値であり、in-memory の退避では戻せない。戻さないと再生中の音量と保存値が食い違い、popup は失敗後に読み直した値を表示して保存済みに見せ、次のナビゲーションで元へ戻る
-- **保存済みの値を反映してから画面を出す**: popup / options は `body.initializing` で読み込み中の画面を隠し、保存済み設定の描画が終わってから外す (options は読込が失敗しても外す — 出ない画面は操作もできない)。初期化中は `body.initializing *` (と `::before` / `::after`) の `transition: none !important` で全ての遷移を止める — セレクタの列挙は書き忘れたコントロールを取りこぼし、`!important` が無いと個々のセレクタに詳細度で負ける。遷移は値を書いた時点で走り始めるので、残りが画面上で動いて「表示してから更新された」ように見える。`revealOptions` / `revealPopup` は `document.body.offsetWidth` を読んでから次のフレームで class を外す — 同じスタイルパスで外すと書き込み前の値が遷移の始点になる
-- **読めていないものについては何も名乗らない**: options の初回読取は `autoLoudnessSettings` と `channelVolumes` を 1 回の `get` で読む。片方だけ成功する状態を作らないためで、失敗したときに出す `settingsLoadFailed` の行は「その 1 回の読取」を指す。文言は読取と次の操作 (再読み込み) だけを述べ、画面の値については何も言わない — 読取中に届いた変更通知は失敗が判明する前に描画されるので、値を述べる文言は偽になりうる。失敗が確定した後の変更通知は取らない (再読込を促している画面に別タブの書き込みが載るため)。確定前に届いた通知は既に画面にあり、そのまま残る
-- **読めていないものに対して操作させない**: 設定コントロール (Target LUFS / Auto 既定 2 種 / 表示単位 / ゲイン表示) と破壊的操作 (全削除・行の ×) は markup で無効に出荷し、読み終えた load だけが有効化する。`saveSetting` も `settingsLoaded` でない書き込みを拒否する — markup が第 1 の拒否、ハンドラがその後ろの拒否。行の × は描画がその時点の状態で書くため、読込成功後の描画で有効になる
-- **初回読取は後から届いた変更に負ける**: 読取は変更通知より前に発行され、発行時点の値を返す。`loadAll` は get の前に `settingsRevision` / `channelRevision` を控え、動いていない側にだけ読んだ値を適用する。変更通知は種別の revision を 1 つ進め、チャンネル側は通知が運んだ `newValue` をそのまま描画・保持する (読み直すと初回読取と競合する 2 本目の読取になる)。設定側は差分ではなく全体を適用する — 一部だけ適用すると、触らなかったフィールドが revision ガードで markup 既定値のまま残る
-- **`renderChannels` は描画専用**: 渡された一覧を描くだけで、storage は読まない。保持していなければ何も描かない。自分で書き込んだ後 (行削除・全削除) も読み直さない — service worker の書き込みは変更通知として戻り、その通知が一覧を運んで再描画するため
-- **コンテキスト無効化の表示**: 拡張機能 (本体または別拡張) のリロードで content.js の `chrome.runtime` が無効化されると、popup からの `chrome.tabs.sendMessage` は `Receiving end does not exist` で reject される。Web Audio API と DOM オーバーレイは chrome.* に依存しないため、過去に適用したゲイン表示だけが残り続けて誤解を招く。popup の catch 節は「チャンネル未検出」ではなく `#reloadNeeded` (ja: 「拡張機能と接続できません。ページを再読み込みしてください (F5)」) を表示し、ユーザーに F5 を促す
+- **Channel ID formats**: `UC...` (canonical) is the canonical ID. `detectChannel()` rejects `@handle` and returns UC alone. Where the DOM carries no UC, it waits for the bridge's `videoDetails.channelId`
+- **notifyPopup dedup**: a state key comparison prevents no-op sends. The key includes `isLiveNow`, so the popup is notified on the waiting → stream start transition too
+- **Cross-tab sync**: `chrome.storage.onChanged` delivers `channelVolumes` changes. The per-channel, per-type auto-apply flag and the per-type gain are reflected at once, and a remote deletion resets to 1.0
+- **The service worker is the sole writer of channelVolumes**: content.js and options.js ask background.js through `chrome.runtime.sendMessage({ type: 'store:<op>' })` instead of doing the read-modify-write themselves. `channelVolumes` holds the whole map under one key, so several tabs reading and writing it back at the same time drop other channels' entries — last write wins (Auto saves per video, so that overlap is an everyday event). The worker serializes on `updateChannelVolumes()`'s promise chain, and the migration re-reads the map inside the queue so it does not roll back a gain saved while it was running
+- **NaN/Infinity guard**: a non-finite gain result falls back to 1.0
+- **Lazy audio chain**: where the gain is 1.0 (passthrough), `createMediaElementSource` is not called → this avoids the Live Caption flicker. `connectedVideo` (the audio chain) and `_lastProcessedVideo` (the detected video) are managed separately
+- **triggerApply design**: the `setTimeout` debounce was dropped and an async mutex (`_applyRunning`) prevents concurrent runs. Called directly from each trigger — `yt-navigate-finish` / `popstate` / `visibilitychange` / the observer / first load. It is unaffected by background-tab throttling and by the high-frequency DOM updates of live chat
+- **Gain overlay**: shows the gain value in `.ytp-volume-area`. It handles the DOM rebuild of an SPA navigation as well (detach is caught with `document.contains`)
+- **Do not swallow failures**: message handling wraps `handleMessage()` in try/catch and answers exactly once through `respondOnce()`. `commitGain()` runs synchronously ahead of the promise chain, and `createMediaElementSource` throws while another extension owns the `<video>`, so a catch that watches the promise alone lets the reply go missing. The asynchronous side (`forceDetect`'s `sendDetectedState`, `setTargetLufs`) connects both success and failure to that same `respondOnce` (with no reply the popup stays stuck initializing). Failures go to the console through `reportFailure()`. A failure to save Auto's gain leaves the gain that is playing unchanged, so it is caught inside `applyPreferredGain` and kept away from the caller (`forceDetect`'s reply path)
+- **A manual gain is a gain only once it is saved**: on a save failure, `setGain` / `applyLoudness` have `restoreGainAfterFailedSave()` read the saved value again through `applyPreferredGain()` and apply it, and return `{ ok: false }` once that completes. The slider has already previewed through `setGainLive` on `input`, so "the previous value" is the unsaved new one and an in-memory copy cannot restore it. Without the restore, the volume being played and the saved value disagree, the popup shows the value it read again after the failure and so looks saved, and the next navigation puts it back
+- **Reflect the saved values before showing the screen**: popup and options hide the loading screen with `body.initializing` and remove it once the saved settings are rendered (options removes it even when the load fails — a screen that stays hidden cannot be operated either). While initializing, `transition: none !important` on `body.initializing *` (and `::before` / `::after`) stops the transitions — enumerating selectors misses the control someone forgot to write down, and without `!important` an individual selector wins on specificity. A transition starts running the moment the value is written, so the rest moves on screen and reads as "shown, then updated". `revealOptions` / `revealPopup` read `document.body.offsetWidth` and drop the class on the next frame — dropping it in the same style pass makes the value from before the write the transition's starting point
+- **Claim nothing about what was not read**: the first read in options takes `autoLoudnessSettings` and `channelVolumes` in one `get`, so that no state arises in which one of the two succeeded and the other did not, and the `settingsLoadFailed` line shown on failure refers to that one read. Its wording states the read and the next action (reload) alone and says nothing about the values on screen — a change notification that arrives during the read is rendered before the failure is known, so wording that states a value can be false. A change notification after the failure is settled is not taken (a write from another tab would land on a screen that is asking for a reload). A notification that arrived before it was settled is on screen already and stays there
+- **Do not let anything be operated that was not read**: the settings controls (Target LUFS / the two Auto defaults / display unit / gain overlay) and the destructive operations (clear all, the × on a row) ship disabled in the markup, and a load that finished reading is what enables them. `saveSetting` also refuses a write made while `settingsLoaded` is false — the markup is the first refusal, the handler the one behind it. The × on a row is written by the render with the state at that moment, so it becomes enabled in the render that follows a successful load
+- **The first read loses to a change that arrives after it**: the read is issued ahead of the change notification and returns the value as of when it was issued. `loadAll` records `settingsRevision` / `channelRevision` before the get and applies what it read only to the side that has not moved. A change notification advances that type's revision by one, and the channel side renders and holds the `newValue` the notification carried (reading again would be a second read racing the first read). The settings side applies the whole object rather than a diff — applying part of it leaves the untouched fields at the markup defaults under the revision guard
+- **`renderChannels` is render-only**: it draws the list it is handed and does not read storage. Holding nothing, it draws nothing. It does not re-read after its own writes either (a row deletion, a clear all) — the service worker's write comes back as a change notification, and that notification carries the list and drives the re-render
+- **Showing an invalidated context**: when reloading an extension (this one or another) invalidates content.js's `chrome.runtime`, `chrome.tabs.sendMessage` from the popup rejects with `Receiving end does not exist`. The Web Audio API and the DOM overlay do not depend on `chrome.*`, so the gain display applied earlier stays on screen and misleads. The popup's catch clause shows `#reloadNeeded` (ja: 「拡張機能と接続できません。ページを再読み込みしてください (F5)」) rather than "Channel not detected", prompting the user to press F5
 
 ## Commands
 
@@ -178,19 +178,27 @@ python3 pack.py
 # No build step required. Plain JS, no bundler.
 ```
 
+## Conventions
+
+- Documentation is maintained in English and Japanese, English first: `README.md` / `README.ja.md`. Both members of a pair carry the same headings in the same order
+- `PRIVACY_POLICY.md` and `PRIVACY_POLICY_JA.md` keep those names. The Chrome Web Store listing links to `PRIVACY_POLICY.md` by path
+- `CLAUDE.md` is English only and has no Japanese counterpart
+- Commits: **subject and body entirely in English** (Conventional Commits). **PR title and body entirely in English as well**, matching the repository's default language. The global CLAUDE.md rule about Japanese bodies does not apply to this project
+- Issue templates are one English set, with a note at the top saying Japanese is welcome
+
 ## Development notes
 
 - Gain value 1.0 = 100% (passthrough). Range 0.0–6.0
-- `popup.js` sends `forceDetect` on open. `forceDetect` は video ID 変更を検出し、`triggerApply` 経由で `applyVideoVolume` を再実行 (`_applyRunning` を尊重)
-- `content.js` sends `stateChanged` broadcast (sender tab ID フィルタで popup が他タブの更新を無視)
+- `popup.js` sends `forceDetect` on open. `forceDetect` detects a video ID change and re-runs `applyVideoVolume` through `triggerApply` (honouring `_applyRunning`)
+- `content.js` sends a `stateChanged` broadcast (a sender tab ID filter makes the popup ignore updates from other tabs)
 - AudioContext may be `suspended` until first user interaction (Chrome autoplay policy)
-- Channel detection order (UC 限定): `link[rel="canonical"][href*="/channel/"]` → `#owner a[href*="/channel/"]` / `ytd-video-owner-renderer a[href*="/channel/"]` → `meta[itemprop="channelId"]` → page-bridge `videoDetails.channelId`。`@handle` リンクは SPA 遷移中に stale になるため identifier として拒否
-- Display name: bridge `videoDetails.author` が権威ソース。DOM `#owner #channel-name a` はフォールバック
-- SPA ナビ検知: `yt-navigate-finish` + `popstate` + `visibilitychange` + MutationObserver (video 要素変更 + URL video ID 変更)
-- テスト: `node test.js` (utils + packaging + single-writer 契約) + `node test-navigation.js` (navigation P01-P18 + bridge + guard + detectChannel + data integrity + cross-tab sync + per-channel auto LUFS + storage 失敗経路)。navigation 側は background.js を同じ VM に読み込み、`chrome.runtime.sendMessage` を worker のリスナーへ配線して実際の書き込み経路を通す
-- `background.js` を編集したら chrome://extensions で拡張をリロードする。ページの再読み込みでは service worker は再評価されない (content script の変更はタブの再読み込みで足りる)
-- テスト用 export: `__TEST_YTCV__` フラグで content.js 内部を `globalThis.__YTCV__` に露出。本番では無効
-- Storage keys: `autoLoudnessSettings` (target LUFS, display unit, Video/Live auto defaults), `channelVolumes` (saved channel gains, per-channel auto overrides, URL), `unifiedGains` (マイグレーション済みの印)。legacy `autoLoudnessFallback:<channelId>:<type>` / `autoLoudnessFallbacks` は起動時に畳み込んで削除
-- Storage format: `channelVolumes.{id}` = `{ name, gainLive, gainVideo, autoApplyLoudnessLive, autoApplyLoudnessVideo, url }` (種別ごとの個別自動適用フラグがない場合に全チャンネル既定値を継承。旧 `autoApplyLoudness` は両種別同値、旧 `{ name, gain, url }` は両ゲインとして読み替え)
-- slider `input` event = リアルタイムゲイン変更 (storage 書き込みなし)、`change` event = storage 保存。Auto有効・LUFS検出済みでは両操作を拒否する
-- videoType 判定: page-bridge.js が `videoDetails.isLiveContent` を返す。content.js で `isLiveContent` が `true` なら 'live'、`false` なら 'video' (loudnessDb は判定に使わない)。プレミア公開は `isLiveContent=false` のため 'video' 扱い。初回ロード時はデフォルト 'video' で、bridge から isLiveContent を受信後に正しい種別のゲインに切替
+- Channel detection order (UC only): `link[rel="canonical"][href*="/channel/"]` → `#owner a[href*="/channel/"]` / `ytd-video-owner-renderer a[href*="/channel/"]` → `meta[itemprop="channelId"]` → page-bridge `videoDetails.channelId`. An `@handle` link goes stale during SPA navigation and is rejected as an identifier
+- Display name: the bridge's `videoDetails.author` is the authoritative source. The DOM `#owner #channel-name a` is the fallback
+- SPA navigation detection: `yt-navigate-finish` + `popstate` + `visibilitychange` + MutationObserver (video element change + URL video ID change)
+- Tests: `node test.js` (utils + packaging + the single-writer contract) + `node test-navigation.js` (navigation P01-P18 + bridge + guard + detectChannel + data integrity + cross-tab sync + per-channel auto LUFS + storage failure paths). The navigation side loads background.js into the same VM and wires `chrome.runtime.sendMessage` to the worker's listener, so the run goes through the real write path
+- After editing `background.js`, reload the extension at chrome://extensions. Reloading the page does not re-evaluate the service worker (for a content script change, reloading the tab is enough)
+- Test export: the `__TEST_YTCV__` flag exposes content.js internals on `globalThis.__YTCV__`. Disabled in production
+- Storage keys: `autoLoudnessSettings` (target LUFS, display unit, Video/Live auto defaults), `channelVolumes` (saved channel gains, per-channel auto overrides, URL), `unifiedGains` (the migration-done marker). The legacy `autoLoudnessFallback:<channelId>:<type>` / `autoLoudnessFallbacks` are folded in at startup and deleted
+- Storage format: `channelVolumes.{id}` = `{ name, gainLive, gainVideo, autoApplyLoudnessLive, autoApplyLoudnessVideo, url }` (a type with no individual auto-apply flag inherits the all-channel default. The legacy `autoApplyLoudness` counts as the same value for both types, and the legacy `{ name, gain, url }` is read as both gains)
+- slider `input` event = real-time gain change (no storage write), `change` event = storage save. Both gestures are refused while Auto is on and LUFS was detected
+- videoType decision: page-bridge.js returns `videoDetails.isLiveContent`. In content.js, `isLiveContent` true means 'live' and false means 'video' (loudnessDb takes no part in the decision). A premiere is `isLiveContent=false` and so counts as 'video'. On first load the default is 'video', and the gain switches to the correct type once `isLiveContent` arrives from the bridge
