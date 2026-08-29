@@ -765,6 +765,69 @@ assert(!packaged.includes('.DS_Store'),
 
 // options.js has no DOM harness here, so its half of the cross-context
 // contract is asserted against the source.
+// A file the package has to carry is not one it takes when it happens to be
+// there. The release workflow runs pack.py and uploads what it writes without
+// running any of this, so an omission that still exits 0 ships.
+{
+  const nodePath = require('path');
+  const nodeOs = require('os');
+  const runPack = (box, args) => require('child_process')
+    .spawnSync('python3', ['-B', 'pack.py', ...args], { cwd: box, encoding: 'utf8' });
+  const buildMinimal = () => {
+    const box = fs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'ytcv-required-'));
+    fs.copyFileSync('./pack.py', `${box}/pack.py`);
+    fs.writeFileSync(`${box}/manifest.json`, JSON.stringify({
+      manifest_version: 3,
+      version: '0.0.0',
+      default_locale: 'ja',
+      name: '__MSG_extName__',
+      content_scripts: [{ js: ['content.js'] }]
+    }));
+    fs.writeFileSync(`${box}/content.js`, '');
+    fs.mkdirSync(`${box}/_locales/ja`, { recursive: true });
+    fs.writeFileSync(`${box}/_locales/ja/messages.json`, '{}');
+    fs.writeFileSync(`${box}/LICENSE`, 'MIT License\n');
+    return box;
+  };
+
+  const whole = buildMinimal();
+  const listed = runPack(whole, ['--list']);
+  if (listed.error) {
+    console.log(`  (required-file check skipped: ${listed.error.message})`);
+    fs.rmSync(whole, { recursive: true, force: true });
+  } else {
+    assert(listed.status === 0, `the whole tree packs — ${(listed.stderr || '').trim()}`);
+    assert(JSON.stringify(listed.stdout.split('\n').map(line => line.trim()).filter(Boolean).sort())
+      === JSON.stringify(['LICENSE', '_locales/ja/messages.json', 'content.js', 'manifest.json']),
+      `the whole tree carries the licence and the default locale — ${listed.stdout.trim()}`);
+    fs.rmSync(whole, { recursive: true, force: true });
+
+    for (const [missing, remove] of [
+      ['the licence', box => fs.rmSync(`${box}/LICENSE`)],
+      ["the default locale's messages", box => fs.rmSync(`${box}/_locales/ja/messages.json`)],
+      ['_locales itself', box => fs.rmSync(`${box}/_locales`, { recursive: true })]
+    ]) {
+      const box = buildMinimal();
+      // A package built earlier stands here, so a refusal has something to spare.
+      const built = runPack(box, []);
+      assert(built.status === 0, `pack.py runs on the whole tree — ${(built.stderr || '').trim()}`);
+      const zip = `${box}/yt-channel-volume-0.0.0.zip`;
+      const before = fs.statSync(zip).size;
+      remove(box);
+      for (const args of [['--list'], []]) {
+        const refused = runPack(box, args);
+        assert(refused.status !== 0,
+          `pack.py ${args.join(' ')} refuses a package missing ${missing}`.replace('  ', ' '));
+        assert(!/^\s*\+ /m.test(refused.stdout || ''),
+          `pack.py names nothing as packed when ${missing} is missing`);
+      }
+      assert(fs.existsSync(zip) && fs.statSync(zip).size === before,
+        `the package built before is left alone when ${missing} is missing`);
+      fs.rmSync(box, { recursive: true, force: true });
+    }
+  }
+}
+
 section('documentation pairs');
 // The Chrome Web Store listing links to PRIVACY_POLICY.md by path, so the two
 // policy files keep the names they have.
