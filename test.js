@@ -928,6 +928,24 @@ assert(!packaged.includes('.DS_Store'),
       fs.rmSync(box, { recursive: true, force: true });
     }
 
+    // A name the walk reaches and the locale sweep or DISTRIBUTION_FILES reaches
+    // too. zipfile writes the second entry and warns on stderr, which the
+    // release path does not read.
+    {
+      const box = buildMinimal();
+      const manifest = JSON.parse(fs.readFileSync(`${box}/manifest.json`, 'utf8'));
+      manifest.web_accessible_resources = [
+        { resources: ['LICENSE', '_locales/ja/messages.json'], matches: ['*://*/*'] }
+      ];
+      fs.writeFileSync(`${box}/manifest.json`, JSON.stringify(manifest));
+      const listed = runPack(box, ['--list']);
+      assert(listed.status === 0, `pack.py --list runs — ${(listed.stderr || '').trim()}`);
+      const names = listed.stdout.split('\n').map(line => line.trim()).filter(Boolean);
+      assert(names.length === new Set(names).size,
+        `each name enters the package once — ${names.join(', ')}`);
+      fs.rmSync(box, { recursive: true, force: true });
+    }
+
     // An argument nobody recognised is not an instruction to rewrite the package.
     {
       const box = buildMinimal();
