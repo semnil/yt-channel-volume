@@ -1116,7 +1116,7 @@ assert(!packaged.includes('.DS_Store'),
       declarative_net_request: {
         rule_resources: [{ id: 'r', enabled: true, path: 'rules.json' }]
       },
-      content_scripts: [{ js: ['content.js'] }],
+      content_scripts: [{ js: ['content.js'], css: ['styles.css'] }],
       web_accessible_resources: [
         { resources: ['exposed.js', '*.png'], matches: ['https://example.com/*'] }
       ]
@@ -1132,6 +1132,17 @@ assert(!packaged.includes('.DS_Store'),
   write('rules.json', '[]');
   write('content.js');
   write('exposed.js');
+  write('styles.css', '@import "theme.css";\n'
+      + 'body { background: url(bg.png) }\n'
+      + '/* url(commented.png) */\n'
+      + 'a { background: url("https://example.com/remote.png") }\n'
+      + 'b { background: url(#within) }\n'
+      + 'c { background: url("__MSG_@@extension_id__/asset.png") }\n');
+  write('theme.css', 'body { color: red }\n');
+  write('bg.png');
+  // In a comment, remote, a fragment of the sheet, and a name Chrome
+  // substitutes a message into: none of them is a file this can resolve.
+  write('commented.png');
   // A resource entry Chrome matches rather than opens. Expanding it here would
   // carry a file nothing loads.
   write('stray.png');
@@ -1142,16 +1153,16 @@ assert(!packaged.includes('.DS_Store'),
   assert(listed.status === 0, `pack.py --list runs over the key fixture — ${(listed.stderr || '').trim()}`);
   const held = listed.stdout.split('\n').map(line => line.trim()).filter(Boolean).sort();
   assert(JSON.stringify(held) === JSON.stringify([
-      'LICENSE', 'content.js', 'devtools.html', 'exposed.js', 'manifest.json',
-      'newtab.html', 'panel.html', 'popup.htm', 'popup.js', 'rules.json',
-      'sandboxed.html', 'schema.json'
+      'LICENSE', 'bg.png', 'content.js', 'devtools.html', 'exposed.js',
+      'manifest.json', 'newtab.html', 'panel.html', 'popup.htm', 'popup.js',
+      'rules.json', 'sandboxed.html', 'schema.json', 'styles.css', 'theme.css'
     ]),
     `the package follows every key that names a file — got ${held.join(', ')}`);
 
   // Each of these says the key was walked rather than the file happening to be
   // carried some other way.
-  for (const gone of ['panel.html', 'rules.json', 'schema.json',
-    'exposed.js', 'popup.js']) {
+  for (const gone of ['panel.html', 'rules.json', 'schema.json', 'theme.css',
+    'bg.png', 'exposed.js', 'popup.js']) {
     fs.rmSync(nodePath.join(box, gone));
     const refused = spawn('python3', ['-B', 'pack.py', '--list'], { cwd: box, encoding: 'utf8' });
     assert(refused.status !== 0, `pack.py refuses a package missing ${gone}`);
