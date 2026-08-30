@@ -912,6 +912,12 @@ assert(!packaged.includes('.DS_Store'),
       // Chrome resolves __MSG_name__ against the default locale's catalog, in
       // the manifest and in the stylesheets it serves. A placeholder with
       // nothing to resolve it against is an extension it declines to load.
+      ['a message the manifest asks for and no locale assets at all',
+        box => {
+          fs.rmSync(`${box}/_locales`, { recursive: true });
+          editManifest(box, m => { delete m.default_locale; });
+        },
+        /asks for extName and names no default_locale/],
       ['default_locale written as null',
         box => editManifest(box, m => { m.default_locale = null; }),
         /default_locale is not a locale name: None/],
@@ -982,6 +988,24 @@ assert(!packaged.includes('.DS_Store'),
         `the package built before still carries ${entries} entries, not ${after}`);
       assert(!fs.readdirSync(box).some(name => name.endsWith('.part')),
         'a half-built package is not left beside the one that stands');
+      fs.rmSync(box, { recursive: true, force: true });
+    }
+
+    // Asking for no message, an extension needs no catalog and no locale name.
+    // Without this the contract above could refuse everything and stay green.
+    {
+      const box = buildMinimal();
+      fs.rmSync(`${box}/_locales`, { recursive: true });
+      const manifest = JSON.parse(fs.readFileSync(`${box}/manifest.json`, 'utf8'));
+      delete manifest.default_locale;
+      manifest.name = 'Plain';
+      fs.writeFileSync(`${box}/manifest.json`, JSON.stringify(manifest));
+      const listed = runPack(box, ['--list']);
+      assert(listed.status === 0,
+        `an extension asking for no message packs — ${(listed.stderr || '').trim()}`);
+      assert(JSON.stringify(listed.stdout.split('\n').map(line => line.trim()).filter(Boolean).sort())
+        === JSON.stringify(['LICENSE', 'content.js', 'manifest.json']),
+        `it carries what it names and nothing else — ${listed.stdout.trim()}`);
       fs.rmSync(box, { recursive: true, force: true });
     }
 
