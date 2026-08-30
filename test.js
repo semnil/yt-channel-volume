@@ -923,6 +923,116 @@ assert(!packaged.includes('.DS_Store'),
 
 // options.js has no DOM harness here, so its half of the cross-context
 // contract is asserted against the source.
+// A path that resolves outside the package would carry a file nobody reviewed
+// into the store zip under a name that looks local. Deleting the rule that
+// refuses one left this suite green until these ran.
+{
+  const nodeOs = require('os');
+  const nodePath = require('path');
+  const spawn = require('child_process').spawnSync;
+  const tmpRoot = fs.realpathSync(nodeOs.tmpdir());
+  const outside = fs.mkdtempSync(nodePath.join(tmpRoot, 'ytcv-outside-'));
+  fs.writeFileSync(nodePath.join(outside, 'secret.js'), 'SECRET');
+  fs.writeFileSync(nodePath.join(outside, 'messages.json'), '{}');
+  const escapeManifest = (references, extra = {}) => JSON.stringify({
+    manifest_version: 3,
+    version: '1.0.0',
+    content_scripts: [{ js: references }],
+    ...extra
+  });
+  // The package sits one level down: a case that reaches outside it with ..
+  // writes into its own parent, never into the shared temp root.
+  const runEscape = build => {
+    const parent = fs.mkdtempSync(nodePath.join(tmpRoot, 'ytcv-escape-'));
+    const fixture = nodePath.join(parent, 'package');
+    fs.mkdirSync(fixture);
+    fs.copyFileSync('./pack.py', nodePath.join(fixture, 'pack.py'));
+    build(fixture);
+    const result = spawn('python3', ['-B', 'pack.py', '--list'],
+      { cwd: fixture, encoding: 'utf8' });
+    fs.rmSync(parent, { recursive: true, force: true });
+    return result;
+  };
+  const refused = (result, pattern, what) => {
+    assert(result.status !== 0, `pack.py refuses ${what}`);
+    assert(pattern.test(result.stderr || ''),
+      `the refusal of ${what} names it — got ${(result.stderr || '').trim()}`);
+  };
+  try {
+    // A symlinked parent directory: only the last name looks local.
+    refused(runEscape(fixture => {
+      fs.writeFileSync(nodePath.join(fixture, 'manifest.json'),
+        escapeManifest(['linked/secret.js']));
+      fs.symlinkSync(outside, nodePath.join(fixture, 'linked'));
+    }), /linked\/secret\.js/, 'a reference through a symlinked parent');
+
+    refused(runEscape(fixture => {
+      fs.writeFileSync(nodePath.join(fixture, 'manifest.json'),
+        escapeManifest(['../secret.js']));
+      const sibling = nodePath.join(nodePath.dirname(fixture), 'secret.js');
+      assert(sibling.startsWith(tmpRoot + nodePath.sep) && nodePath.dirname(sibling) !== tmpRoot,
+        'the climb lands inside this case, not in the shared temp root');
+      fs.writeFileSync(sibling, 'SIBLING');
+    }), /\.\.\/secret\.js/, 'a reference climbing out with ..');
+
+    // Absolute and pointing at a path with no link anywhere in it: the only
+    // thing between it and the zip is the rule against absolute paths.
+    assert(fs.realpathSync(outside) === outside, 'the outside path has no link in it');
+    refused(runEscape(fixture => {
+      fs.writeFileSync(nodePath.join(fixture, 'manifest.json'),
+        escapeManifest([nodePath.join(outside, 'secret.js')]));
+    }), /secret\.js/, 'an absolute reference');
+
+    // The locale directories are listed rather than referenced, and one of
+    // them can be a link just as easily.
+    refused(runEscape(fixture => {
+      fs.writeFileSync(nodePath.join(fixture, 'manifest.json'),
+        escapeManifest([], { default_locale: 'ja' }));
+      fs.mkdirSync(nodePath.join(fixture, '_locales'));
+      fs.symlinkSync(outside, nodePath.join(fixture, '_locales', 'ja'));
+    }), /_locales\/ja\/messages\.json/, 'a symlinked locale directory');
+
+    refused(runEscape(fixture => {
+      fs.writeFileSync(nodePath.join(fixture, 'manifest.json'),
+        escapeManifest([], { default_locale: 'ja' }));
+      fs.symlinkSync(outside, nodePath.join(fixture, '_locales'));
+    }), /_locales\//, 'a symlinked _locales');
+  } finally {
+    fs.rmSync(outside, { recursive: true, force: true });
+  }
+}
+
+// A zip built around a missing file is a broken extension, not a smaller one.
+{
+  const nodeOs = require('os');
+  const nodePath = require('path');
+  const spawn = require('child_process').spawnSync;
+  const fixture = fs.mkdtempSync(
+    nodePath.join(fs.realpathSync(nodeOs.tmpdir()), 'ytcv-missing-'));
+  fs.writeFileSync(nodePath.join(fixture, 'manifest.json'), JSON.stringify({
+    manifest_version: 3,
+    version: '1.0.0',
+    content_scripts: [{ js: ['content.js'] }]
+  }));
+  fs.copyFileSync('./pack.py', nodePath.join(fixture, 'pack.py'));
+  const missing = spawn('python3', ['-B', 'pack.py', '--list'],
+    { cwd: fixture, encoding: 'utf8' });
+  assert(missing.status !== 0, 'pack.py refuses a reference with no file behind it');
+  assert(/content\.js/.test(missing.stderr || ''),
+    'the refusal names the file it could not find');
+
+  // A referenced symlink resolves outside the package: it is not packed
+  // silently in place of the file it points at.
+  fs.writeFileSync(nodePath.join(fixture, 'elsewhere.js'), '//');
+  fs.symlinkSync(nodePath.join(fixture, 'elsewhere.js'),
+    nodePath.join(fixture, 'content.js'));
+  const linked = spawn('python3', ['-B', 'pack.py', '--list'],
+    { cwd: fixture, encoding: 'utf8' });
+  assert(linked.status !== 0, 'pack.py refuses a reference reaching its file through a link');
+  assert(/content\.js/.test(linked.stderr || ''), 'the refusal names it');
+  fs.rmSync(fixture, { recursive: true, force: true });
+}
+
 // A file the package has to carry is not one it takes when it happens to be
 // there. The release workflow runs pack.py and uploads what it writes without
 // running any of this, so an omission that still exits 0 ships.
