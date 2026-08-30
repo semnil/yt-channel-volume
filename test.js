@@ -885,6 +885,8 @@ assert(!packaged.includes('.DS_Store'),
       `the whole tree carries the licence and the default locale — ${listed.stdout.trim()}`);
     fs.rmSync(whole, { recursive: true, force: true });
 
+    const writeCatalog = (box, catalog) =>
+      fs.writeFileSync(`${box}/_locales/ja/messages.json`, JSON.stringify(catalog));
     const editManifest = (box, change) => {
       const manifest = JSON.parse(fs.readFileSync(`${box}/manifest.json`, 'utf8'));
       change(manifest);
@@ -940,7 +942,40 @@ assert(!packaged.includes('.DS_Store'),
         /does not answer for: absentKey/],
       ['a catalog that is not JSON',
         box => fs.writeFileSync(`${box}/_locales/ja/messages.json`, '{ broken'),
-        /messages\.json is not a message catalog/]
+        /messages\.json is not a message catalog/],
+      // Chrome reads the catalog rather than taking it on faith, and declines to
+      // load the extension over any of these.
+      ['a catalog whose top level is not an object',
+        box => writeCatalog(box, [{ extName: { message: 'x' } }]),
+        /is not a message catalog: the top level is a list/],
+      ['an entry with no message element',
+        box => writeCatalog(box, { extName: { description: 'x' } }),
+        /gives extName no message element/],
+      ['an entry whose message is not text',
+        box => writeCatalog(box, { extName: { message: 7 } }),
+        /gives extName no message element/],
+      ['an entry that is not an object',
+        box => writeCatalog(box, { extName: 'x' }),
+        /gives extName a str, not an object/],
+      ['two names Chrome reads as one',
+        box => writeCatalog(box, { extName: { message: 'x' }, EXTNAME: { message: 'y' } }),
+        /which Chrome reads as one name/],
+      ['a name Chrome cannot read',
+        box => writeCatalog(box, { 'ext-name': { message: 'x' }, extName: { message: 'y' } }),
+        /names a message Chrome cannot read/],
+      ['a placeholder with no content',
+        box => writeCatalog(box,
+          { extName: { message: 'x $A$', placeholders: { a: { example: 'y' } } } }),
+        /gives extName\.a no content/],
+      ['a default_locale Chrome does not carry',
+        box => {
+          fs.renameSync(`${box}/_locales/ja`, `${box}/_locales/jp`);
+          editManifest(box, m => { m.default_locale = 'jp'; });
+        },
+        /is not a locale Chrome carries: 'jp'/],
+      ['a message under @@ that Chrome does not define',
+        box => editManifest(box, m => { m.description = '__MSG_@@bogus__'; }),
+        /Chrome defines no message named @@bogus/]
     ]) {
       const box = buildMinimal();
       // A package built earlier stands here, so a refusal has something to spare.
@@ -1002,6 +1037,19 @@ assert(!packaged.includes('.DS_Store'),
         `the package built before still carries ${entries} entries, not ${after}`);
       assert(!fs.readdirSync(box).some(name => name.endsWith('.part')),
         'a half-built package is not left beside the one that stands');
+      fs.rmSync(box, { recursive: true, force: true });
+    }
+
+    // A message Chrome defines itself needs no catalog entry. Without this the
+    // rule above could refuse every @@ name and stay green.
+    {
+      const box = buildMinimal();
+      const manifest = JSON.parse(fs.readFileSync(`${box}/manifest.json`, 'utf8'));
+      manifest.description = '__MSG_@@ui_locale__';
+      fs.writeFileSync(`${box}/manifest.json`, JSON.stringify(manifest));
+      const listed = runPack(box, ['--list']);
+      assert(listed.status === 0,
+        `a message Chrome defines packs — ${(listed.stderr || '').trim()}`);
       fs.rmSync(box, { recursive: true, force: true });
     }
 
