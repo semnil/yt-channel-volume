@@ -482,6 +482,20 @@ for (const name of packaged) {
     `${name} is packaged, so something the extension loads has to name it`);
 }
 
+// Every locale the tree carries is one the package carries. An extension
+// shipped with the default locale alone loads and speaks the wrong language to
+// everyone else, which the rule above would pass.
+{
+  const inTree = fs.readdirSync('./_locales')
+    .filter(name => fs.existsSync(`./_locales/${name}/messages.json`))
+    .map(name => `_locales/${name}/messages.json`).sort();
+  // Without a second locale, packing the default one alone would satisfy this.
+  assert(inTree.length > 1, 'the tree carries more than one locale');
+  const inPackage = packaged.filter(name => name.startsWith('_locales/')).sort();
+  assert(JSON.stringify(inPackage) === JSON.stringify(inTree),
+    `every locale in the tree is in the package — got ${inPackage.join(', ')}`);
+}
+
 // A name inside the package is POSIX whatever the host writes it on: the
 // manifest spells its references with forward slashes and a zip entry carries
 // them. Windows is where they would not be, so pack.py's own selection runs
@@ -826,9 +840,12 @@ assert(!packaged.includes('.DS_Store'),
   fs.writeFileSync(`${box}/icons/icon16.png`, 'icons/icon16.png');
   fs.mkdirSync(`${box}/_locales/ja`, { recursive: true });
   fs.writeFileSync(`${box}/_locales/ja/messages.json`, '{}');
+  fs.mkdirSync(`${box}/_locales/en`, { recursive: true });
+  fs.writeFileSync(`${box}/_locales/en/messages.json`, '{"a":{"message":"b"}}');
   fs.writeFileSync(`${box}/LICENSE`, 'MIT License\n');
   const REFERENCED = [
-    'LICENSE', '_locales/ja/messages.json', 'background.js', 'bare.js',
+    'LICENSE', '_locales/en/messages.json', '_locales/ja/messages.json',
+    'background.js', 'bare.js',
     'content.js', 'icons/icon16.png', 'lib/first.js', 'lib/second.js',
     'manifest.json', 'options.html', 'options.js',
     'options.style', 'popup.css', 'popup.html', 'popup.js', 'spaced.js', 'sub/deep.js',
