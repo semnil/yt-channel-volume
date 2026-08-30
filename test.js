@@ -916,6 +916,7 @@ assert(!packaged.includes('.DS_Store'),
 
     const writeCatalog = (box, catalog) =>
       fs.writeFileSync(`${box}/_locales/ja/messages.json`, JSON.stringify(catalog));
+    const readBoxJson = box => JSON.parse(fs.readFileSync(`${box}/manifest.json`, 'utf8'));
     const editManifest = (box, change) => {
       const manifest = JSON.parse(fs.readFileSync(`${box}/manifest.json`, 'utf8'));
       change(manifest);
@@ -961,6 +962,12 @@ assert(!packaged.includes('.DS_Store'),
       ['a message the manifest asks for that the catalog does not answer',
         box => editManifest(box, m => { m.name = '__MSG_absentKey__'; }),
         /the manifest uses absentKey, which .* does not answer for/],
+      ['a reference spelled with escapes that nothing answers', box => {
+        const manifest = readBoxJson(box);
+        fs.writeFileSync(`${box}/manifest.json`,
+          JSON.stringify(manifest).replace('}', ', "description": "__MSG_\\u0061bsent__"}'));
+      },
+        /the manifest uses absent, which .* does not answer for/],
       ['a message a packaged stylesheet asks for that the catalog does not answer',
         box => {
           fs.writeFileSync(`${box}/styles.css`, 'body { content: "__MSG_absentKey__" }\n');
@@ -1198,6 +1205,32 @@ assert(!packaged.includes('.DS_Store'),
       ['a block comment in the catalog', box => fs.writeFileSync(
         `${box}/_locales/ja/messages.json`,
         '{\n  /* the name */\n  "extName": { "message": "x" }\n}')],
+      // The manifest is walked as the values it decoded to: a reference inside a
+      // comment is one Chrome dropped before parsing, a reference spelled with
+      // escapes is one it decoded, and an object key is not a field it localizes.
+      ['a reference nothing answers, inside a line comment', box => {
+        const text = fs.readFileSync(`${box}/manifest.json`, 'utf8');
+        fs.writeFileSync(`${box}/manifest.json`,
+          '{\n  // "description": "__MSG_absent__"\n' + text.slice(1));
+      }],
+      ['a reference nothing answers, inside a block comment', box => {
+        const text = fs.readFileSync(`${box}/manifest.json`, 'utf8');
+        fs.writeFileSync(`${box}/manifest.json`,
+          '{\n  /* "description": "__MSG_absent__" */\n' + text.slice(1));
+      }],
+      ['the extension id inside a comment', box => {
+        const text = fs.readFileSync(`${box}/manifest.json`, 'utf8');
+        fs.writeFileSync(`${box}/manifest.json`,
+          '{\n  // "description": "__MSG_@@extension_id__"\n' + text.slice(1));
+      }],
+      ['a reference spelled with escapes that the catalog answers', box => {
+        writeCatalog(box, { extName: { message: 'x' }, absent: { message: 'y' } });
+        const manifest = readBoxJson(box);
+        fs.writeFileSync(`${box}/manifest.json`,
+          JSON.stringify(manifest).replace('}', ', "description": "__MSG_\\u0061bsent__"}'));
+      }],
+      ['a reference in an object key rather than a value',
+        box => editManifest(box, m => { m['__MSG_absent__'] = 'x'; })],
       ['a comment opener inside a string value', box => {
         editManifest(box, m => { m.homepage_url = 'https://example.com/*'; });
         // The escaped quote is the point: a scanner that does not step over it
