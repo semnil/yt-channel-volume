@@ -1320,6 +1320,27 @@ assert(!packaged.includes('.DS_Store'),
   fs.rmSync(box, { recursive: true, force: true });
 }
 
+// A tag moves and a commit does not, so every action this repository runs is
+// named by the commit its version tag names, with that version written beside
+// it. Nothing here reaches the network: what the commit is was settled when it
+// was written down, and this only holds the shape.
+{
+  const workflows = './.github/workflows';
+  const files = fs.readdirSync(workflows).filter(name => /\.ya?ml$/.test(name));
+  assert(files.length > 0, 'the repository carries workflows');
+  let named = 0;
+  for (const name of files) {
+    for (const line of fs.readFileSync(`${workflows}/${name}`, 'utf8').split('\n')) {
+      if (!/^\s*-?\s*uses:/.test(line)) { continue; }
+      named += 1;
+      assert(/^\s*-?\s*uses:\s+[\w.-]+\/[\w.-]+@[0-9a-f]{40} # v\d+\.\d+\.\d+\s*$/.test(line),
+        `${name} names an action by a commit and the version beside it — ${line.trim()}`);
+    }
+  }
+  // Without this the loop above would pass over a workflow that runs nothing.
+  assert(named > 0, 'the workflows run actions');
+}
+
 // A file the package has to carry is not one it takes when it happens to be
 // there. The release workflow runs pack.py and uploads what it writes without
 // running any of this, so an omission that still exits 0 ships.
