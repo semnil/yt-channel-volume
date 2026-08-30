@@ -1192,7 +1192,8 @@ assert(!packaged.includes('.DS_Store'),
       },
       content_scripts: [{ js: ['content.js'], css: ['styles.css'] }],
       web_accessible_resources: [
-        { resources: ['exposed.js', 'images/*.png', 'lib/*.js'],
+        { resources: ['exposed.js', '/loose.png', '//spare.js', '/',
+                      'images/*.png', '/lib/*.js'],
           matches: ['https://example.com/*'] }
       ]
     }));
@@ -1233,6 +1234,12 @@ assert(!packaged.includes('.DS_Store'),
   write('lib/helper.js', "importScripts('inner.js');\n");
   write('lib/inner.js');
   write('lib/notes.txt');
+  // A resource is written from the extension's root, and the documented
+  // form writes that root as a leading slash: '/loose.png' and '/lib/*.js'
+  // name what 'loose.png' and 'lib/*.js' name. A slash on its own names
+  // nothing, and one written twice is still the root.
+  write('loose.png');
+  write('spare.js');
   write('stray.png');
   write('LICENSE', 'MIT License\n');
   fs.copyFileSync('./pack.py', nodePath.join(box, 'pack.py'));
@@ -1243,8 +1250,9 @@ assert(!packaged.includes('.DS_Store'),
   assert(JSON.stringify(held) === JSON.stringify([
       'LICENSE', 'bg.png', 'content.js', 'devtools.html', 'exposed.js',
       'images/deep/inner.png', 'images/logo.png', 'lib/helper.js', 'lib/inner.js',
-      'manifest.json', 'newtab.html', 'panel.html', 'popup.htm', 'popup.js',
-      'rules.json', 'sandboxed.html', 'schema.json', 'styles.css', 'theme.css'
+      'loose.png', 'manifest.json', 'newtab.html', 'panel.html', 'popup.htm',
+      'popup.js', 'rules.json', 'sandboxed.html', 'schema.json', 'spare.js',
+      'styles.css', 'theme.css'
     ]),
     `the package follows every key that names a file — got ${held.join(', ')}`);
 
@@ -1453,6 +1461,13 @@ assert(!packaged.includes('.DS_Store'),
         box => writeCatalog(box,
           { extName: { message: 'x $A$', placeholders: { a: { example: 'y' } } } }),
         /gives extName\.a no content/],
+      // Outside a resource entry a leading slash is an absolute path, and an
+      // absolute path names a file the package cannot carry.
+      ['a reference beginning at the root of the host',
+        box => editManifest(box, m => {
+          m.content_scripts = [{ js: ['/content.js'] }];
+        }),
+        /reference leaves the package: \/content\.js/],
       // A backslash is an ordinary character in a name on this host and a
       // separator on the one the package is written for. The file is on disk
       // under that very name, so what refuses it is the rule and not its
