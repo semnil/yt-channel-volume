@@ -399,6 +399,20 @@ assert(/\.ch-del:hover:not\(:disabled\)\s*\{/.test(optionsHtml),
   'hover does not paint the disabled row delete');
 
 section('packaging');
+
+// What the archive holds, by name and by the digest of its bytes. Reading the
+// bytes is the point: namelist() alone answers for the names only.
+const heldInZip = (dir, archive) => {
+  const read = require('child_process').spawnSync('python3', ['-c',
+    'import hashlib, sys, zipfile\n'
+    + 'held = zipfile.ZipFile(sys.argv[1])\n'
+    + 'for name in held.namelist():\n'
+    + '    print(name, hashlib.sha256(held.read(name)).hexdigest())',
+    archive], { cwd: dir, encoding: 'utf8' });
+  assert(read.status === 0, `reading ${archive} — ${(read.stderr || '').trim()}`);
+  return (read.stdout || '').trim().split('\n').filter(Boolean)
+    .map(line => line.split(' '));
+};
 // pack.py selects by reference rather than by name, so what it leaves out is
 // answered by running it rather than by reading a list.
 const listed = require('child_process').spawnSync('python3', ['-B', 'pack.py', '--list'],
@@ -777,9 +791,9 @@ assert(!packaged.includes('.DS_Store'),
     action: { default_popup: 'popup.html', default_icon: { 16: 'icons/icon16.png' } },
     icons: { 16: 'icons/icon16.png' }
   }));
-  fs.writeFileSync(`${box}/utils.js`, '');
-  fs.writeFileSync(`${box}/content.js`, '');
-  fs.writeFileSync(`${box}/background.js`, '');
+  fs.writeFileSync(`${box}/utils.js`, 'utils.js');
+  fs.writeFileSync(`${box}/content.js`, 'content.js');
+  fs.writeFileSync(`${box}/background.js`, 'background.js');
   // Spellings a browser reads alike. The expected list below is written out by
   // hand rather than scanned, so it does not inherit whatever this page's
   // markup happens to exercise.
@@ -787,23 +801,23 @@ assert(!packaged.includes('.DS_Store'),
     '<script src="options.js"></script>\n'
     + "<script src='sub/deep.js'></script>\n"
     + '<link rel="stylesheet" href="options.style">\n');
-  fs.writeFileSync(`${box}/options.js`, '');
-  fs.writeFileSync(`${box}/options.style`, '');
+  fs.writeFileSync(`${box}/options.js`, 'options.js');
+  fs.writeFileSync(`${box}/options.style`, 'options.style');
   fs.mkdirSync(`${box}/sub`);
-  fs.writeFileSync(`${box}/sub/deep.js`, '');
+  fs.writeFileSync(`${box}/sub/deep.js`, 'sub/deep.js');
   fs.writeFileSync(`${box}/popup.html`,
     '<SCRIPT SRC="popup.js"></SCRIPT>\n'
     + '<script src=bare.js></script>\n'
     + '<script  src = "spaced.js" ></script>\n'
     + '<link href="popup.css">\n'
     + '<!-- <script src="commented.js"></script> -->\n');
-  fs.writeFileSync(`${box}/popup.js`, '');
-  fs.writeFileSync(`${box}/bare.js`, '');
-  fs.writeFileSync(`${box}/spaced.js`, '');
-  fs.writeFileSync(`${box}/popup.css`, '');
+  fs.writeFileSync(`${box}/popup.js`, 'popup.js');
+  fs.writeFileSync(`${box}/bare.js`, 'bare.js');
+  fs.writeFileSync(`${box}/spaced.js`, 'spaced.js');
+  fs.writeFileSync(`${box}/popup.css`, 'popup.css');
   fs.writeFileSync(`${box}/commented.js`, '');
   fs.mkdirSync(`${box}/icons`);
-  fs.writeFileSync(`${box}/icons/icon16.png`, '');
+  fs.writeFileSync(`${box}/icons/icon16.png`, 'icons/icon16.png');
   fs.mkdirSync(`${box}/_locales/ja`, { recursive: true });
   fs.writeFileSync(`${box}/_locales/ja/messages.json`, '{}');
   fs.writeFileSync(`${box}/LICENSE`, 'MIT License\n');
@@ -854,16 +868,26 @@ assert(!packaged.includes('.DS_Store'),
     console.log(`  (pack run skipped: ${packed.error.message})`);
   } else {
     assert(packed.status === 0, `pack.py runs — ${(packed.stderr || '').trim()}`);
-    const read = require('child_process').spawnSync('python3',
-      ['-c', 'import zipfile;print(chr(10).join(zipfile.ZipFile("yt-channel-volume-0.0.0.zip").namelist()))'],
-      { cwd: box, encoding: 'utf8' });
-    const names = (read.stdout || '').trim().split('\n').filter(Boolean).sort();
+    // The names say nothing about what is under them: a packer writing empty
+    // entries under these names passes a comparison of names alone.
+    const held = heldInZip(box, 'yt-channel-volume-0.0.0.zip');
+    const names = held.map(([name]) => name).sort();
     assert(JSON.stringify(names) === JSON.stringify(REFERENCED.slice().sort()),
       `pack.py carries the referenced files and nothing else — got ${names.join(', ')}`);
     for (const name of seeded) {
       assert(!names.some(entry => entry === name || entry.startsWith(name + '/')),
         `pack.py keeps ${name} out of the store zip`);
     }
+    for (const [name, digest] of held) {
+      const onDisk = require('crypto').createHash('sha256')
+        .update(fs.readFileSync(`${box}/${name}`)).digest('hex');
+      assert(digest === onDisk, `${name} in the package is the file of that name`);
+    }
+    // Without this the comparison above would hold for a packer that wrote
+    // nothing at all, since an empty entry matches an empty file.
+    const ofNothing = require('crypto').createHash('sha256').update('').digest('hex');
+    assert(held.some(([, digest]) => digest !== ofNothing),
+      'the fixture gives the packer something to get wrong');
     const boxOnWindows = namesOnWindows(box, 'the fixture');
     if (boxOnWindows) {
       assert(JSON.stringify(boxOnWindows.slice().sort()) === JSON.stringify(REFERENCED.slice().sort()),
