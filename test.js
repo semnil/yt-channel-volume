@@ -975,7 +975,24 @@ assert(!packaged.includes('.DS_Store'),
         /is not a locale Chrome carries: 'jp'/],
       ['a message under @@ that Chrome does not define',
         box => editManifest(box, m => { m.description = '__MSG_@@bogus__'; }),
-        /Chrome defines no message named @@bogus/]
+        /Chrome defines no message named @@bogus/],
+      ['the one message Chrome reads everywhere but the manifest, in the manifest',
+        box => editManifest(box, m => { m.description = '__MSG_@@extension_id__'; }),
+        /the manifest uses @@extension_id/],
+      ['a message referring to a placeholder nothing defines',
+        box => writeCatalog(box, { extName: { message: 'hello $WHO$' } }),
+        /gives extName no placeholder named WHO/],
+      ['placeholders written as null',
+        box => writeCatalog(box, { extName: { message: 'x', placeholders: null } }),
+        /gives extName placeholders that are not an object/],
+      ['a placeholder Chrome cannot read',
+        box => writeCatalog(box, { extName: { message: 'x $BAD_NAME$',
+          placeholders: { 'bad-name': { content: '$1' } } } }),
+        /names a placeholder Chrome cannot read/],
+      ['a catalog defining a name under @@, which is Chrome\'s to define',
+        box => writeCatalog(box,
+          { extName: { message: 'x' }, '@@extension_id': { message: 'y' } }),
+        /names a message Chrome cannot read: '@@extension_id'/]
     ]) {
       const box = buildMinimal();
       // A package built earlier stands here, so a refusal has something to spare.
@@ -1037,6 +1054,37 @@ assert(!packaged.includes('.DS_Store'),
         `the package built before still carries ${entries} entries, not ${after}`);
       assert(!fs.readdirSync(box).some(name => name.endsWith('.part')),
         'a half-built package is not left beside the one that stands');
+      fs.rmSync(box, { recursive: true, force: true });
+    }
+
+    // Four shapes Chrome reads without complaint. Each is a rule the checks above
+    // could over-reach into: a name with an @ in it, Chrome's own message where
+    // it is allowed, a literal dollar, and a positional argument in a
+    // placeholder's content.
+    for (const [shape, arrange] of [
+      ['a message named with an @ in it', box => {
+        writeCatalog(box, { 'foo@bar': { message: 'x' } });
+        editManifest(box, m => { m.name = '__MSG_foo@bar__'; });
+      }],
+      ['the extension id read from a stylesheet', box => {
+        fs.writeFileSync(`${box}/styles.css`,
+          'body { background: url("__MSG_@@extension_id__") }\n');
+        editManifest(box, m => {
+          m.content_scripts = [{ js: ['content.js'], css: ['styles.css'] }];
+        });
+      }],
+      // Written so that reading $$ as an opening dollar would name a
+      // placeholder: without the escape, $$name$$ holds $name$.
+      ['a literal dollar in a message',
+        box => writeCatalog(box, { extName: { message: 'cost $$name$$ each' } })],
+      ['a positional argument in a placeholder', box => writeCatalog(box,
+        { extName: { message: 'hi $WHO$', placeholders: { who: { content: '$1' } } } })]
+    ]) {
+      const box = buildMinimal();
+      arrange(box);
+      const listed = runPack(box, ['--list']);
+      assert(listed.status === 0,
+        `${shape} packs — ${(listed.stderr || '').trim()}`);
       fs.rmSync(box, { recursive: true, force: true });
     }
 
