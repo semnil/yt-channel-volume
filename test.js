@@ -793,7 +793,13 @@ assert(!packaged.includes('.DS_Store'),
   }));
   fs.writeFileSync(`${box}/utils.js`, 'utils.js');
   fs.writeFileSync(`${box}/content.js`, 'content.js');
-  fs.writeFileSync(`${box}/background.js`, 'background.js');
+  // Two arguments, spelled two ways: a walk that stops at the first one
+  // leaves the second out of the package with nothing saying so.
+  fs.writeFileSync(`${box}/background.js`,
+    'importScripts(\'lib/first.js\', "lib/second.js");\n');
+  fs.mkdirSync(`${box}/lib`);
+  fs.writeFileSync(`${box}/lib/first.js`, 'lib/first.js');
+  fs.writeFileSync(`${box}/lib/second.js`, 'lib/second.js');
   // Spellings a browser reads alike. The expected list below is written out by
   // hand rather than scanned, so it does not inherit whatever this page's
   // markup happens to exercise.
@@ -823,7 +829,8 @@ assert(!packaged.includes('.DS_Store'),
   fs.writeFileSync(`${box}/LICENSE`, 'MIT License\n');
   const REFERENCED = [
     'LICENSE', '_locales/ja/messages.json', 'background.js', 'bare.js',
-    'content.js', 'icons/icon16.png', 'manifest.json', 'options.html', 'options.js',
+    'content.js', 'icons/icon16.png', 'lib/first.js', 'lib/second.js',
+    'manifest.json', 'options.html', 'options.js',
     'options.style', 'popup.css', 'popup.html', 'popup.js', 'spaced.js', 'sub/deep.js',
     'utils.js'
   ];
