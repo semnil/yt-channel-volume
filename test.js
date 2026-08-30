@@ -1033,6 +1033,44 @@ assert(!packaged.includes('.DS_Store'),
   fs.rmSync(fixture, { recursive: true, force: true });
 }
 
+
+// gen_icons.py writes beside itself rather than beside whatever directory it
+// was started from, and where there is no face to draw the mark with it says so
+// instead of saving one drawn with Pillow's own and reporting success.
+{
+  const nodeOs = require('os');
+  const nodePath = require('path');
+  const spawn = require('child_process').spawnSync;
+  const tmpRoot = fs.realpathSync(nodeOs.tmpdir());
+  const source = fs.readFileSync('./gen_icons.py', 'utf8');
+  const committed = fs.readdirSync('./icons').filter(name => /^icon\d+\.png$/.test(name)).sort();
+  assert(committed.length > 0, 'the tree carries the icons gen_icons.py draws');
+
+  const beside = fs.mkdtempSync(nodePath.join(tmpRoot, 'ytcv-icons-'));
+  const elsewhere = fs.mkdtempSync(nodePath.join(tmpRoot, 'ytcv-cwd-'));
+  fs.writeFileSync(nodePath.join(beside, 'gen_icons.py'), source);
+  fs.mkdirSync(nodePath.join(beside, 'icons'));
+  // Both directories can take the icons, so which one holds them is the answer.
+  fs.mkdirSync(nodePath.join(elsewhere, 'icons'));
+  const drawn = spawn('python3', ['-B', nodePath.join(beside, 'gen_icons.py')],
+    { cwd: elsewhere, encoding: 'utf8' });
+  if (drawn.error || drawn.status === 3) {
+    console.log(`  (icon check skipped: ${(drawn.error || drawn.stderr || '').toString().trim()})`);
+  } else {
+    assert(drawn.status === 0,
+      `gen_icons.py draws — ${(drawn.stderr || '').trim()}`);
+    assert(JSON.stringify(fs.readdirSync(nodePath.join(beside, 'icons')).sort())
+      === JSON.stringify(committed),
+      'gen_icons.py writes the icons beside itself');
+    assert(fs.readdirSync(nodePath.join(elsewhere, 'icons')).length === 0,
+      'gen_icons.py writes nothing under the directory it was started from');
+  }
+
+  for (const dir of [beside, elsewhere]) {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 // A file the package has to carry is not one it takes when it happens to be
 // there. The release workflow runs pack.py and uploads what it writes without
 // running any of this, so an omission that still exits 0 ships.
