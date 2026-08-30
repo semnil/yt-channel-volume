@@ -399,6 +399,20 @@ assert(/\.ch-del:hover:not\(:disabled\)\s*\{/.test(optionsHtml),
   'hover does not paint the disabled row delete');
 
 section('packaging');
+
+// What the archive holds, by name and by the digest of its bytes. Reading the
+// bytes is the point: namelist() alone answers for the names only.
+const heldInZip = (dir, archive) => {
+  const read = require('child_process').spawnSync('python3', ['-c',
+    'import hashlib, sys, zipfile\n'
+    + 'held = zipfile.ZipFile(sys.argv[1])\n'
+    + 'for name in held.namelist():\n'
+    + '    print(name, hashlib.sha256(held.read(name)).hexdigest())',
+    archive], { cwd: dir, encoding: 'utf8' });
+  assert(read.status === 0, `reading ${archive} — ${(read.stderr || '').trim()}`);
+  return (read.stdout || '').trim().split('\n').filter(Boolean)
+    .map(line => line.split(' '));
+};
 // pack.py selects by reference rather than by name, so what it leaves out is
 // answered by running it rather than by reading a list.
 const listed = require('child_process').spawnSync('python3', ['-B', 'pack.py', '--list'],
@@ -466,6 +480,20 @@ for (const name of packaged) {
   assert(referenced.has(name) || distribution.includes(name)
     || /^_locales\/[^/]+\/messages\.json$/.test(name),
     `${name} is packaged, so something the extension loads has to name it`);
+}
+
+// Every locale the tree carries is one the package carries. An extension
+// shipped with the default locale alone loads and speaks the wrong language to
+// everyone else, which the rule above would pass.
+{
+  const inTree = fs.readdirSync('./_locales')
+    .filter(name => fs.existsSync(`./_locales/${name}/messages.json`))
+    .map(name => `_locales/${name}/messages.json`).sort();
+  // Without a second locale, packing the default one alone would satisfy this.
+  assert(inTree.length > 1, 'the tree carries more than one locale');
+  const inPackage = packaged.filter(name => name.startsWith('_locales/')).sort();
+  assert(JSON.stringify(inPackage) === JSON.stringify(inTree),
+    `every locale in the tree is in the package — got ${inPackage.join(', ')}`);
 }
 
 // A name inside the package is POSIX whatever the host writes it on: the
@@ -777,9 +805,15 @@ assert(!packaged.includes('.DS_Store'),
     action: { default_popup: 'popup.html', default_icon: { 16: 'icons/icon16.png' } },
     icons: { 16: 'icons/icon16.png' }
   }));
-  fs.writeFileSync(`${box}/utils.js`, '');
-  fs.writeFileSync(`${box}/content.js`, '');
-  fs.writeFileSync(`${box}/background.js`, '');
+  fs.writeFileSync(`${box}/utils.js`, 'utils.js');
+  fs.writeFileSync(`${box}/content.js`, 'content.js');
+  // Two arguments, spelled two ways: a walk that stops at the first one
+  // leaves the second out of the package with nothing saying so.
+  fs.writeFileSync(`${box}/background.js`,
+    'importScripts(\'lib/first.js\', "lib/second.js");\n');
+  fs.mkdirSync(`${box}/lib`);
+  fs.writeFileSync(`${box}/lib/first.js`, 'lib/first.js');
+  fs.writeFileSync(`${box}/lib/second.js`, 'lib/second.js');
   // Spellings a browser reads alike. The expected list below is written out by
   // hand rather than scanned, so it does not inherit whatever this page's
   // markup happens to exercise.
@@ -787,29 +821,33 @@ assert(!packaged.includes('.DS_Store'),
     '<script src="options.js"></script>\n'
     + "<script src='sub/deep.js'></script>\n"
     + '<link rel="stylesheet" href="options.style">\n');
-  fs.writeFileSync(`${box}/options.js`, '');
-  fs.writeFileSync(`${box}/options.style`, '');
+  fs.writeFileSync(`${box}/options.js`, 'options.js');
+  fs.writeFileSync(`${box}/options.style`, 'options.style');
   fs.mkdirSync(`${box}/sub`);
-  fs.writeFileSync(`${box}/sub/deep.js`, '');
+  fs.writeFileSync(`${box}/sub/deep.js`, 'sub/deep.js');
   fs.writeFileSync(`${box}/popup.html`,
     '<SCRIPT SRC="popup.js"></SCRIPT>\n'
     + '<script src=bare.js></script>\n'
     + '<script  src = "spaced.js" ></script>\n'
     + '<link href="popup.css">\n'
     + '<!-- <script src="commented.js"></script> -->\n');
-  fs.writeFileSync(`${box}/popup.js`, '');
-  fs.writeFileSync(`${box}/bare.js`, '');
-  fs.writeFileSync(`${box}/spaced.js`, '');
-  fs.writeFileSync(`${box}/popup.css`, '');
+  fs.writeFileSync(`${box}/popup.js`, 'popup.js');
+  fs.writeFileSync(`${box}/bare.js`, 'bare.js');
+  fs.writeFileSync(`${box}/spaced.js`, 'spaced.js');
+  fs.writeFileSync(`${box}/popup.css`, 'popup.css');
   fs.writeFileSync(`${box}/commented.js`, '');
   fs.mkdirSync(`${box}/icons`);
-  fs.writeFileSync(`${box}/icons/icon16.png`, '');
+  fs.writeFileSync(`${box}/icons/icon16.png`, 'icons/icon16.png');
   fs.mkdirSync(`${box}/_locales/ja`, { recursive: true });
   fs.writeFileSync(`${box}/_locales/ja/messages.json`, '{}');
+  fs.mkdirSync(`${box}/_locales/en`, { recursive: true });
+  fs.writeFileSync(`${box}/_locales/en/messages.json`, '{"a":{"message":"b"}}');
   fs.writeFileSync(`${box}/LICENSE`, 'MIT License\n');
   const REFERENCED = [
-    'LICENSE', '_locales/ja/messages.json', 'background.js', 'bare.js',
-    'content.js', 'icons/icon16.png', 'manifest.json', 'options.html', 'options.js',
+    'LICENSE', '_locales/en/messages.json', '_locales/ja/messages.json',
+    'background.js', 'bare.js',
+    'content.js', 'icons/icon16.png', 'lib/first.js', 'lib/second.js',
+    'manifest.json', 'options.html', 'options.js',
     'options.style', 'popup.css', 'popup.html', 'popup.js', 'spaced.js', 'sub/deep.js',
     'utils.js'
   ];
@@ -854,16 +892,26 @@ assert(!packaged.includes('.DS_Store'),
     console.log(`  (pack run skipped: ${packed.error.message})`);
   } else {
     assert(packed.status === 0, `pack.py runs — ${(packed.stderr || '').trim()}`);
-    const read = require('child_process').spawnSync('python3',
-      ['-c', 'import zipfile;print(chr(10).join(zipfile.ZipFile("yt-channel-volume-0.0.0.zip").namelist()))'],
-      { cwd: box, encoding: 'utf8' });
-    const names = (read.stdout || '').trim().split('\n').filter(Boolean).sort();
+    // The names say nothing about what is under them: a packer writing empty
+    // entries under these names passes a comparison of names alone.
+    const held = heldInZip(box, 'yt-channel-volume-0.0.0.zip');
+    const names = held.map(([name]) => name).sort();
     assert(JSON.stringify(names) === JSON.stringify(REFERENCED.slice().sort()),
       `pack.py carries the referenced files and nothing else — got ${names.join(', ')}`);
     for (const name of seeded) {
       assert(!names.some(entry => entry === name || entry.startsWith(name + '/')),
         `pack.py keeps ${name} out of the store zip`);
     }
+    for (const [name, digest] of held) {
+      const onDisk = require('crypto').createHash('sha256')
+        .update(fs.readFileSync(`${box}/${name}`)).digest('hex');
+      assert(digest === onDisk, `${name} in the package is the file of that name`);
+    }
+    // Without this the comparison above would hold for a packer that wrote
+    // nothing at all, since an empty entry matches an empty file.
+    const ofNothing = require('crypto').createHash('sha256').update('').digest('hex');
+    assert(held.some(([, digest]) => digest !== ofNothing),
+      'the fixture gives the packer something to get wrong');
     const boxOnWindows = namesOnWindows(box, 'the fixture');
     if (boxOnWindows) {
       assert(JSON.stringify(boxOnWindows.slice().sort()) === JSON.stringify(REFERENCED.slice().sort()),
@@ -875,6 +923,175 @@ assert(!packaged.includes('.DS_Store'),
 
 // options.js has no DOM harness here, so its half of the cross-context
 // contract is asserted against the source.
+// A path that resolves outside the package would carry a file nobody reviewed
+// into the store zip under a name that looks local. Deleting the rule that
+// refuses one left this suite green until these ran.
+{
+  const nodeOs = require('os');
+  const nodePath = require('path');
+  const spawn = require('child_process').spawnSync;
+  const tmpRoot = fs.realpathSync(nodeOs.tmpdir());
+  const outside = fs.mkdtempSync(nodePath.join(tmpRoot, 'ytcv-outside-'));
+  fs.writeFileSync(nodePath.join(outside, 'secret.js'), 'SECRET');
+  fs.writeFileSync(nodePath.join(outside, 'messages.json'), '{}');
+  const escapeManifest = (references, extra = {}) => JSON.stringify({
+    manifest_version: 3,
+    version: '1.0.0',
+    content_scripts: [{ js: references }],
+    ...extra
+  });
+  // The package sits one level down: a case that reaches outside it with ..
+  // writes into its own parent, never into the shared temp root.
+  const runEscape = build => {
+    const parent = fs.mkdtempSync(nodePath.join(tmpRoot, 'ytcv-escape-'));
+    const fixture = nodePath.join(parent, 'package');
+    fs.mkdirSync(fixture);
+    fs.copyFileSync('./pack.py', nodePath.join(fixture, 'pack.py'));
+    build(fixture);
+    const result = spawn('python3', ['-B', 'pack.py', '--list'],
+      { cwd: fixture, encoding: 'utf8' });
+    fs.rmSync(parent, { recursive: true, force: true });
+    return result;
+  };
+  const refused = (result, pattern, what) => {
+    assert(result.status !== 0, `pack.py refuses ${what}`);
+    assert(pattern.test(result.stderr || ''),
+      `the refusal of ${what} names it — got ${(result.stderr || '').trim()}`);
+  };
+  try {
+    // A symlinked parent directory: only the last name looks local.
+    refused(runEscape(fixture => {
+      fs.writeFileSync(nodePath.join(fixture, 'manifest.json'),
+        escapeManifest(['linked/secret.js']));
+      fs.symlinkSync(outside, nodePath.join(fixture, 'linked'));
+    }), /linked\/secret\.js/, 'a reference through a symlinked parent');
+
+    refused(runEscape(fixture => {
+      fs.writeFileSync(nodePath.join(fixture, 'manifest.json'),
+        escapeManifest(['../secret.js']));
+      const sibling = nodePath.join(nodePath.dirname(fixture), 'secret.js');
+      assert(sibling.startsWith(tmpRoot + nodePath.sep) && nodePath.dirname(sibling) !== tmpRoot,
+        'the climb lands inside this case, not in the shared temp root');
+      fs.writeFileSync(sibling, 'SIBLING');
+    }), /\.\.\/secret\.js/, 'a reference climbing out with ..');
+
+    // Absolute and pointing at a path with no link anywhere in it: the only
+    // thing between it and the zip is the rule against absolute paths.
+    assert(fs.realpathSync(outside) === outside, 'the outside path has no link in it');
+    refused(runEscape(fixture => {
+      fs.writeFileSync(nodePath.join(fixture, 'manifest.json'),
+        escapeManifest([nodePath.join(outside, 'secret.js')]));
+    }), /secret\.js/, 'an absolute reference');
+
+    // The locale directories are listed rather than referenced, and one of
+    // them can be a link just as easily.
+    refused(runEscape(fixture => {
+      fs.writeFileSync(nodePath.join(fixture, 'manifest.json'),
+        escapeManifest([], { default_locale: 'ja' }));
+      fs.mkdirSync(nodePath.join(fixture, '_locales'));
+      fs.symlinkSync(outside, nodePath.join(fixture, '_locales', 'ja'));
+    }), /_locales\/ja\/messages\.json/, 'a symlinked locale directory');
+
+    refused(runEscape(fixture => {
+      fs.writeFileSync(nodePath.join(fixture, 'manifest.json'),
+        escapeManifest([], { default_locale: 'ja' }));
+      fs.symlinkSync(outside, nodePath.join(fixture, '_locales'));
+    }), /_locales\//, 'a symlinked _locales');
+  } finally {
+    fs.rmSync(outside, { recursive: true, force: true });
+  }
+}
+
+// A zip built around a missing file is a broken extension, not a smaller one.
+{
+  const nodeOs = require('os');
+  const nodePath = require('path');
+  const spawn = require('child_process').spawnSync;
+  const fixture = fs.mkdtempSync(
+    nodePath.join(fs.realpathSync(nodeOs.tmpdir()), 'ytcv-missing-'));
+  fs.writeFileSync(nodePath.join(fixture, 'manifest.json'), JSON.stringify({
+    manifest_version: 3,
+    version: '1.0.0',
+    content_scripts: [{ js: ['content.js'] }]
+  }));
+  fs.copyFileSync('./pack.py', nodePath.join(fixture, 'pack.py'));
+  const missing = spawn('python3', ['-B', 'pack.py', '--list'],
+    { cwd: fixture, encoding: 'utf8' });
+  assert(missing.status !== 0, 'pack.py refuses a reference with no file behind it');
+  assert(/content\.js/.test(missing.stderr || ''),
+    'the refusal names the file it could not find');
+
+  // A referenced symlink resolves outside the package: it is not packed
+  // silently in place of the file it points at.
+  fs.writeFileSync(nodePath.join(fixture, 'elsewhere.js'), '//');
+  fs.symlinkSync(nodePath.join(fixture, 'elsewhere.js'),
+    nodePath.join(fixture, 'content.js'));
+  const linked = spawn('python3', ['-B', 'pack.py', '--list'],
+    { cwd: fixture, encoding: 'utf8' });
+  assert(linked.status !== 0, 'pack.py refuses a reference reaching its file through a link');
+  assert(/content\.js/.test(linked.stderr || ''), 'the refusal names it');
+  fs.rmSync(fixture, { recursive: true, force: true });
+}
+
+
+// gen_icons.py writes beside itself rather than beside whatever directory it
+// was started from, and where there is no face to draw the mark with it says so
+// instead of saving one drawn with Pillow's own and reporting success.
+{
+  const nodeOs = require('os');
+  const nodePath = require('path');
+  const spawn = require('child_process').spawnSync;
+  const tmpRoot = fs.realpathSync(nodeOs.tmpdir());
+  const source = fs.readFileSync('./gen_icons.py', 'utf8');
+  const committed = fs.readdirSync('./icons').filter(name => /^icon\d+\.png$/.test(name)).sort();
+  assert(committed.length > 0, 'the tree carries the icons gen_icons.py draws');
+
+  const beside = fs.mkdtempSync(nodePath.join(tmpRoot, 'ytcv-icons-'));
+  const elsewhere = fs.mkdtempSync(nodePath.join(tmpRoot, 'ytcv-cwd-'));
+  fs.writeFileSync(nodePath.join(beside, 'gen_icons.py'), source);
+  fs.mkdirSync(nodePath.join(beside, 'icons'));
+  // Both directories can take the icons, so which one holds them is the answer.
+  fs.mkdirSync(nodePath.join(elsewhere, 'icons'));
+  const drawn = spawn('python3', ['-B', nodePath.join(beside, 'gen_icons.py')],
+    { cwd: elsewhere, encoding: 'utf8' });
+  if (drawn.error || drawn.status === 3) {
+    console.log(`  (icon check skipped: ${(drawn.error || drawn.stderr || '').toString().trim()})`);
+  } else {
+    assert(drawn.status === 0,
+      `gen_icons.py draws — ${(drawn.stderr || '').trim()}`);
+    assert(JSON.stringify(fs.readdirSync(nodePath.join(beside, 'icons')).sort())
+      === JSON.stringify(committed),
+      'gen_icons.py writes the icons beside itself');
+    assert(fs.readdirSync(nodePath.join(elsewhere, 'icons')).length === 0,
+      'gen_icons.py writes nothing under the directory it was started from');
+  }
+
+  // The same script with nowhere to find a face. It runs wherever pillow is,
+  // so this half needs no system font of its own.
+  const faceless = fs.mkdtempSync(nodePath.join(tmpRoot, 'ytcv-faceless-'));
+  fs.mkdirSync(nodePath.join(faceless, 'icons'));
+  const withoutAFace = source.replace(/^FONT_PATHS = \[[^\]]*\]/m,
+    "FONT_PATHS = ['/no/such/face.ttf']");
+  assert(withoutAFace !== source, 'gen_icons.py lists the faces it looks for in FONT_PATHS');
+  fs.writeFileSync(nodePath.join(faceless, 'gen_icons.py'), withoutAFace);
+  const refused = spawn('python3', ['-B', nodePath.join(faceless, 'gen_icons.py')],
+    { cwd: faceless, encoding: 'utf8' });
+  if (refused.error || refused.status === 3) {
+    console.log(`  (faceless check skipped: ${(refused.error || refused.stderr || '').toString().trim()})`);
+  } else {
+    assert(refused.status !== 0, 'gen_icons.py turns down a machine with no face to draw with');
+    assert(/no face here to draw the mark with/.test(refused.stderr || ''),
+      `the refusal says what it could not find — got ${(refused.stderr || '').trim()}`);
+    assert(/no\/such\/face\.ttf/.test(refused.stderr || ''),
+      'the refusal names where it looked');
+    assert(fs.readdirSync(nodePath.join(faceless, 'icons')).length === 0,
+      'nothing is saved under the brand letter when there is no face for it');
+  }
+  for (const dir of [beside, elsewhere, faceless]) {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 // A file the package has to carry is not one it takes when it happens to be
 // there. The release workflow runs pack.py and uploads what it writes without
 // running any of this, so an omission that still exits 0 ships.
@@ -1016,6 +1233,18 @@ assert(!packaged.includes('.DS_Store'),
         box => writeCatalog(box,
           { extName: { message: 'x $A$', placeholders: { a: { example: 'y' } } } }),
         /gives extName\.a no content/],
+      // A backslash is an ordinary character in a name on this host and a
+      // separator on the one the package is written for. The file is on disk
+      // under that very name, so what refuses it is the rule and not its
+      // absence.
+      ['a reference spelled with a backslash',
+        box => {
+          fs.writeFileSync(`${box}/sub\\content.js`, '');
+          editManifest(box, m => {
+            m.content_scripts = [{ js: ['content.js', 'sub\\content.js'] }];
+          });
+        },
+        /reference leaves the package: sub\\content\.js/],
       ['a default_locale that is no locale at all',
         box => {
           fs.renameSync(`${box}/_locales/ja`, `${box}/_locales/jp`);
