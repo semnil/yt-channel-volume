@@ -1265,6 +1265,53 @@ assert(!packaged.includes('.DS_Store'),
   fs.rmSync(box, { recursive: true, force: true });
 }
 
+
+// What version a tag stands for. Chrome reads the manifest's version as numbers
+// alone, so a prerelease shows its name in version_name and keeps the numbers it
+// is built on in version. The release runs this script, so this runs it too.
+{
+  const nodeOs = require('os');
+  const nodePath = require('path');
+  const spawn = require('child_process').spawnSync;
+  const script = './tools/verify-version.sh';
+  assert(fs.existsSync(script), 'the release script is in the tree');
+  // A step that stopped calling it would leave every case below passing.
+  const release = fs.readFileSync('./.github/workflows/release.yaml', 'utf8');
+  assert(release.includes('tools/verify-version.sh'),
+    'the release workflow runs the version script');
+
+  const box = fs.mkdtempSync(nodePath.join(fs.realpathSync(nodeOs.tmpdir()), 'ytcv-version-'));
+  const ask = (manifest, tag) => {
+    const at = nodePath.join(box, 'manifest.json');
+    fs.writeFileSync(at, JSON.stringify(manifest));
+    return spawn('bash', [script, at, tag], { encoding: 'utf8' });
+  };
+  for (const [shape, manifest, tag, wanted] of [
+    ['a release tag against a numeric version',
+      { version: '1.2.0' }, 'v1.2.0', null],
+    ['a prerelease tag against the name beside the version',
+      { version: '1.2.0', version_name: '1.2.0-rc1' }, 'v1.2.0-rc1', null],
+    ['a tag that is not the version', { version: '1.2.0' }, 'v1.2.1',
+      /does not match tag/],
+    ['a release tag against a manifest showing a prerelease',
+      { version: '1.2.0', version_name: '1.2.0-rc1' }, 'v1.2.0', /does not match tag/],
+    ['a name that is not built on the version',
+      { version: '1.2.0', version_name: '9.9.9-rc1' }, 'v9.9.9-rc1',
+      /does not begin with version/],
+    ['a manifest naming no version', { name: 'p' }, 'v1.2.0', /names no version/]
+  ]) {
+    const run = ask(manifest, tag);
+    if (wanted === null) {
+      assert(run.status === 0, `${shape} passes — ${(run.stdout + run.stderr).trim()}`);
+    } else {
+      assert(run.status !== 0, `${shape} is refused`);
+      assert(wanted.test(run.stdout + run.stderr),
+        `${shape} says why — ${(run.stdout + run.stderr).trim()}`);
+    }
+  }
+  fs.rmSync(box, { recursive: true, force: true });
+}
+
 // A file the package has to carry is not one it takes when it happens to be
 // there. The release workflow runs pack.py and uploads what it writes without
 // running any of this, so an omission that still exits 0 ships.
@@ -1433,6 +1480,11 @@ assert(!packaged.includes('.DS_Store'),
       ['a version of five parts',
         box => editManifest(box, m => { m.version = '1.0.0.0.0'; }),
         /version is not one Chrome reads: '1\.0\.0\.0\.0'/],
+      // A prerelease shows its name in version_name, which Chrome reads as any
+      // text at all and refuses when it is not text.
+      ['a version_name that is not text',
+        box => editManifest(box, m => { m.version_name = 7; }),
+        /version_name is not text: 7/],
       ['a version written as a number rather than text',
         box => editManifest(box, m => { m.version = 100; }),
         /version is not one Chrome reads: 100/],
@@ -1727,6 +1779,15 @@ assert(!packaged.includes('.DS_Store'),
         box => editManifest(box, m => { m.version = '1.01.0'; })],
       ['a version part at the largest number one holds',
         box => editManifest(box, m => { m.version = '4294967295'; })],
+      // The shape a prerelease takes: Chrome reads the version and shows the
+      // name. Without this the rule above would refuse the only shape that
+      // lets the prerelease branch of the release grammar build anything.
+      ['a prerelease named beside the version Chrome reads', box => {
+        editManifest(box, m => {
+          m.version = '1.2.0';
+          m.version_name = '1.2.0-rc1';
+        });
+      }],
       // The Norwegian the store does carry, which is the name an extension
       // reaching for nb is told to use instead. Without this the rule above
       // could refuse every locale and stay green.
