@@ -1066,7 +1066,28 @@ assert(!packaged.includes('.DS_Store'),
       'gen_icons.py writes nothing under the directory it was started from');
   }
 
-  for (const dir of [beside, elsewhere]) {
+  // The same script with nowhere to find a face. It runs wherever pillow is,
+  // so this half needs no system font of its own.
+  const faceless = fs.mkdtempSync(nodePath.join(tmpRoot, 'ytcv-faceless-'));
+  fs.mkdirSync(nodePath.join(faceless, 'icons'));
+  const withoutAFace = source.replace(/^FONT_PATHS = \[[^\]]*\]/m,
+    "FONT_PATHS = ['/no/such/face.ttf']");
+  assert(withoutAFace !== source, 'gen_icons.py lists the faces it looks for in FONT_PATHS');
+  fs.writeFileSync(nodePath.join(faceless, 'gen_icons.py'), withoutAFace);
+  const refused = spawn('python3', ['-B', nodePath.join(faceless, 'gen_icons.py')],
+    { cwd: faceless, encoding: 'utf8' });
+  if (refused.error || refused.status === 3) {
+    console.log(`  (faceless check skipped: ${(refused.error || refused.stderr || '').toString().trim()})`);
+  } else {
+    assert(refused.status !== 0, 'gen_icons.py turns down a machine with no face to draw with');
+    assert(/no face here to draw the mark with/.test(refused.stderr || ''),
+      `the refusal says what it could not find — got ${(refused.stderr || '').trim()}`);
+    assert(/no\/such\/face\.ttf/.test(refused.stderr || ''),
+      'the refusal names where it looked');
+    assert(fs.readdirSync(nodePath.join(faceless, 'icons')).length === 0,
+      'nothing is saved under the brand letter when there is no face for it');
+  }
+  for (const dir of [beside, elsewhere, faceless]) {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
