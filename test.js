@@ -1092,6 +1092,76 @@ assert(!packaged.includes('.DS_Store'),
   }
 }
 
+
+// Every key that names a file is followed, a page is read for what it pulls in
+// whatever it is called, and a stylesheet is read for what it reaches.
+{
+  const nodePath = require('path');
+  const spawn = require('child_process').spawnSync;
+  const box = fs.mkdtempSync(nodePath.join(fs.realpathSync(require('os').tmpdir()), 'ytcv-keys-'));
+  const write = (relative, body = relative) => {
+    const target = nodePath.join(box, relative);
+    fs.mkdirSync(nodePath.dirname(target), { recursive: true });
+    fs.writeFileSync(target, body);
+  };
+  write('manifest.json', JSON.stringify({
+      manifest_version: 3,
+      version: '1.0.0',
+      action: { default_popup: 'popup.htm' },
+      devtools_page: 'devtools.html',
+      side_panel: { default_path: 'panel.html' },
+      chrome_url_overrides: { newtab: 'newtab.html' },
+      sandbox: { pages: ['sandboxed.html'] },
+      storage: { managed_schema: 'schema.json' },
+      declarative_net_request: {
+        rule_resources: [{ id: 'r', enabled: true, path: 'rules.json' }]
+      },
+      content_scripts: [{ js: ['content.js'] }],
+      web_accessible_resources: [
+        { resources: ['exposed.js', '*.png'], matches: ['https://example.com/*'] }
+      ]
+    }));
+  // Chrome loads a page under whatever name the key gives it.
+  write('popup.htm', '<script src="popup.js"></script>\n');
+  write('popup.js');
+  write('devtools.html');
+  write('panel.html');
+  write('newtab.html');
+  write('sandboxed.html');
+  write('schema.json', '{}');
+  write('rules.json', '[]');
+  write('content.js');
+  write('exposed.js');
+  // A resource entry Chrome matches rather than opens. Expanding it here would
+  // carry a file nothing loads.
+  write('stray.png');
+  write('LICENSE', 'MIT License\n');
+  fs.copyFileSync('./pack.py', nodePath.join(box, 'pack.py'));
+
+  const listed = spawn('python3', ['-B', 'pack.py', '--list'], { cwd: box, encoding: 'utf8' });
+  assert(listed.status === 0, `pack.py --list runs over the key fixture — ${(listed.stderr || '').trim()}`);
+  const held = listed.stdout.split('\n').map(line => line.trim()).filter(Boolean).sort();
+  assert(JSON.stringify(held) === JSON.stringify([
+      'LICENSE', 'content.js', 'devtools.html', 'exposed.js', 'manifest.json',
+      'newtab.html', 'panel.html', 'popup.htm', 'popup.js', 'rules.json',
+      'sandboxed.html', 'schema.json'
+    ]),
+    `the package follows every key that names a file — got ${held.join(', ')}`);
+
+  // Each of these says the key was walked rather than the file happening to be
+  // carried some other way.
+  for (const gone of ['panel.html', 'rules.json', 'schema.json',
+    'exposed.js', 'popup.js']) {
+    fs.rmSync(nodePath.join(box, gone));
+    const refused = spawn('python3', ['-B', 'pack.py', '--list'], { cwd: box, encoding: 'utf8' });
+    assert(refused.status !== 0, `pack.py refuses a package missing ${gone}`);
+    assert(new RegExp(gone.replace('.', '\\.')).test(refused.stderr || ''),
+      `the refusal names ${gone}`);
+    write(gone);
+  }
+  fs.rmSync(box, { recursive: true, force: true });
+}
+
 // A file the package has to carry is not one it takes when it happens to be
 // there. The release workflow runs pack.py and uploads what it writes without
 // running any of this, so an omission that still exits 0 ships.
