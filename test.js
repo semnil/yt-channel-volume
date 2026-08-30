@@ -420,17 +420,71 @@ const listed = require('child_process').spawnSync('python3', ['-B', 'pack.py', '
 assert(listed.status === 0, `pack.py --list runs — ${(listed.stderr || '').trim()}`);
 const packaged = listed.stdout.split('\n').map(line => line.trim()).filter(Boolean);
 const packagedUnder = prefix => packaged.some(name => name === prefix || name.startsWith(prefix + '/'));
-const manifestFiles = [
-  ...(manifest.content_scripts || []).flatMap(script => script.js || []),
-  manifest.background?.service_worker,
-  manifest.options_page,
-  manifest.action?.default_popup,
-  ...Object.values(manifest.action?.default_icon || {}),
-  ...Object.values(manifest.icons || {})
-].filter(Boolean);
-for (const file of manifestFiles) {
-  assert(packaged.includes(file), `${file} is referenced by the manifest and must be packed`);
-  assert(fs.existsSync('./' + file), `${file} exists`);
+// pack.py declares the keys it follows; this reads that declaration and
+// resolves every one of them itself. The two share the list of keys and
+// nothing else — the reading, the parsing and the spelling are separate here —
+// so a key added to the walk cannot leave this behind.
+const DECLARED_KINDS = new Set(['page', 'script', 'style', 'asset', 'named']);
+const declaredKeys = (() => {
+  const source = fs.readFileSync('./pack.py', 'utf8');
+  const table = source.match(/^MANIFEST_REFERENCES = \(([\s\S]*?)^\)$/m);
+  assert(table, 'pack.py declares the keys it follows in MANIFEST_REFERENCES');
+  const rows = Array.from(table[1].matchAll(/\(\(([^)]*)\),\s*'([a-z]+)'\)/g),
+    ([, steps, kind]) => ({
+      path: Array.from(steps.matchAll(/'([^']*)'/g), m => m[1]),
+      kind
+    }));
+  assert(rows.length > 0, 'the declared table holds keys');
+  for (const { kind } of rows) {
+    assert(DECLARED_KINDS.has(kind),
+      `pack.py walks a ${kind} and this test does not know that kind`);
+  }
+  return rows;
+})();
+const valuesAt = (value, steps) => {
+  if (!steps.length) { return typeof value === 'string' ? [value] : []; }
+  const [step, ...rest] = steps;
+  const isObject = value !== null && typeof value === 'object';
+  if (step === '*') {
+    return isObject && !Array.isArray(value)
+      ? Object.values(value).flatMap(held => valuesAt(held, rest)) : [];
+  }
+  if (step === '[]') {
+    return Array.isArray(value) ? value.flatMap(held => valuesAt(held, rest)) : [];
+  }
+  return isObject && step in value ? valuesAt(value[step], rest) : [];
+};
+// A resource entry Chrome matches against the package names no one file.
+const A_PATTERN = /[*?]/;
+const BY_NAME = [['.html', 'page'], ['.js', 'script'], ['.css', 'style']];
+const kindOfName = name =>
+  (BY_NAME.find(([suffix]) => name.endsWith(suffix)) || [null, 'asset'])[1];
+const namedByManifest = declaredKeys.flatMap(({ path, kind }) =>
+  valuesAt(manifest, path)
+    .filter(value => !A_PATTERN.test(value))
+    .map(value => ({ value, kind: kind === 'named' ? kindOfName(value) : kind })));
+// Read without the declared table: a string in the manifest that names a file
+// in the tree is a file the extension loads. A key left out of that table is
+// silent to every check that reads it, and this is what stays awake.
+const namesAFile = [];
+(function walkStrings(value) {
+  if (typeof value === 'string') {
+    if (/^[\w][\w./-]*$/.test(value) && fs.existsSync('./' + value)
+      && fs.statSync('./' + value).isFile()) {
+      namesAFile.push(value);
+    }
+  } else if (value !== null && typeof value === 'object') {
+    Object.values(value).forEach(walkStrings);
+  }
+})(manifest);
+assert(namesAFile.length > 0, 'the manifest names files that are in the tree');
+for (const value of namesAFile) {
+  assert(packaged.includes(value),
+    `${value} is named by the manifest and must be packed`);
+}
+for (const { value } of namedByManifest) {
+  assert(packaged.includes(value), `${value} is named by the manifest and must be packed`);
+  assert(fs.existsSync('./' + value), `${value} exists`);
 }
 
 // Files the package carries although nothing in it loads them. pack.py names
@@ -469,11 +523,31 @@ const pageReferences = text => {
   }
   return found;
 };
-const referenced = new Set(['manifest.json', ...manifestFiles]);
-for (const page of ['popup.html', 'options.html']) {
-  if (!fs.existsSync('./' + page)) { continue; }
-  for (const reference of pageReferences(fs.readFileSync('./' + page, 'utf8'))) {
-    referenced.add(reference);
+const importedBy = text => Array.from(
+  text.matchAll(/importScripts\(([^)]*)\)/g),
+  ([, call]) => Array.from(call.matchAll(/['"]([^'"]+)['"]/g), m => m[1])).flat();
+const styleReferences = text => Array.from(
+  text.replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .matchAll(/(?:@import\s+(?:url\(\s*)?|url\(\s*)(["']?)([^"')\s;]+)\1/g),
+  m => m[2]).filter(target => !/^(https?:|\/\/|data:|#)/.test(target)
+    && !target.includes('__MSG_'));
+// What the extension loads, followed from the manifest through the files it
+// names, each of them parsed here rather than by pack.py.
+const referenced = new Set(['manifest.json']);
+{
+  const pending = namedByManifest.slice();
+  while (pending.length) {
+    const { value, kind } = pending.shift();
+    if (referenced.has(value)) { continue; }
+    referenced.add(value);
+    if (kind === 'asset' || !fs.existsSync('./' + value)) { continue; }
+    const text = fs.readFileSync('./' + value, 'utf8');
+    const base = value.includes('/') ? value.slice(0, value.lastIndexOf('/') + 1) : '';
+    const found = kind === 'page' ? pageReferences(text)
+      : kind === 'script' ? importedBy(text) : styleReferences(text);
+    for (const reference of found) {
+      pending.push({ value: base + reference, kind: kindOfName(reference) });
+    }
   }
 }
 for (const name of packaged) {
