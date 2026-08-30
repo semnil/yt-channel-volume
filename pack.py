@@ -1,10 +1,12 @@
 """Pack extension for Chrome Web Store submission."""
 import zipfile
+import ntpath
 import os
 import json
 import posixpath
 import re
 import sys
+from html.parser import HTMLParser
 
 # The package is what the extension loads: the manifest, everything the
 # manifest names, what those pages and workers pull in, and the locale files.
@@ -19,8 +21,6 @@ LOCALE_FILE = 'messages.json'
 # MIT text requires the notice to travel with the copies it covers, and a store
 # package is one, so the reference walk below never reaching it is not an answer.
 DISTRIBUTION_FILES = ('LICENSE',)
-SCRIPT_SRC = re.compile(r'<script[^>]+src="([^"]+)"')
-STYLE_HREF = re.compile(r'<link[^>]+href="([^"]+)"')
 IMPORT_SCRIPTS = re.compile(r'importScripts\(([^)]*)\)')
 QUOTED = re.compile(r'[\'"]([^\'"]+)[\'"]')
 REMOTE = ('http:', 'https:', '//', 'data:', 'chrome-extension:')
@@ -31,14 +31,50 @@ def _host(root, relative):
     return os.path.join(root, *relative.split('/'))
 
 
+class _PageReferences(HTMLParser):
+    """The scripts and stylesheets a page pulls in.
+
+    The markup is parsed rather than matched. A quoting style, an attribute
+    order or a letter case a pattern did not anticipate is a file that leaves
+    the package with nothing saying so, and a reference inside a comment is one
+    that enters it although the browser never asks for it.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.found = []
+
+    def handle_starttag(self, tag, attrs):
+        attributes = dict(attrs)
+        if tag == 'script':
+            source = attributes.get('src')
+            if source:
+                self.found.append(source)
+        elif tag == 'link':
+            href = attributes.get('href')
+            rel = (attributes.get('rel') or '').lower().split()
+            if href and ('stylesheet' in rel or href.endswith('.css')):
+                self.found.append(href)
+
+
+def _page_references(text):
+    parser = _PageReferences()
+    parser.feed(text)
+    parser.close()
+    return parser.found
+
+
 def _resolve(root, relative):
     """Absolute host path of a packaged file, or None when it leaves the package.
 
-    The path is rejected when it is absolute, carries a backslash, climbs out
-    with .., or reaches its target through a symbolic link at any point — the
-    final name or a parent directory alike.
+    The path is rejected when it is absolute, carries a backslash or a drive
+    letter, climbs out with .., or reaches its target through a symbolic link at
+    any point — the final name or a parent directory alike. A drive letter reads
+    as relative to posixpath and resolves against the same drive on Windows, so
+    "C:/content.js" would package the file "content.js" names, under a path
+    Chrome does not accept.
     """
-    if '\\' in relative or posixpath.isabs(relative):
+    if '\\' in relative or posixpath.isabs(relative) or ntpath.splitdrive(relative)[0]:
         return None
     normalized = posixpath.normpath(relative)
     real_root = os.path.realpath(root)
@@ -85,9 +121,7 @@ def _references_within(root, relative):
     base = posixpath.dirname(relative)
     found = []
     if relative.endswith('.html'):
-        text = _read(root, relative)
-        found.extend(SCRIPT_SRC.findall(text))
-        found.extend(href for href in STYLE_HREF.findall(text) if href.endswith('.css'))
+        found.extend(_page_references(_read(root, relative)))
     elif relative.endswith('.js'):
         for call in IMPORT_SCRIPTS.findall(_read(root, relative)):
             found.extend(QUOTED.findall(call))
@@ -116,14 +150,20 @@ def selected_files(root):
     for relative in sorted(selected):
         yield _packaged(root, relative), relative
 
-    # Chrome resolves every __MSG_ placeholder against the default locale and
-    # declines to load an extension whose default locale holds no messages, so
-    # that one file is required rather than carried when it happens to be there.
+    # Chrome requires the two to agree. An extension carrying a _locales
+    # directory has to name a default_locale, and the locale it names has to hold
+    # messages — every __MSG_ placeholder resolves against it. Either half alone
+    # is an extension Chrome declines to load. Naming a default_locale with no
+    # _locales at all is refused by the messages check below rather than here.
     default_locale = manifest.get('default_locale')
+    if default_locale is not None and not (isinstance(default_locale, str) and default_locale):
+        raise SystemExit(f'default_locale is not a locale name: {default_locale!r}')
+    locales = _host(root, LOCALE_DIR)
+    if os.path.isdir(locales) and not default_locale:
+        raise SystemExit(f'{LOCALE_DIR} is here and the manifest names no default_locale')
     required = (posixpath.join(LOCALE_DIR, default_locale, LOCALE_FILE)
                 if default_locale else None)
     carried = set()
-    locales = _host(root, LOCALE_DIR)
     if os.path.isdir(locales):
         for locale in sorted(os.listdir(locales)):
             relative = posixpath.join(LOCALE_DIR, locale, LOCALE_FILE)
