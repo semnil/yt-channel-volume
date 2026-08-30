@@ -927,6 +927,78 @@ assert(!packaged.includes('.DS_Store'),
         `the package built before is left alone with ${broken}`);
       fs.rmSync(box, { recursive: true, force: true });
     }
+
+    // Resolving every name answers for one that is missing; reading one can
+    // still fail. What the package built last is worth is that it stays.
+    for (const unreadable of ['LICENSE', '_locales/ja/messages.json']) {
+      const box = buildMinimal();
+      const built = runPack(box, []);
+      assert(built.status === 0, `pack.py runs on the whole tree — ${(built.stderr || '').trim()}`);
+      const zip = `${box}/yt-channel-volume-0.0.0.zip`;
+      const before = fs.statSync(zip).size;
+      const entries = require('child_process').spawnSync('python3',
+        ['-c', 'import zipfile,sys;print(len(zipfile.ZipFile(sys.argv[1]).namelist()))', zip],
+        { encoding: 'utf8' }).stdout.trim();
+      fs.chmodSync(`${box}/${unreadable}`, 0o000);
+      let denied = true;
+      try { fs.readFileSync(`${box}/${unreadable}`); denied = false; } catch { /* denied */ }
+      if (!denied) {
+        // Running as a user the mode does not stop, so the case cannot be made.
+        console.log(`  (read-failure check skipped: ${unreadable} is readable at mode 000)`);
+        fs.chmodSync(`${box}/${unreadable}`, 0o644);
+        fs.rmSync(box, { recursive: true, force: true });
+        continue;
+      }
+      const failed = runPack(box, []);
+      fs.chmodSync(`${box}/${unreadable}`, 0o644);
+      assert(failed.status !== 0, `pack.py fails when ${unreadable} cannot be read`);
+      assert(fs.existsSync(zip) && fs.statSync(zip).size === before,
+        `the package built before survives a read failure on ${unreadable}`);
+      const after = require('child_process').spawnSync('python3',
+        ['-c', 'import zipfile,sys;print(len(zipfile.ZipFile(sys.argv[1]).namelist()))', zip],
+        { encoding: 'utf8' }).stdout.trim();
+      assert(after === entries,
+        `the package built before still carries ${entries} entries, not ${after}`);
+      assert(!fs.readdirSync(box).some(name => name.endsWith('.part')),
+        'a half-built package is not left beside the one that stands');
+      fs.rmSync(box, { recursive: true, force: true });
+    }
+
+    // A name the walk reaches and the locale sweep or DISTRIBUTION_FILES reaches
+    // too. zipfile writes the second entry and warns on stderr, which the
+    // release path does not read.
+    {
+      const box = buildMinimal();
+      const manifest = JSON.parse(fs.readFileSync(`${box}/manifest.json`, 'utf8'));
+      manifest.web_accessible_resources = [
+        { resources: ['LICENSE', '_locales/ja/messages.json'], matches: ['*://*/*'] }
+      ];
+      fs.writeFileSync(`${box}/manifest.json`, JSON.stringify(manifest));
+      const listed = runPack(box, ['--list']);
+      assert(listed.status === 0, `pack.py --list runs — ${(listed.stderr || '').trim()}`);
+      const names = listed.stdout.split('\n').map(line => line.trim()).filter(Boolean);
+      assert(names.length === new Set(names).size,
+        `each name enters the package once — ${names.join(', ')}`);
+      fs.rmSync(box, { recursive: true, force: true });
+    }
+
+    // An argument nobody recognised is not an instruction to rewrite the package.
+    {
+      const box = buildMinimal();
+      const built = runPack(box, []);
+      assert(built.status === 0, `pack.py runs on the whole tree — ${(built.stderr || '').trim()}`);
+      const zip = `${box}/yt-channel-volume-0.0.0.zip`;
+      const stamp = fs.statSync(zip).mtimeMs;
+      for (const argument of [['--lst'], ['-l'], ['--help'], ['--list', 'extra']]) {
+        const refused = runPack(box, argument);
+        assert(refused.status !== 0, `pack.py refuses ${argument.join(' ')}`);
+        assert(!/^\s*\+ /m.test(refused.stdout || ''),
+          `pack.py packs nothing for ${argument.join(' ')}`);
+      }
+      assert(fs.statSync(zip).mtimeMs === stamp,
+        'the package standing there is not rewritten by an argument nobody recognised');
+      fs.rmSync(box, { recursive: true, force: true });
+    }
   }
 }
 
