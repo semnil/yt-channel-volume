@@ -150,7 +150,36 @@ assert(isManualGainLocked(false, true) === false,
   'manual mode keeps gain adjustment available');
 
 section('manifest content utilities');
-const manifest = JSON.parse(fs.readFileSync('./manifest.json', 'utf8'));
+// Chrome reads a manifest and a catalog with a byte order mark and with
+// comments, so this suite reads them that way too. Written as a scanner over
+// characters rather than as pack.py's states, so the two agreeing is evidence.
+const readJson = file => {
+  const text = fs.readFileSync('./' + file, 'utf8').replace(/^\uFEFF/, '');
+  let out = '', i = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === '"') {
+      out += ch; i++;
+      while (i < text.length) {
+        if (text[i] === '\\') { out += text.slice(i, i + 2); i += 2; continue; }
+        out += text[i];
+        if (text[i] === '"') { i++; break; }
+        i++;
+      }
+      continue;
+    }
+    if (ch === '/' && text[i + 1] === '/') { const n = text.indexOf('\n', i); i = n < 0 ? text.length : n; continue; }
+    if (ch === '/' && text[i + 1] === '*') {
+      const n = text.indexOf('*/', i + 2);
+      assert(n >= 0, `${file} closes every block comment it opens`);
+      i = n < 0 ? text.length : n + 2;
+      continue;
+    }
+    out += ch; i++;
+  }
+  return JSON.parse(out);
+};
+const manifest = readJson('manifest.json');
 const isolatedContentScript = manifest.content_scripts.find(script =>
   script.world !== 'MAIN'
 );
@@ -942,7 +971,21 @@ assert(!packaged.includes('.DS_Store'),
         /styles\.css uses absentKey, which .* does not answer for/],
       ['a catalog that is not JSON',
         box => fs.writeFileSync(`${box}/_locales/ja/messages.json`, '{ broken'),
-        /messages\.json is not a message catalog/],
+        /messages\.json is not readable as JSON/],
+      // Chrome's parser allows comments; it does not allow a trailing comma or
+      // a block comment left open.
+      ['a trailing comma in a catalog',
+        box => fs.writeFileSync(`${box}/_locales/ja/messages.json`,
+          '{ "extName": { "message": "x" }, }'),
+        /messages\.json is not readable as JSON/],
+      ['a block comment a catalog never closes',
+        box => fs.writeFileSync(`${box}/_locales/ja/messages.json`,
+          '{ /* "extName": { "message": "x" } }'),
+        /never closed/],
+      ['a trailing comma in the manifest',
+        box => fs.writeFileSync(`${box}/manifest.json`,
+          '{ "manifest_version": 3, "version": "0.0.0", }'),
+        /manifest\.json is not readable as JSON/],
       // Chrome reads the catalog rather than taking it on faith, and declines to
       // load the extension over any of these.
       ['a catalog whose top level is not an object',
@@ -1135,6 +1178,32 @@ assert(!packaged.includes('.DS_Store'),
       // reference whose name ends in a newline names nothing at all. It goes in
       // a stylesheet because the manifest is read as the JSON text it is, where
       // a newline is written as an escape and never reaches a candidate.
+      // Chrome reads both files with a byte order mark and with comments, and
+      // reads neither the // in a URL nor the /* in a message as one.
+      ['a byte order mark on the manifest', box => {
+        const text = fs.readFileSync(`${box}/manifest.json`, 'utf8');
+        fs.writeFileSync(`${box}/manifest.json`, '\uFEFF' + text);
+      }],
+      ['a byte order mark on the catalog', box => {
+        const text = fs.readFileSync(`${box}/_locales/ja/messages.json`, 'utf8');
+        fs.writeFileSync(`${box}/_locales/ja/messages.json`, '\uFEFF' + text);
+      }],
+      ['a line comment in the manifest', box => {
+        const text = fs.readFileSync(`${box}/manifest.json`, 'utf8');
+        fs.writeFileSync(`${box}/manifest.json`, '{\n  // what this is\n' + text.slice(1));
+      }],
+      ['a line comment in the catalog', box => fs.writeFileSync(
+        `${box}/_locales/ja/messages.json`,
+        '{\n  // the name\n  "extName": { "message": "x" }\n}')],
+      ['a block comment in the catalog', box => fs.writeFileSync(
+        `${box}/_locales/ja/messages.json`,
+        '{\n  /* the name */\n  "extName": { "message": "x" }\n}')],
+      ['a comment opener inside a string value', box => {
+        editManifest(box, m => { m.homepage_url = 'https://example.com/*'; });
+        // The escaped quote is the point: a scanner that does not step over it
+        // ends the string early and reads the // after it as a comment.
+        writeCatalog(box, { extName: { message: 'a \" b // c /* d' } });
+      }],
       ['a reference whose candidate is not a name', box => {
         fs.writeFileSync(`${box}/styles.css`, 'body { content: "__MSG_abc\n__" }\n');
         editManifest(box, m => {
