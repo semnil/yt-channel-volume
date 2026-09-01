@@ -1381,6 +1381,28 @@ assert(!packaged.includes('.DS_Store'),
   assert(named > 0, 'the workflows run actions');
 }
 
+// A page's own text under data-i18n is replaced by the catalog's before the
+// page is ever shown — applyI18n runs before the body loses `initializing`,
+// which hides it — so text written into the markup is never read by anyone and
+// drifts from the wording that ships without a single check going red.
+{
+  const holder = /<([a-zA-Z][\w-]*)([^>]*\sdata-i18n\s*=\s*["\']([^"\']+)["\'][^>]*)>([\s\S]*?)<\/\1>/g;
+  let keys = 0;
+  for (const page of ['options.html', 'popup.html']) {
+    const text = fs.readFileSync('./' + page, 'utf8');
+    for (const [, , , key, inner] of text.matchAll(holder)) {
+      keys += 1;
+      assert(inner.trim() === '',
+        `${page} leaves ${key} to the catalog — it holds ${JSON.stringify(inner.trim())}`);
+    }
+    // Without this the loop above would pass over a page the pattern cannot read.
+    assert((text.match(/data-i18n\s*=/g) || []).length
+      === (text.match(holder) || []).length,
+      `every data-i18n element in ${page} is read here`);
+  }
+  assert(keys > 10, `the pages ask the catalog for their text — found ${keys}`);
+}
+
 // A job with no timeout of its own runs to GitHub's six hours, so one that
 // hangs holds a runner for an afternoon and says nothing until it is looked at.
 {
