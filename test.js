@@ -1183,6 +1183,8 @@ assert(!packaged.includes('.DS_Store'),
       version: '1.0.0',
       // One path rather than a size for each: the other spelling Chrome takes.
       action: { default_popup: 'popup.htm', default_icon: 'brand.png' },
+      options_ui: { page: 'options.html' },
+      icons: { 16: 'icons/small.png', 48: 'icons/large.png' },
       devtools_page: 'devtools.html',
       side_panel: { default_path: 'panel.html' },
       chrome_url_overrides: { newtab: 'newtab.html' },
@@ -1201,6 +1203,9 @@ assert(!packaged.includes('.DS_Store'),
   // Chrome loads a page under whatever name the key gives it.
   write('popup.htm', '<script src="popup.js"></script>\n');
   write('popup.js');
+  write('options.html');
+  write('icons/small.png');
+  write('icons/large.png');
   write('devtools.html');
   write('panel.html');
   write('newtab.html');
@@ -1254,12 +1259,41 @@ assert(!packaged.includes('.DS_Store'),
   const held = listed.stdout.split('\n').map(line => line.trim()).filter(Boolean).sort();
   assert(JSON.stringify(held) === JSON.stringify([
       'LICENSE', 'bg.png', 'brand.png', 'content.js', 'devtools.html', 'exposed.js',
-      'images/deep/inner.png', 'images/logo.png', 'lib/helper.js', 'lib/inner.js',
-      'loose.png', 'manifest.json', 'newtab.html', 'panel.html', 'popup.htm',
+      'icons/large.png', 'icons/small.png', 'images/deep/inner.png',
+      'images/logo.png', 'lib/helper.js', 'lib/inner.js', 'loose.png',
+      'manifest.json', 'newtab.html', 'options.html', 'panel.html', 'popup.htm',
       'popup.js', 'rules.json', 'sandboxed.html', 'schema.json', 'spare.js',
       'styles.css', 'theme.css'
     ]),
     `the package follows every key that names a file — got ${held.join(', ')}`);
+
+  // The other spelling of an icon for the action: a size for each rather than
+  // one path. Chrome takes both — measured against 151, which packs a manifest
+  // carrying options_ui, icons and a per-size default_icon together — so the
+  // walk has a row for each and both are put to it.
+  {
+    const manifest = JSON.parse(fs.readFileSync(nodePath.join(box, 'manifest.json'), 'utf8'));
+    manifest.action.default_icon = { 16: 'brand16.png', 48: 'brand48.png' };
+    fs.writeFileSync(nodePath.join(box, 'manifest.json'), JSON.stringify(manifest));
+    write('brand16.png');
+    write('brand48.png');
+    const sized = spawn('python3', ['-B', 'pack.py', '--list'], { cwd: box, encoding: 'utf8' });
+    assert(sized.status === 0,
+      `pack.py --list runs over a per-size icon — ${(sized.stderr || '').trim()}`);
+    const names = sized.stdout.split('\n').map(line => line.trim()).filter(Boolean);
+    for (const name of ['brand16.png', 'brand48.png']) {
+      assert(names.includes(name), `the package follows a per-size icon: ${name}`);
+    }
+    // The one path the manifest no longer names. Without this the check above
+    // would pass over a walk that packed the tree.
+    assert(!names.includes('brand.png'),
+      'the icon the manifest stopped naming is left out');
+    // Put the tree back the way the checks below expect it.
+    fs.writeFileSync(nodePath.join(box, 'manifest.json'), JSON.stringify(
+      { ...manifest, action: { ...manifest.action, default_icon: 'brand.png' } }));
+    fs.rmSync(nodePath.join(box, 'brand16.png'));
+    fs.rmSync(nodePath.join(box, 'brand48.png'));
+  }
 
   // Each of these says the key was walked rather than the file happening to be
   // carried some other way.
@@ -1267,7 +1301,8 @@ assert(!packaged.includes('.DS_Store'),
   // matched is that the file is in the list above and its neighbours are
   // not. These are the names that fail when the key stops being walked.
   for (const gone of ['panel.html', 'rules.json', 'schema.json', 'theme.css',
-    'bg.png', 'brand.png', 'exposed.js', 'popup.js', 'lib/inner.js']) {
+    'bg.png', 'brand.png', 'exposed.js', 'popup.js', 'lib/inner.js',
+    'options.html', 'icons/small.png']) {
     fs.rmSync(nodePath.join(box, gone));
     const refused = spawn('python3', ['-B', 'pack.py', '--list'], { cwd: box, encoding: 'utf8' });
     assert(refused.status !== 0, `pack.py refuses a package missing ${gone}`);
