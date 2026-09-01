@@ -1346,6 +1346,27 @@ assert(!packaged.includes('.DS_Store'),
   assert(named > 0, 'the workflows run actions');
 }
 
+// A job with no timeout of its own runs to GitHub's six hours, so one that
+// hangs holds a runner for an afternoon and says nothing until it is looked at.
+{
+  const workflows = './.github/workflows';
+  let jobs = 0;
+  for (const name of fs.readdirSync(workflows).filter(file => /\.ya?ml$/.test(file))) {
+    const text = fs.readFileSync(`${workflows}/${name}`, 'utf8');
+    // A job is a key at one indent under jobs:, and its block runs to the next.
+    const blocks = text.slice(text.indexOf('\njobs:')).split(/\n {2}(?=[\w-]+:)/).slice(1);
+    for (const block of blocks) {
+      jobs += 1;
+      // At the job's own indent: a step inside it naming one of its own
+      // answers for the step and leaves the job running to GitHub's six hours.
+      assert(/^ {4}timeout-minutes: \d+$/m.test(block),
+        `${name}'s ${block.split(':')[0]} names how long it may run`);
+    }
+  }
+  // Without this the loop above would pass over a repository with no jobs in it.
+  assert(jobs > 2, `the workflows carry jobs — found ${jobs}`);
+}
+
 // A file the package has to carry is not one it takes when it happens to be
 // there. The release workflow runs pack.py and uploads what it writes without
 // running any of this, so an omission that still exits 0 ships.
