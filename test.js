@@ -734,32 +734,6 @@ if (outDirDecl && sheetTable && langTuple) {
     assert(generated.has(image), `${image} is one of the files gen_screenshots.py writes`);
   }
 
-  // The mockups spell out UI text that lives in _locales, so it can drift.
-  const drawnLabels = {
-    auto_label: 'autoApplyLoudness',
-    target_desc: 'targetLufsDesc',
-    all_auto_label: 'allChannelsAutoApply',
-    all_auto_desc: 'allChannelsAutoApplyDesc',
-    unit_label: 'displayUnit',
-    unit_desc: 'displayUnitDesc',
-    overlay_label: 'showGainOverlay',
-    overlay_desc: 'showGainOverlayDesc',
-    clear_all: 'clearAll',
-  };
-  for (const lang of langs) {
-    const localeFile = `./_locales/${lang}/messages.json`;
-    assert(fs.existsSync(localeFile), `${localeFile} exists for the language the mockups draw`);
-    if (!fs.existsSync(localeFile)) { continue; }
-    const start = genSrc.indexOf(`'${lang}': {`);
-    const block = start === -1 ? '' : genSrc.slice(start, genSrc.indexOf('video_title', start));
-    const messages = JSON.parse(fs.readFileSync(localeFile, 'utf8'));
-    for (const [drawn, messageKey] of Object.entries(drawnLabels)) {
-      const value = block.match(new RegExp(`'${drawn}': '([^']*)'`));
-      assert(value && messages[messageKey] && value[1] === messages[messageKey].message,
-        `gen_screenshots.py draws ${lang} ${drawn} exactly as ${messageKey}`);
-    }
-  }
-
   assert(!packagedUnder(outDir.split('/')[0]), 'the screenshots stay out of the store zip');
 
   // Chrome refuses to load an unpacked extension whose top level holds a name
@@ -1379,6 +1353,37 @@ assert(!packaged.includes('.DS_Store'),
   }
   // Without this the loop above would pass over a workflow that runs nothing.
   assert(named > 0, 'the workflows run actions');
+}
+
+// The screenshots are what the store shows, and the wording in them is the
+// extension's. Written out in the generator it was a third copy beside the
+// pages and the catalog, and nothing compared the three: changing a message
+// left the store showing the old one with every check green.
+{
+  const source = fs.readFileSync('./gen_screenshots.py', 'utf8');
+  const table = source.match(/^FROM_CATALOG = \{([\s\S]*?)^\}/m);
+  assert(table, 'gen_screenshots.py names the messages it draws in FROM_CATALOG');
+  const keys = Array.from((table?.[1] || '').matchAll(/'[\w_]+': '([\w]+)'/g), m => m[1]);
+  // The two the button is built from are named where it is built, not in the
+  // table, so they are added here rather than left unheld.
+  keys.push('applyToChannelWithValue', 'typeVideo');
+  assert(keys.length > 8, `the generator draws messages — found ${keys.length}`);
+  const locales = fs.readdirSync('./_locales');
+  assert(locales.length > 1, 'the extension is localized');
+  for (const locale of locales) {
+    const messages = JSON.parse(fs.readFileSync(`./_locales/${locale}/messages.json`, 'utf8'));
+    for (const key of keys) {
+      assert(messages[key]?.message, `${locale} answers for ${key}, which the screenshots draw`);
+    }
+    // The other direction: a message spelled out in the generator is a copy
+    // that the catalog cannot correct, which is what this replaced.
+    for (const [key, entry] of Object.entries(messages)) {
+      const text = entry.message;
+      if (!text || text.includes('$')) { continue; }
+      assert(!source.includes(`'${text}'`) && !source.includes(`"${text}"`),
+        `gen_screenshots.py spells out ${locale}'s ${key} instead of reading it`);
+    }
+  }
 }
 
 // A page's own text under data-i18n is replaced by the catalog's before the
