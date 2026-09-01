@@ -2074,6 +2074,27 @@ assert(!packaged.includes('.DS_Store'),
       fs.rmSync(box, { recursive: true, force: true });
     }
 
+    // What a run says it packed. The refusals above assert that no line of
+    // this shape is printed; without one asserting that it is printed when a
+    // package is built, renaming the marker would leave every one of them
+    // passing over a run that named the whole tree.
+    {
+      const box = buildMinimal();
+      const built = runPack(box, []);
+      assert(built.status === 0, `pack.py runs on the whole tree — ${(built.stderr || '').trim()}`);
+      const named = (built.stdout || '').split('\n')
+        .map(line => line.match(/^\s*\+ (.+)$/)).filter(Boolean).map(match => match[1]);
+      const listed = runPack(box, ['--list']);
+      assert(listed.status === 0, `pack.py --list runs — ${(listed.stderr || '').trim()}`);
+      const names = (listed.stdout || '').split('\n').map(line => line.trim()).filter(Boolean);
+      assert(JSON.stringify(named.slice().sort()) === JSON.stringify(names.slice().sort()),
+        `a run names what it packed — printed ${named.join(', ')}, listed ${names.join(', ')}`);
+      const held = heldInZip(box, 'yt-channel-volume-0.0.0.zip').map(([name]) => name);
+      assert(JSON.stringify(named.slice().sort()) === JSON.stringify(held.slice().sort()),
+        `what it names is what the archive holds — printed ${named.join(', ')}, held ${held.join(', ')}`);
+      fs.rmSync(box, { recursive: true, force: true });
+    }
+
     // An argument nobody recognised is not an instruction to rewrite the package.
     {
       const box = buildMinimal();
