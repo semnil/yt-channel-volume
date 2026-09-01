@@ -1397,6 +1397,21 @@ assert(!packaged.includes('.DS_Store'),
   }
 }
 
+// A run that is not making a release has a branch name where the tag would be,
+// so the tag and the manifest are compared exactly where a release is made
+// from them — which is the flag create-release is already gated on.
+{
+  const release = fs.readFileSync('./.github/workflows/release.yaml', 'utf8');
+  const gate = "if: needs.check-event.outputs.validTag == 'true'";
+  const gated = release.split('\n').filter(line => line.trim() === gate).length;
+  assert(gated === 2,
+    `the version check and the release read one flag — found ${gated} line(s) reading it`);
+  const verify = release.indexOf('run: bash tools/verify-version.sh');
+  assert(verify > -1, 'the release workflow runs the version script');
+  assert(release.lastIndexOf(gate, verify) > release.lastIndexOf('- name:', verify),
+    'the version check is the step that flag stands on');
+}
+
 // A file the package has to carry is not one it takes when it happens to be
 // there. The release workflow runs pack.py and uploads what it writes without
 // running any of this, so an omission that still exits 0 ships.
