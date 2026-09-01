@@ -1181,7 +1181,8 @@ assert(!packaged.includes('.DS_Store'),
   write('manifest.json', JSON.stringify({
       manifest_version: 3,
       version: '1.0.0',
-      action: { default_popup: 'popup.htm' },
+      // One path rather than a size for each: the other spelling Chrome takes.
+      action: { default_popup: 'popup.htm', default_icon: 'brand.png' },
       devtools_page: 'devtools.html',
       side_panel: { default_path: 'panel.html' },
       chrome_url_overrides: { newtab: 'newtab.html' },
@@ -1216,6 +1217,7 @@ assert(!packaged.includes('.DS_Store'),
       + 'c { background: url("__MSG_@@extension_id__/asset.png") }\n');
   write('theme.css', 'body { color: red }\n');
   write('bg.png');
+  write('brand.png');
   // In a comment, remote, a fragment of the sheet, and a name Chrome
   // substitutes a message into: none of them is a file this can resolve.
   write('commented.png');
@@ -1229,6 +1231,9 @@ assert(!packaged.includes('.DS_Store'),
   // The pattern has to name the whole of what it matches: this one begins
   // with a name it does name and goes on past it.
   write('images/logo.png.bak');
+  // Where a pattern names files exactly, those are the files it names:
+  // this one folds onto it and is not among them.
+  write('images/OTHER.PNG');
   // What a pattern names is read by what it is: this one imports, and
   // what it imports is packed with it.
   write('lib/helper.js', "importScripts('inner.js');\n");
@@ -1248,7 +1253,7 @@ assert(!packaged.includes('.DS_Store'),
   assert(listed.status === 0, `pack.py --list runs over the key fixture — ${(listed.stderr || '').trim()}`);
   const held = listed.stdout.split('\n').map(line => line.trim()).filter(Boolean).sort();
   assert(JSON.stringify(held) === JSON.stringify([
-      'LICENSE', 'bg.png', 'content.js', 'devtools.html', 'exposed.js',
+      'LICENSE', 'bg.png', 'brand.png', 'content.js', 'devtools.html', 'exposed.js',
       'images/deep/inner.png', 'images/logo.png', 'lib/helper.js', 'lib/inner.js',
       'loose.png', 'manifest.json', 'newtab.html', 'panel.html', 'popup.htm',
       'popup.js', 'rules.json', 'sandboxed.html', 'schema.json', 'spare.js',
@@ -1262,7 +1267,7 @@ assert(!packaged.includes('.DS_Store'),
   // matched is that the file is in the list above and its neighbours are
   // not. These are the names that fail when the key stops being walked.
   for (const gone of ['panel.html', 'rules.json', 'schema.json', 'theme.css',
-    'bg.png', 'exposed.js', 'popup.js', 'lib/inner.js']) {
+    'bg.png', 'brand.png', 'exposed.js', 'popup.js', 'lib/inner.js']) {
     fs.rmSync(nodePath.join(box, gone));
     const refused = spawn('python3', ['-B', 'pack.py', '--list'], { cwd: box, encoding: 'utf8' });
     assert(refused.status !== 0, `pack.py refuses a package missing ${gone}`);
@@ -1482,6 +1487,44 @@ assert(!packaged.includes('.DS_Store'),
         box => writeCatalog(box,
           { extName: { message: 'x $A$', placeholders: { a: { example: 'y' } } } }),
         /gives extName\.a no content/],
+      // A pattern that names nothing is one Chrome takes as well. A pattern
+      // that names nothing until the spelling is folded is the tree carrying
+      // the files another way, and the package would go out without them —
+      // which the walk cannot say, because it lists real paths and matches
+      // them, so a spelling that differs reads as nothing to match.
+      ['a resource pattern whose directory the tree spells another way',
+        box => {
+          fs.mkdirSync(`${box}/images`);
+          fs.writeFileSync(`${box}/images/logo.png`, 'x');
+          editManifest(box, m => {
+            m.web_accessible_resources = [{ resources: ['Images/*.png'],
+              matches: ['https://example.com/*'] }];
+          });
+        },
+        /the tree spells this another way: Images\/\*\.png/],
+      ['a resource pattern whose extension the tree spells another way',
+        box => {
+          fs.mkdirSync(`${box}/images`);
+          fs.writeFileSync(`${box}/images/logo.png`, 'x');
+          editManifest(box, m => {
+            m.web_accessible_resources = [{ resources: ['images/*.PNG'],
+              matches: ['https://example.com/*'] }];
+          });
+        },
+        /the tree spells this another way: images\/\*\.PNG/],
+      // A name that is nowhere and a name spelled another way are different
+      // mistakes, and each is said as itself.
+      ['a reference with no file behind it',
+        box => fs.rmSync(`${box}/content.js`),
+        /referenced file is missing or not a regular file: content\.js/],
+      // A host that opens a name without regard to case hands back the file
+      // the tree carries, and the package would hold two entries for the one
+      // file — one of them under a name no other host can open.
+      ['a reference the tree spells another way',
+        box => editManifest(box, m => {
+          m.content_scripts = [{ js: ['Content.js'] }];
+        }),
+        /the tree spells this another way: Content\.js/],
       // Outside a resource entry a leading slash is an absolute path, and an
       // absolute path names a file the package cannot carry.
       ['a reference beginning at the root of the host',
@@ -1823,6 +1866,23 @@ assert(!packaged.includes('.DS_Store'),
           m.version = '1.2.0';
           m.version_name = '1.2.0-rc1';
         });
+      }],
+      // Naming nothing has nothing to do with spelling: Chrome takes a pattern
+      // that matches no file, so this does too.
+      ['a resource pattern that names nothing', box => {
+        fs.mkdirSync(`${box}/images`);
+        fs.writeFileSync(`${box}/images/logo.png`, 'x');
+        editManifest(box, m => {
+          m.web_accessible_resources = [{ resources: ['images/*.svg'],
+            matches: ['https://example.com/*'] }];
+        });
+      }],
+      // The spelling is compared, not folded: a name the tree really carries
+      // in capitals is the name that opens it. Without this the rule above
+      // could refuse every reference and stay green.
+      ['a name the tree carries in capitals', box => {
+        fs.renameSync(`${box}/content.js`, `${box}/Content.js`);
+        editManifest(box, m => { m.content_scripts = [{ js: ['Content.js'] }]; });
       }],
       // The Norwegian the store does carry, which is the name an extension
       // reaching for nb is told to use instead. Without this the rule above
