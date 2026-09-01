@@ -118,6 +118,7 @@ yt-channel-volume/
 ├── _locales/             # i18n (ja, en)
 ├── icons/                # extension icons (16/48/128 px)
 ├── docs/screenshots/     # screenshots for the README and the store listing (ja, en)
+├── tools/*.sh            # what the release workflow runs: the tag check and the version check
 ├── tools/fonts/          # M PLUS 1p (OFL), the face the screenshots are drawn in
 ├── test.js               # utils unit tests
 ├── test-navigation.js    # navigation and data integrity tests
