@@ -241,6 +241,11 @@ function simulateBridgeMessage(data) {
   }
 }
 
+// Chrome closes the message port when the listener returns anything but true,
+// and a sendResponse made after that reaches nobody. Resolving on the callback
+// whatever the listener returned made that contract invisible: every handler
+// answering from a .then could drop its `return true` and the popup would wait
+// for ever with this suite still green.
 function simulateRuntimeMessage(data) {
   return new Promise((resolve) => {
     const listener = mockRuntimeMessageListeners[0];
@@ -248,7 +253,23 @@ function simulateRuntimeMessage(data) {
       resolve(undefined);
       return;
     }
-    listener(data, {}, resolve);
+    let open = true;
+    let answered = false;
+    const reply = (value) => {
+      if (!open) {
+        // The port is shut; Chrome drops this. Say so rather than resolving.
+        resolve({ __lost: true, value });
+        return;
+      }
+      answered = true;
+      resolve(value);
+    };
+    const kept = listener(data, {}, reply);
+    if (kept !== true) {
+      open = false;
+      // Nothing more can arrive. An answer already made stands.
+      if (!answered) { resolve({ __lost: true, value: undefined }); }
+    }
   });
 }
 
