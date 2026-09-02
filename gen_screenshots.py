@@ -142,6 +142,20 @@ FROM_CATALOG = {
     'overlay_desc': 'showGainOverlayDesc',
     'clear_all': 'clearAll',
 }
+# The rows options.html lays out, in its order: the message the label shows,
+# the message under it, and the control the page carries on that row with how
+# many of it. The
+# drawing walks this, so what is drawn cannot drift from it, and test.js
+# compares it with the page. Nothing else notices when the page grows a row,
+# reorders two, or swaps a control: these screenshots are a hand-drawn mock and
+# `--check` only holds the drawing to its own committed output.
+SETTING_ROWS = (
+    ('target_label', 'target_desc', 'range', 1),
+    ('all_auto_label', 'all_auto_desc', 'toggle', 2),
+    ('unit_label', 'unit_desc', 'buttons', 2),
+    ('overlay_label', 'overlay_desc', 'toggle', 1),
+)
+
 # The gain the mocked-up popup offers to apply. popup.js writes the button as
 # the message with the value in it, then the kind of thing it applies to.
 APPLIED_GAIN = '63%'
@@ -282,12 +296,9 @@ def screenshot_settings(lang):
     draw.text((50, sy+12), 'SETTINGS', fill=GRAY, font=FONT_SM)
 
     ry = sy + 34
-    for label, desc in ((s['target_label'], s['target_desc']),
-                        (s['all_auto_label'], s['all_auto_desc']),
-                        (s['unit_label'], s['unit_desc']),
-                        (s['overlay_label'], s['overlay_desc'])):
-        draw.text((50, ry), label, fill=(204, 204, 204), font=FONT)
-        draw.text((50, ry+17), desc, fill=DIM, font=FONT_SM)
+    for label, desc, _control, _many in SETTING_ROWS:
+        draw.text((50, ry), s[label], fill=(204, 204, 204), font=FONT)
+        draw.text((50, ry+17), s[desc], fill=DIM, font=FONT_SM)
         ry += 38
 
     # Target LUFS slider

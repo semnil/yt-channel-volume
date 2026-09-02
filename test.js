@@ -1363,6 +1363,67 @@ assert(!packaged.includes('.DS_Store'),
   assert(named > 0, 'the workflows run actions');
 }
 
+// The screenshots are a hand-drawn mock of the settings page, and `--check`
+// holds the drawing only to its own committed output — so a row added to
+// options.html, two reordered, or a control swapped leaves the store showing
+// the old layout with every check green. The generator declares the rows it
+// draws; this reads that declaration and the page, and holds them to each
+// other. What it does not hold is the drawing to the control the row declares:
+// that column is a declaration, and a screenshot is what says it was drawn.
+{
+  const source = fs.readFileSync('./gen_screenshots.py', 'utf8');
+  const catalogOf = (() => {
+    const table = source.match(/^FROM_CATALOG = \{([\s\S]*?)^\}/m);
+    assert(table, 'gen_screenshots.py names the messages it draws in FROM_CATALOG');
+    return Object.fromEntries(
+      Array.from((table?.[1] || '').matchAll(/'([\w_]+)': '(\w+)'/g), m => [m[1], m[2]]));
+  })();
+  const declared = (() => {
+    const table = source.match(/^SETTING_ROWS = \(([\s\S]*?)^\)/m);
+    assert(table, 'gen_screenshots.py declares the rows it draws in SETTING_ROWS');
+    return Array.from((table?.[1] || '')
+      .matchAll(/\('([\w_]+)', '([\w_]+)', '(\w+)', (\d+)\)/g),
+      m => ({ label: catalogOf[m[1]], desc: catalogOf[m[2]], control: m[3], many: Number(m[4]) }));
+  })();
+
+  // Each row of the page, by walking its divs to the matching close: a name
+  // taken to the next `setting-row` instead would swallow whatever follows the
+  // last one, and read the buttons of the section below it as that row's.
+  const laidOut = (() => {
+    const html = fs.readFileSync('./options.html', 'utf8');
+    const found = [];
+    for (const open of html.matchAll(/<div class="setting-row"[^>]*>/g)) {
+      let at = open.index + open[0].length, depth = 1;
+      while (depth) {
+        const next = /<div\b|<\/div>/.exec(html.slice(at));
+        if (!next) { break; }
+        at += next.index + next[0].length;
+        depth += next[0] === '</div>' ? -1 : 1;
+      }
+      const block = html.slice(open.index + open[0].length, at);
+      const control = {};
+      for (const one of block.matchAll(/<input\b[^>]*type="(\w+)"|<(button)\b|<(select)\b/g)) {
+        const kind = { range: 'range', checkbox: 'toggle', button: 'buttons', select: 'select' }[
+          one[1] || one[2] || one[3]] || (one[1] || one[2] || one[3]);
+        control[kind] = (control[kind] || 0) + 1;
+      }
+      const kinds = Object.keys(control);
+      found.push({
+        label: (block.match(/class="setting-label"[^>]*data-i18n="(\w+)"/) || [])[1],
+        desc: (block.match(/class="setting-desc"[^>]*data-i18n="(\w+)"/) || [])[1],
+        control: kinds.length === 1 ? kinds[0] : kinds.sort().join('+'),
+        many: kinds.length === 1 ? control[kinds[0]] : 0,
+      });
+    }
+    return found;
+  })();
+
+  assert(laidOut.length > 3, `the page lays out settings rows — found ${laidOut.length}`);
+  assert(JSON.stringify(declared) === JSON.stringify(laidOut),
+    `the screenshots draw the rows the page lays out, in its order`
+    + ` — drawn ${JSON.stringify(declared)}, laid out ${JSON.stringify(laidOut)}`);
+}
+
 // The screenshots are what the store shows, and the wording in them is the
 // extension's. Written out in the generator it was a third copy beside the
 // pages and the catalog, and nothing compared the three: changing a message
