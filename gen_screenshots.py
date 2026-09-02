@@ -7,6 +7,7 @@ a destination handed over that cannot be written is exit 2, where the tracked
 one is exit 1.
 """
 import hashlib
+import json
 import math
 import os
 import shutil
@@ -124,19 +125,32 @@ def fit_value_font(draw, cards, max_w):
 
 # ── Localized strings ────────────────────────────────────────────────
 
+# What the extension shows is the catalog's, and this reads it there. Written
+# out again it was a third copy of every label, kept by hand beside the pages
+# and the catalog with nothing comparing the three, so a screenshot could go on
+# showing a string the extension had stopped using.
+FROM_CATALOG = {
+    'name': 'extName',
+    'target_label': 'targetLufs',
+    'auto_label': 'autoApplyLoudness',
+    'target_desc': 'targetLufsDesc',
+    'all_auto_label': 'allChannelsAutoApply',
+    'all_auto_desc': 'allChannelsAutoApplyDesc',
+    'unit_label': 'displayUnit',
+    'unit_desc': 'displayUnitDesc',
+    'overlay_label': 'showGainOverlay',
+    'overlay_desc': 'showGainOverlayDesc',
+    'clear_all': 'clearAll',
+}
+# The gain the mocked-up popup offers to apply. popup.js writes the button as
+# the message with the value in it, then the kind of thing it applies to.
+APPLIED_GAIN = '63%'
+
+# What the drawing invents: a channel nobody has, a video nobody uploaded, and
+# the headings this mock puts above its panels.
 STRINGS = {
     'ja': {
-        'apply': '63% をチャンネルに適用 (Video)',
-        'auto_label': 'LUFS 自動適用',
         'manual': 'MANUAL VOLUME',
-        'target_desc': 'Loudness から算出するゲインの基準値',
-        'all_auto_label': '全チャンネルの LUFS 自動適用',
-        'all_auto_desc': '個別設定がないチャンネルの既定値',
-        'unit_label': '表示単位',
-        'unit_desc': 'ゲイン値の表示形式',
-        'overlay_label': 'ゲイン表示',
-        'overlay_desc': 'プレイヤーの音量バー横に適用中のゲインを表示',
-        'clear_all': '全削除',
         'video_title': 'Sample Ch. - ピアノカバー集',
         'video_channel': 'Sample Ch.',
         'channels': [
@@ -146,17 +160,7 @@ STRINGS = {
         ],
     },
     'en': {
-        'apply': 'Apply 63% to channel (Video)',
-        'auto_label': 'Auto-apply LUFS',
         'manual': 'MANUAL VOLUME',
-        'target_desc': 'Reference level for gain calculation from Loudness',
-        'all_auto_label': 'Auto-apply LUFS for all channels',
-        'all_auto_desc': 'Default for channels without an individual setting',
-        'unit_label': 'Display unit',
-        'unit_desc': 'Format for gain values',
-        'overlay_label': 'Gain overlay',
-        'overlay_desc': 'Show applied gain next to the volume bar in the player',
-        'clear_all': 'Clear all',
         'video_title': 'Sample Ch. - Piano Cover Collection',
         'video_channel': 'Sample Ch.',
         'channels': [
@@ -166,6 +170,28 @@ STRINGS = {
         ],
     },
 }
+
+
+def _messages(lang):
+    """The catalog the extension reads for a language."""
+    path = os.path.join(ROOT, '_locales', lang, 'messages.json')
+    try:
+        with open(path, encoding='utf-8') as handle:
+            return {key: entry['message'] for key, entry in json.load(handle).items()}
+    except OSError as err:
+        raise SystemExit(f'no wording here to draw the screenshots with: {err}')
+
+
+for _lang, _drawn in STRINGS.items():
+    _catalog = _messages(_lang)
+    for _key in list(FROM_CATALOG.values()) + ['applyToChannelWithValue', 'typeVideo']:
+        if _key not in _catalog:
+            raise SystemExit(f'{_lang} has no message named {_key}, which the '
+                             f'screenshots draw')
+    for _name, _key in FROM_CATALOG.items():
+        _drawn[_name] = _catalog[_key]
+    _drawn['apply'] = (_catalog['applyToChannelWithValue'].replace('$VALUE$', APPLIED_GAIN)
+                       + f' ({_catalog["typeVideo"]})')
 
 
 def screenshot_popup(lang):
@@ -178,7 +204,7 @@ def screenshot_popup(lang):
     rr(draw, [px, py, px+pw, py+ph], 10, CARD_BG)
 
     # Header
-    draw.text((px+16, py+12), 'YT Channel Volume', fill=TEAL, font=FONT_TITLE)
+    draw.text((px+16, py+12), s['name'], fill=TEAL, font=FONT_TITLE)
     gear(draw, px+pw-24, py+22, 8, GRAY)
     draw.line([(px, py+38), (px+pw, py+38)], fill=BORDER)
 
@@ -248,7 +274,7 @@ def screenshot_settings(lang):
     img = Image.new('RGB', (W, H), BG)
     draw = ImageDraw.Draw(img)
 
-    draw.text((36, 16), 'YT Channel Volume', fill=TEAL, font=FONT_XL)
+    draw.text((36, 16), s['name'], fill=TEAL, font=FONT_XL)
 
     # Settings section \u2014 the four rows options.html lays out, in its order
     sy = 54
@@ -256,7 +282,7 @@ def screenshot_settings(lang):
     draw.text((50, sy+12), 'SETTINGS', fill=GRAY, font=FONT_SM)
 
     ry = sy + 34
-    for label, desc in ((('Target LUFS'), s['target_desc']),
+    for label, desc in ((s['target_label'], s['target_desc']),
                         (s['all_auto_label'], s['all_auto_desc']),
                         (s['unit_label'], s['unit_desc']),
                         (s['overlay_label'], s['overlay_desc'])):

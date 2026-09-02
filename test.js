@@ -734,32 +734,6 @@ if (outDirDecl && sheetTable && langTuple) {
     assert(generated.has(image), `${image} is one of the files gen_screenshots.py writes`);
   }
 
-  // The mockups spell out UI text that lives in _locales, so it can drift.
-  const drawnLabels = {
-    auto_label: 'autoApplyLoudness',
-    target_desc: 'targetLufsDesc',
-    all_auto_label: 'allChannelsAutoApply',
-    all_auto_desc: 'allChannelsAutoApplyDesc',
-    unit_label: 'displayUnit',
-    unit_desc: 'displayUnitDesc',
-    overlay_label: 'showGainOverlay',
-    overlay_desc: 'showGainOverlayDesc',
-    clear_all: 'clearAll',
-  };
-  for (const lang of langs) {
-    const localeFile = `./_locales/${lang}/messages.json`;
-    assert(fs.existsSync(localeFile), `${localeFile} exists for the language the mockups draw`);
-    if (!fs.existsSync(localeFile)) { continue; }
-    const start = genSrc.indexOf(`'${lang}': {`);
-    const block = start === -1 ? '' : genSrc.slice(start, genSrc.indexOf('video_title', start));
-    const messages = JSON.parse(fs.readFileSync(localeFile, 'utf8'));
-    for (const [drawn, messageKey] of Object.entries(drawnLabels)) {
-      const value = block.match(new RegExp(`'${drawn}': '([^']*)'`));
-      assert(value && messages[messageKey] && value[1] === messages[messageKey].message,
-        `gen_screenshots.py draws ${lang} ${drawn} exactly as ${messageKey}`);
-    }
-  }
-
   assert(!packagedUnder(outDir.split('/')[0]), 'the screenshots stay out of the store zip');
 
   // Chrome refuses to load an unpacked extension whose top level holds a name
@@ -1183,6 +1157,8 @@ assert(!packaged.includes('.DS_Store'),
       version: '1.0.0',
       // One path rather than a size for each: the other spelling Chrome takes.
       action: { default_popup: 'popup.htm', default_icon: 'brand.png' },
+      options_ui: { page: 'options.html' },
+      icons: { 16: 'icons/small.png', 48: 'icons/large.png' },
       devtools_page: 'devtools.html',
       side_panel: { default_path: 'panel.html' },
       chrome_url_overrides: { newtab: 'newtab.html' },
@@ -1201,6 +1177,9 @@ assert(!packaged.includes('.DS_Store'),
   // Chrome loads a page under whatever name the key gives it.
   write('popup.htm', '<script src="popup.js"></script>\n');
   write('popup.js');
+  write('options.html');
+  write('icons/small.png');
+  write('icons/large.png');
   write('devtools.html');
   write('panel.html');
   write('newtab.html');
@@ -1254,12 +1233,41 @@ assert(!packaged.includes('.DS_Store'),
   const held = listed.stdout.split('\n').map(line => line.trim()).filter(Boolean).sort();
   assert(JSON.stringify(held) === JSON.stringify([
       'LICENSE', 'bg.png', 'brand.png', 'content.js', 'devtools.html', 'exposed.js',
-      'images/deep/inner.png', 'images/logo.png', 'lib/helper.js', 'lib/inner.js',
-      'loose.png', 'manifest.json', 'newtab.html', 'panel.html', 'popup.htm',
+      'icons/large.png', 'icons/small.png', 'images/deep/inner.png',
+      'images/logo.png', 'lib/helper.js', 'lib/inner.js', 'loose.png',
+      'manifest.json', 'newtab.html', 'options.html', 'panel.html', 'popup.htm',
       'popup.js', 'rules.json', 'sandboxed.html', 'schema.json', 'spare.js',
       'styles.css', 'theme.css'
     ]),
     `the package follows every key that names a file — got ${held.join(', ')}`);
+
+  // The other spelling of an icon for the action: a size for each rather than
+  // one path. Chrome takes both — measured against 151, which packs a manifest
+  // carrying options_ui, icons and a per-size default_icon together — so the
+  // walk has a row for each and both are put to it.
+  {
+    const manifest = JSON.parse(fs.readFileSync(nodePath.join(box, 'manifest.json'), 'utf8'));
+    manifest.action.default_icon = { 16: 'brand16.png', 48: 'brand48.png' };
+    fs.writeFileSync(nodePath.join(box, 'manifest.json'), JSON.stringify(manifest));
+    write('brand16.png');
+    write('brand48.png');
+    const sized = spawn('python3', ['-B', 'pack.py', '--list'], { cwd: box, encoding: 'utf8' });
+    assert(sized.status === 0,
+      `pack.py --list runs over a per-size icon — ${(sized.stderr || '').trim()}`);
+    const names = sized.stdout.split('\n').map(line => line.trim()).filter(Boolean);
+    for (const name of ['brand16.png', 'brand48.png']) {
+      assert(names.includes(name), `the package follows a per-size icon: ${name}`);
+    }
+    // The one path the manifest no longer names. Without this the check above
+    // would pass over a walk that packed the tree.
+    assert(!names.includes('brand.png'),
+      'the icon the manifest stopped naming is left out');
+    // Put the tree back the way the checks below expect it.
+    fs.writeFileSync(nodePath.join(box, 'manifest.json'), JSON.stringify(
+      { ...manifest, action: { ...manifest.action, default_icon: 'brand.png' } }));
+    fs.rmSync(nodePath.join(box, 'brand16.png'));
+    fs.rmSync(nodePath.join(box, 'brand48.png'));
+  }
 
   // Each of these says the key was walked rather than the file happening to be
   // carried some other way.
@@ -1267,7 +1275,8 @@ assert(!packaged.includes('.DS_Store'),
   // matched is that the file is in the list above and its neighbours are
   // not. These are the names that fail when the key stops being walked.
   for (const gone of ['panel.html', 'rules.json', 'schema.json', 'theme.css',
-    'bg.png', 'brand.png', 'exposed.js', 'popup.js', 'lib/inner.js']) {
+    'bg.png', 'brand.png', 'exposed.js', 'popup.js', 'lib/inner.js',
+    'options.html', 'icons/small.png']) {
     fs.rmSync(nodePath.join(box, gone));
     const refused = spawn('python3', ['-B', 'pack.py', '--list'], { cwd: box, encoding: 'utf8' });
     assert(refused.status !== 0, `pack.py refuses a package missing ${gone}`);
@@ -1344,6 +1353,185 @@ assert(!packaged.includes('.DS_Store'),
   }
   // Without this the loop above would pass over a workflow that runs nothing.
   assert(named > 0, 'the workflows run actions');
+}
+
+// The screenshots are what the store shows, and the wording in them is the
+// extension's. Written out in the generator it was a third copy beside the
+// pages and the catalog, and nothing compared the three: changing a message
+// left the store showing the old one with every check green.
+{
+  const source = fs.readFileSync('./gen_screenshots.py', 'utf8');
+  const table = source.match(/^FROM_CATALOG = \{([\s\S]*?)^\}/m);
+  assert(table, 'gen_screenshots.py names the messages it draws in FROM_CATALOG');
+  const keys = Array.from((table?.[1] || '').matchAll(/'[\w_]+': '([\w]+)'/g), m => m[1]);
+  // The two the button is built from are named where it is built, not in the
+  // table, so they are added here rather than left unheld.
+  keys.push('applyToChannelWithValue', 'typeVideo');
+  assert(keys.length > 8, `the generator draws messages — found ${keys.length}`);
+  const locales = fs.readdirSync('./_locales');
+  assert(locales.length > 1, 'the extension is localized');
+  for (const locale of locales) {
+    const messages = JSON.parse(fs.readFileSync(`./_locales/${locale}/messages.json`, 'utf8'));
+    for (const key of keys) {
+      assert(messages[key]?.message, `${locale} answers for ${key}, which the screenshots draw`);
+    }
+    // The other direction: a message spelled out in the generator is a copy
+    // that the catalog cannot correct, which is what this replaced.
+    for (const [key, entry] of Object.entries(messages)) {
+      const text = entry.message;
+      if (!text || text.includes('$')) { continue; }
+      assert(!source.includes(`'${text}'`) && !source.includes(`"${text}"`),
+        `gen_screenshots.py spells out ${locale}'s ${key} instead of reading it`);
+    }
+  }
+}
+
+// A page's own text under data-i18n is replaced by the catalog's before the
+// page is ever shown — applyI18n runs before the body loses `initializing`,
+// which hides it — so text written into the markup is never read by anyone and
+// drifts from the wording that ships without a single check going red.
+{
+  const holder = /<([a-zA-Z][\w-]*)([^>]*\sdata-i18n\s*=\s*["\']([^"\']+)["\'][^>]*)>([\s\S]*?)<\/\1>/g;
+  let keys = 0;
+  for (const page of ['options.html', 'popup.html']) {
+    const text = fs.readFileSync('./' + page, 'utf8');
+    for (const [, , , key, inner] of text.matchAll(holder)) {
+      keys += 1;
+      assert(inner.trim() === '',
+        `${page} leaves ${key} to the catalog — it holds ${JSON.stringify(inner.trim())}`);
+    }
+    // Without this the loop above would pass over a page the pattern cannot read.
+    assert((text.match(/data-i18n\s*=/g) || []).length
+      === (text.match(holder) || []).length,
+      `every data-i18n element in ${page} is read here`);
+  }
+  assert(keys > 10, `the pages ask the catalog for their text — found ${keys}`);
+}
+
+// A job with no timeout of its own runs to GitHub's six hours, so one that
+// hangs holds a runner for an afternoon and says nothing until it is looked at.
+{
+  const workflows = './.github/workflows';
+  let jobs = 0;
+  for (const name of fs.readdirSync(workflows).filter(file => /\.ya?ml$/.test(file))) {
+    const text = fs.readFileSync(`${workflows}/${name}`, 'utf8');
+    // A job is a key at one indent under jobs:, and its block runs to the next.
+    const blocks = text.slice(text.indexOf('\njobs:')).split(/\n {2}(?=[\w-]+:)/).slice(1);
+    for (const block of blocks) {
+      jobs += 1;
+      // At the job's own indent: a step inside it naming one of its own
+      // answers for the step and leaves the job running to GitHub's six hours.
+      assert(/^ {4}timeout-minutes: \d+$/m.test(block),
+        `${name}'s ${block.split(':')[0]} names how long it may run`);
+    }
+  }
+  // Without this the loop above would pass over a repository with no jobs in it.
+  assert(jobs > 2, `the workflows carry jobs — found ${jobs}`);
+}
+
+// A release is built from whatever commit its tag names: a build that packs
+// without running what CI runs turns a commit CI never passed into a release
+// asset. The two are held together here
+// rather than by whoever remembers to copy a step across.
+{
+  const jobIn = (file, name) => {
+    const text = fs.readFileSync(`./.github/workflows/${file}`, 'utf8');
+    const at = text.indexOf(`\n  ${name}:`);
+    assert(at > -1, `${file} carries a ${name} job`);
+    const rest = text.slice(at + 1);
+    const next = rest.slice(1).search(/\n {2}[\w-]+:/);
+    return next === -1 ? rest : rest.slice(0, next + 1);
+  };
+  // A step run only where something already failed is a way of looking at the
+  // failure, not a check the tree has to pass.
+  const checksOf = job => job.split(/\n {6}- /).slice(1)
+    .filter(step => !/^\s*if: failure\(\)/m.test(step))
+    .map(step => step.match(/^\s*run: (.+)$/m)).filter(Boolean).map(match => match[1].trim());
+  const ci = checksOf(jobIn('ci.yaml', 'test'));
+  const build = jobIn('release.yaml', 'build');
+  const packs = build.indexOf('run: python pack.py');
+  assert(packs > -1, 'the release build packs the extension');
+  assert(ci.length > 3, `the CI job runs checks — found ${ci.join(', ')}`);
+  for (const check of ci) {
+    const at = build.indexOf(`run: ${check}`);
+    assert(at > -1, `the release build runs what CI runs: ${check}`);
+    assert(at < packs, `the release build runs ${check} before it packs`);
+  }
+}
+
+// A tag push is an intent to release. A tag naming no release this workflow
+// makes used to pass through as a run that packed, uploaded and released
+// nothing — a green tick against a tag with no release behind it.
+{
+  const nodeOs = require('os');
+  const nodePath = require('path');
+  const spawn = require('child_process').spawnSync;
+  const script = './tools/check-tag.sh';
+  assert(fs.existsSync(script), 'the tag script is in the tree');
+  // A step that stopped calling it would leave every case below passing.
+  const release = fs.readFileSync('./.github/workflows/release.yaml', 'utf8');
+  assert(release.includes('tools/check-tag.sh'),
+    'the release workflow runs the tag script');
+
+  const box = fs.mkdtempSync(nodePath.join(fs.realpathSync(nodeOs.tmpdir()), 'ytcv-tag-'));
+  const ask = (event, ref) => {
+    const out = nodePath.join(box, 'out');
+    fs.writeFileSync(out, '');
+    const run = spawn('bash', [script], {
+      encoding: 'utf8',
+      env: { ...process.env, GITHUB_EVENT_NAME: event, GITHUB_REF_NAME: ref,
+        GITHUB_OUTPUT: out, RUNNER_DEBUG: '' }
+    });
+    return { run, wrote: fs.readFileSync(out, 'utf8').trim().split('\n').filter(Boolean) };
+  };
+  let released = 0;
+  for (const [event, ref, wanted] of [
+    ['push', 'v1.2.3', ['validTag=true', 'prerelease=false', 'version=v1.2.3']],
+    ['push', 'v1.2.3-rc1', ['validTag=true', 'prerelease=true', 'version=v1.2.3-rc1']],
+    ['push', 'v1.2.3-beta2', ['validTag=true', 'prerelease=true', 'version=v1.2.3-beta2']],
+    ['push', 'v1.2.3-alpha', ['validTag=true', 'prerelease=true', 'version=v1.2.3-alpha']],
+    // A run somebody started by hand carries a branch name here and makes no
+    // release, which is not a failure — it is what the flag is for.
+    ['workflow_dispatch', 'master', ['validTag=false']],
+    ['workflow_dispatch', 'v1.2.3', ['validTag=false']],
+    // Four parts, two parts, and a word the prerelease arm does not name.
+    ['push', 'v1.2.3.4', null],
+    ['push', 'v1.2', null],
+    ['push', 'v1.2.3-nightly', null]
+  ]) {
+    const { run, wrote } = ask(event, ref);
+    if (wanted === null) {
+      assert(run.status !== 0, `${event} of ${ref} is refused`);
+      assert(/::error::tag .* names no release/.test(run.stdout + run.stderr),
+        `${event} of ${ref} says why — ${(run.stdout + run.stderr).trim()}`);
+      assert(wrote.length === 0,
+        `${event} of ${ref} leaves no flag for a later job to read — wrote ${wrote.join(' ')}`);
+    } else {
+      assert(run.status === 0,
+        `${event} of ${ref} passes — ${(run.stdout + run.stderr).trim()}`);
+      assert(JSON.stringify(wrote) === JSON.stringify(wanted),
+        `${event} of ${ref} sets ${wanted.join(' ')} — got ${wrote.join(' ')}`);
+      if (wrote.includes('validTag=true')) { released += 1; }
+    }
+  }
+  // Without this a script that refused everything would pass the table above.
+  assert(released === 4, `tags this workflow releases from — found ${released}`);
+  fs.rmSync(box, { recursive: true, force: true });
+}
+
+// A run that is not making a release has a branch name where the tag would be,
+// so the tag and the manifest are compared exactly where a release is made
+// from them — which is the flag create-release is already gated on.
+{
+  const release = fs.readFileSync('./.github/workflows/release.yaml', 'utf8');
+  const gate = "if: needs.check-event.outputs.validTag == 'true'";
+  const gated = release.split('\n').filter(line => line.trim() === gate).length;
+  assert(gated === 2,
+    `the version check and the release read one flag — found ${gated} line(s) reading it`);
+  const verify = release.indexOf('run: bash tools/verify-version.sh');
+  assert(verify > -1, 'the release workflow runs the version script');
+  assert(release.lastIndexOf(gate, verify) > release.lastIndexOf('- name:', verify),
+    'the version check is the step that flag stands on');
 }
 
 // A file the package has to carry is not one it takes when it happens to be
