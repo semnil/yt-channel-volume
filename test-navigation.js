@@ -734,6 +734,25 @@ async function runTests() {
   await tick();
   assert(Math.abs(ytcv.state.currentGain - 1.0) < 0.001, 'new target applied immediately');
 
+  // setTargetLufs answers from a .then, so it is one of the handlers that has
+  // to keep the port open. No test drove it at all — the whole handler, its
+  // save and its answer, was reached by nothing.
+  section('Auto LUFS: the popup sets Target LUFS');
+  ytcv._set('currentLoudnessDb', -6);
+  const settingsBefore = mockStorage['autoLoudnessSettings'];
+  const targetAnswer = await simulateRuntimeMessage({ type: 'setTargetLufs', value: -14 });
+  await tick();
+  assert(targetAnswer?.ok === true,
+    `the popup is answered — got ${JSON.stringify(targetAnswer)}`);
+  assert(mockStorage['autoLoudnessSettings']?.targetLufs === -14,
+    'and the target it asked for is the one stored');
+  assert(ytcv.state.targetLufs === -14, 'and the one the page is working from');
+  // Without this the answer above could come from a handler that stored
+  // nothing, since the value it was given is the value it was already at.
+  assert(settingsBefore?.targetLufs !== -14,
+    'the value asked for is not the one it already held');
+  ytcv._set('currentLoudnessDb', null);
+
   section('Auto LUFS: disabling restores saved channel gain');
   const manualEntry = { name: 'Auto Ch', gainVideo: 0.4 };
   mockStorage['channelVolumes'] = { 'UCauto': manualEntry };
