@@ -398,6 +398,14 @@ assert(/\.ch-del:disabled\s*\{[^}]*opacity:/.test(optionsHtml),
 assert(/\.ch-del:hover:not\(:disabled\)\s*\{/.test(optionsHtml),
   'hover does not paint the disabled row delete');
 
+// The names under a _locales directory that are locales: a name is one when it
+// carries a catalog. Anything else there — a .DS_Store, a stray file — is not a
+// directory, and a reader that walks into it crashes rather than fails.
+function localesWithCatalog(dir) {
+  return fs.readdirSync(dir)
+    .filter(name => fs.existsSync(require('path').join(dir, name, 'messages.json')));
+}
+
 section('packaging');
 
 // What the archive holds, by name and by the digest of its bytes. Reading the
@@ -1355,6 +1363,24 @@ assert(!packaged.includes('.DS_Store'),
   assert(named > 0, 'the workflows run actions');
 }
 
+// A name under _locales that is not a locale. macOS drops a .DS_Store there,
+// and every reader that walks straight into a listed name opens
+// `_locales/.DS_Store/messages.json` — not a failed assertion but an ENOTDIR
+// that ends the run where it stands.
+{
+  const box = fs.mkdtempSync(require('path').join(require('os').tmpdir(), 'ytcv-locales-'));
+  fs.mkdirSync(`${box}/ja`); fs.writeFileSync(`${box}/ja/messages.json`, '{}');
+  fs.mkdirSync(`${box}/en`); fs.writeFileSync(`${box}/en/messages.json`, '{}');
+  // A file, and a directory carrying no catalog.
+  fs.writeFileSync(`${box}/.DS_Store`, '');
+  fs.mkdirSync(`${box}/notes`);
+  assert(JSON.stringify(localesWithCatalog(box).sort()) === JSON.stringify(['en', 'ja']),
+    `the locales are the names carrying a catalog — got ${localesWithCatalog(box).join(', ')}`);
+  // Without this the filter could answer nothing at all and still pass above.
+  assert(localesWithCatalog(box).length === 2, 'and it finds the ones that are there');
+  fs.rmSync(box, { recursive: true, force: true });
+}
+
 // The screenshots are what the store shows, and the wording in them is the
 // extension's. Written out in the generator it was a third copy beside the
 // pages and the catalog, and nothing compared the three: changing a message
@@ -1368,7 +1394,10 @@ assert(!packaged.includes('.DS_Store'),
   // table, so they are added here rather than left unheld.
   keys.push('applyToChannelWithValue', 'typeVideo');
   assert(keys.length > 8, `the generator draws messages — found ${keys.length}`);
-  const locales = fs.readdirSync('./_locales');
+  // The catalogs, not whatever the directory holds: macOS drops a .DS_Store in
+  // there, and reading `_locales/.DS_Store/messages.json` is not a failed
+  // assertion but a crash that takes the rest of the file with it.
+  const locales = localesWithCatalog('./_locales');
   assert(locales.length > 1, 'the extension is localized');
   for (const locale of locales) {
     const messages = JSON.parse(fs.readFileSync(`./_locales/${locale}/messages.json`, 'utf8'));
