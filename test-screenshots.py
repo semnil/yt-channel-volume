@@ -236,6 +236,22 @@ try:
     check(changed.returncode == 1, f'a changed pixel is reported (exit {changed.returncode})')
     check('popup_ja.png: differs from what the code draws now' in changed.stderr,
           'and the line names the file and what is wrong with it')
+    # The line that says what to do about it. The exit code is decided
+    # elsewhere, so this could be printed for a clean tree and withheld from a
+    # stale one with every other case still passing.
+    advice = 'Run `python3 gen_screenshots.py` and commit the result.'
+    check(advice in changed.stderr, 'and it says what to run to fix it')
+finally:
+    shutil.rmtree(box)
+
+box = sandbox()
+try:
+    # And that line is not printed where nothing is stale: it is advice, and
+    # advice given for a tree that needs nothing is advice nobody can act on.
+    clean = run(box, '--check')
+    check(clean.returncode == 0, f'the copy matches (exit {clean.returncode})')
+    check('Run `python3 gen_screenshots.py` and commit the result.' not in clean.stderr,
+          'and nothing tells the reader to redraw it')
 finally:
     shutil.rmtree(box)
 
