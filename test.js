@@ -1449,14 +1449,52 @@ assert(!packaged.includes('.DS_Store'),
     .map(step => step.match(/^\s*run: (.+)$/m)).filter(Boolean).map(match => match[1].trim());
   const ci = checksOf(jobIn('ci.yaml', 'test'));
   const build = jobIn('release.yaml', 'build');
-  const packs = build.indexOf('run: python pack.py');
-  assert(packs > -1, 'the release build packs the extension');
+  // The step, not the line inside it: the pack runs in a script now, so a
+  // reader looking for one `run:` line stops finding it.
+  const packs = build.indexOf('- name: Pack Extension');
+  assert(packs > -1, 'the release build has a step that packs the extension');
+  assert(build.includes('python pack.py'), 'and that step runs the packer');
   assert(ci.length > 3, `the CI job runs checks — found ${ci.join(', ')}`);
   for (const check of ci) {
     const at = build.indexOf(`run: ${check}`);
     assert(at > -1, `the release build runs what CI runs: ${check}`);
     assert(at < packs, `the release build runs ${check} before it packs`);
   }
+}
+
+// The archive the build packed has to come back from the download under the
+// same name and the same bytes. The upload and the download are reached by no
+// other run — a pull request skips the one in CI, which only draws on failure
+// — so without this round trip nothing exercises them until a release.
+{
+  const release = fs.readFileSync('./.github/workflows/release.yaml', 'utf8');
+  const build = release.slice(release.indexOf('\n  build:'), release.indexOf('\n  release:'));
+  for (const [what, where, text] of [
+    ['names what it packed', 'the build job', build.includes('archive=${built[0]}')],
+    ['weighs what it packed', 'the build job', build.includes('sha256sum')],
+    ['refuses to pack more than one archive', 'the build job',
+      /packing left \$\{#built\[@\]\} archives/.test(build)],
+    ['hands both on', 'the build job', /outputs:[\s\S]*?archive:[\s\S]*?digest:/.test(build)]
+  ]) {
+    assert(text, `${where} ${what}`);
+  }
+  const round = release.slice(release.indexOf('\n  release:'));
+  assert(round.includes('needs.build.outputs.archive') && round.includes('needs.build.outputs.digest'),
+    'the release job reads the name and the digest the build recorded');
+  // Found, then ordered: indexOf gives -1 for a name that is not there, and
+  // -1 is less than anything, so the ordering alone passes over a check that
+  // has been deleted.
+  const compares = round.indexOf('PACKED_DIGEST}" ]]; then');
+  const releases = round.indexOf('- name: Create Release');
+  assert(compares > -1, 'the release job compares the digest it was handed');
+  assert(releases > -1, 'the release job has a step that makes the release');
+  assert(compares < releases, 'and it compares before it makes one');
+  // The download runs whether or not a release is made; only the release step
+  // stands on the flag. Without this the round trip could be gated away with it.
+  const gate = "if: needs.check-event.outputs.validTag == 'true'";
+  const downloadAt = round.indexOf('download-artifact');
+  assert(round.lastIndexOf(gate, downloadAt) < round.indexOf('- name: Download'),
+    'the download is not behind the flag');
 }
 
 // A tag push is an intent to release. A tag naming no release this workflow
