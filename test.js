@@ -1363,6 +1363,110 @@ assert(!packaged.includes('.DS_Store'),
   assert(named > 0, 'the workflows run actions');
 }
 
+// The canvas is a fixed 640x400 and nothing clips to it, so a settings row too
+// many pushed the section below it off the bottom edge and the run saved the
+// clipped image at exit 0. Adding a row is the mutation this stands on.
+{
+  const nodePath = require('path');
+  const box = fs.mkdtempSync(nodePath.join(fs.realpathSync(require('os').tmpdir()), 'ytcv-crowded-'));
+  fs.copyFileSync('./gen_screenshots.py', nodePath.join(box, 'gen_screenshots.py'));
+  fs.cpSync('./tools', nodePath.join(box, 'tools'), { recursive: true });
+  fs.cpSync('./_locales', nodePath.join(box, '_locales'), { recursive: true });
+  const source = fs.readFileSync(nodePath.join(box, 'gen_screenshots.py'), 'utf8');
+  const last = source.match(/\n(    \('overlay_label'[\s\S]*?\}\),\n)\)/);
+  assert(last, 'the declaration ends with a row this can repeat');
+  fs.writeFileSync(nodePath.join(box, 'gen_screenshots.py'),
+    source.replace(last[1], last[1] + last[1]));
+
+  const out = nodePath.join(box, 'drawn');
+  const crowded = require('child_process').spawnSync('python3', ['-B', 'gen_screenshots.py', '--out', out],
+    { cwd: box, encoding: 'utf8' });
+  assert(crowded.status !== 0,
+    `one row too many is refused — exited ${crowded.status}`);
+  assert(/settings rows, the last of them \w+, need \d+ px of the \d+/.test(crowded.stderr || ''),
+    `and it says how many rows and how much room they want — said ${(crowded.stderr || '').trim()}`);
+  assert(!fs.existsSync(out) || fs.readdirSync(out).length === 0,
+    'and it draws nothing rather than saving a clipped sheet');
+
+  // Without this the refusal above could be the sandbox failing to draw at all.
+  const roomy = require('child_process').spawnSync('python3', ['-B', 'gen_screenshots.py', '--out', out],
+    { cwd: box, encoding: 'utf8', env: { ...process.env } });
+  fs.copyFileSync('./gen_screenshots.py', nodePath.join(box, 'gen_screenshots.py'));
+  const asShipped = require('child_process').spawnSync('python3', ['-B', 'gen_screenshots.py', '--out', out],
+    { cwd: box, encoding: 'utf8' });
+  if (asShipped.status === 3) {
+    console.log(`  (crowded-sheet check: this machine cannot draw — ${(asShipped.stderr || '').trim()})`);
+  } else {
+    assert(asShipped.status === 0,
+      `the rows it has do fit — ${(asShipped.stderr || '').trim()}`);
+    assert(fs.readdirSync(out).filter(name => name.endsWith('.png')).length > 0,
+      'and that run does write the sheets');
+  }
+  void roomy;
+  fs.rmSync(box, { recursive: true, force: true });
+}
+
+// The screenshots are a hand-drawn mock of the settings page, and `--check`
+// holds the drawing only to its own committed output — so a row added to
+// options.html, two reordered, or a control swapped leaves the store showing
+// the old layout with every check green. The generator declares the rows it
+// draws; this reads that declaration and the page, and holds them to each
+// other. What it does not hold is the drawing to the control the row declares:
+// that column is a declaration, and a screenshot is what says it was drawn.
+{
+  // Asked of the generator rather than read out of it: the count comes from
+  // what each row's painter is handed, so the declaration cannot claim two of
+  // a control it draws once.
+  const declared = (() => {
+    const read = require('child_process').spawnSync('python3', ['-B', '-c',
+      'import json, importlib.util\n'
+      + 'spec = importlib.util.spec_from_file_location("gen", "gen_screenshots.py")\n'
+      + 'mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)\n'
+      + 'print(json.dumps(mod.rows_drawn()))'], { cwd: '.', encoding: 'utf8' });
+    assert(read.status === 0,
+      `gen_screenshots.py names the rows it draws — ${(read.stderr || '').trim()}`);
+    return JSON.parse(read.stdout || '[]')
+      .map(([label, desc, control, many]) => ({ label, desc, control, many }));
+  })();
+
+  // Each row of the page, by walking its divs to the matching close: a name
+  // taken to the next `setting-row` instead would swallow whatever follows the
+  // last one, and read the buttons of the section below it as that row's.
+  const laidOut = (() => {
+    const html = fs.readFileSync('./options.html', 'utf8');
+    const found = [];
+    for (const open of html.matchAll(/<div class="setting-row"[^>]*>/g)) {
+      let at = open.index + open[0].length, depth = 1;
+      while (depth) {
+        const next = /<div\b|<\/div>/.exec(html.slice(at));
+        if (!next) { break; }
+        at += next.index + next[0].length;
+        depth += next[0] === '</div>' ? -1 : 1;
+      }
+      const block = html.slice(open.index + open[0].length, at);
+      const control = {};
+      for (const one of block.matchAll(/<input\b[^>]*type="(\w+)"|<(button)\b|<(select)\b/g)) {
+        const kind = { range: 'range', checkbox: 'toggle', button: 'buttons', select: 'select' }[
+          one[1] || one[2] || one[3]] || (one[1] || one[2] || one[3]);
+        control[kind] = (control[kind] || 0) + 1;
+      }
+      const kinds = Object.keys(control);
+      found.push({
+        label: (block.match(/class="setting-label"[^>]*data-i18n="(\w+)"/) || [])[1],
+        desc: (block.match(/class="setting-desc"[^>]*data-i18n="(\w+)"/) || [])[1],
+        control: kinds.length === 1 ? kinds[0] : kinds.sort().join('+'),
+        many: kinds.length === 1 ? control[kinds[0]] : 0,
+      });
+    }
+    return found;
+  })();
+
+  assert(laidOut.length > 3, `the page lays out settings rows — found ${laidOut.length}`);
+  assert(JSON.stringify(declared) === JSON.stringify(laidOut),
+    `the screenshots draw the rows the page lays out, in its order`
+    + ` — drawn ${JSON.stringify(declared)}, laid out ${JSON.stringify(laidOut)}`);
+}
+
 // The screenshots are what the store shows, and the wording in them is the
 // extension's. Written out in the generator it was a third copy beside the
 // pages and the catalog, and nothing compared the three: changing a message

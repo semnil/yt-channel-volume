@@ -142,6 +142,44 @@ FROM_CATALOG = {
     'overlay_desc': 'showGainOverlayDesc',
     'clear_all': 'clearAll',
 }
+# The rows options.html lays out, in its order: the message the label shows,
+# the message under it, and the control the page carries on that row with how
+# many of it. The
+# drawing walks this, so what is drawn cannot drift from it, and test.js
+# compares it with the page. Nothing else notices when the page grows a row,
+# reorders two, or swaps a control: these screenshots are a hand-drawn mock and
+# `--check` only holds the drawing to its own committed output.
+SETTING_ROWS = (
+    ('target_label', 'target_desc', 'range', {'at': 0.5, 'value': '-18 LUFS'}),
+    ('all_auto_label', 'all_auto_desc', 'toggle',
+     {'switches': (('VIDEO', 424, False), ('LIVE', 512, False))}),
+    ('unit_label', 'unit_desc', 'buttons',
+     {'names': (('%', 520, 556, 528, True), ('dB', 556, 590, 562, False))}),
+    ('overlay_label', 'overlay_desc', 'toggle', {'switches': ((None, 554, True),)}),
+)
+# How many of that control a row carries, read off what its drawing is given
+# rather than declared a second time beside it.
+HOW_MANY = {'range': lambda p: 1,
+            'toggle': lambda p: len(p['switches']),
+            'buttons': lambda p: len(p['names'])}
+ROW_HEIGHT = 38
+FIRST_ROW = 34
+CARD_BELOW_LAST = 14
+SETTINGS_TOP = 54
+CHANNELS_HEIGHT = 134
+
+def sheet_height(rows=None):
+    """The bottom of the settings sheet's last card, for a number of rows."""
+    many = len(SETTING_ROWS) if rows is None else rows
+    card = FIRST_ROW + many * ROW_HEIGHT
+    return SETTINGS_TOP + card + CARD_BELOW_LAST + CHANNELS_HEIGHT
+
+
+def rows_drawn():
+    """Each row the settings sheet draws: the two messages, the control, the count."""
+    return [(FROM_CATALOG[label], FROM_CATALOG[desc], control, HOW_MANY[control](params))
+            for label, desc, control, params in SETTING_ROWS]
+
 # The gain the mocked-up popup offers to apply. popup.js writes the button as
 # the message with the value in it, then the kind of thing it applies to.
 APPLIED_GAIN = '63%'
@@ -276,46 +314,61 @@ def screenshot_settings(lang):
 
     draw.text((36, 16), s['name'], fill=TEAL, font=FONT_XL)
 
-    # Settings section \u2014 the four rows options.html lays out, in its order
-    sy = 54
-    rr(draw, [30, sy, 610, sy+186], 10, CARD_BG)
+    # Settings section — the rows options.html lays out, in its order. The card
+    # is as tall as the rows it holds, so declaring one more moves what follows
+    # rather than drawing over it.
+    sy = SETTINGS_TOP
+    card_h = FIRST_ROW + len(SETTING_ROWS) * ROW_HEIGHT
+    # The canvas is a fixed 640x400 and nothing clips to it, so a row too many
+    # is drawn off the bottom edge and saved at exit 0. A margin under the last
+    # card is not held here: the height moves a whole row at a time, so no
+    # number of rows lands inside one.
+    if sheet_height() > H:
+        raise SystemExit(
+            f'{len(SETTING_ROWS)} settings rows, the last of them '
+            f'{SETTING_ROWS[-1][0]}, need {sheet_height()} px '
+            f'of the {H} the sheet has')
+    rr(draw, [30, sy, 610, sy + card_h], 10, CARD_BG)
     draw.text((50, sy+12), 'SETTINGS', fill=GRAY, font=FONT_SM)
 
-    ry = sy + 34
-    for label, desc in ((s['target_label'], s['target_desc']),
-                        (s['all_auto_label'], s['all_auto_desc']),
-                        (s['unit_label'], s['unit_desc']),
-                        (s['overlay_label'], s['overlay_desc'])):
-        draw.text((50, ry), label, fill=(204, 204, 204), font=FONT)
-        draw.text((50, ry+17), desc, fill=DIM, font=FONT_SM)
-        ry += 38
+    def paint_range(y, at, value):
+        left, right = 400, 520
+        draw.rounded_rectangle([left, y+5, right, y+11], radius=2, fill=BORDER)
+        thumb = int(left + (right - left) * at)
+        draw.ellipse([thumb-8, y, thumb+8, y+16], fill=TEAL)
+        draw.text((530, y), value, fill=TEAL, font=FONT_BOLD)
 
-    # Target LUFS slider
-    ry = sy + 34
-    draw.rounded_rectangle([400, ry+5, 520, ry+11], radius=2, fill=BORDER)
-    draw.ellipse([452, ry, 468, ry+16], fill=TEAL)
-    draw.text((530, ry), '-18 LUFS', fill=TEAL, font=FONT_BOLD)
+    def paint_toggle(y, switches):
+        for name, x, on in switches:
+            if name is None:
+                toggle(draw, x, y, on=on)
+                continue
+            draw.text((x, y+4), name, fill=GRAY, font=FONT_SM)
+            toggle(draw, x+42, y, on=on)
 
-    # Video / Live defaults, both off
-    ry += 38
-    for type_label, x in ((('VIDEO'), 424), ('LIVE', 512)):
-        draw.text((x, ry+4), type_label, fill=GRAY, font=FONT_SM)
-        toggle(draw, x+42, ry, on=False)
+    def paint_buttons(y, names):
+        for name, left, right, text_x, picked in names:
+            rr(draw, [left, y, right, y+20], 6, TEAL if picked else SECTION_BG)
+            draw.text((text_x, y+3), name, fill=CARD_BG if picked else GRAY, font=FONT_BOLD)
 
-    # Display unit
-    ry += 38
-    rr(draw, [520, ry, 556, ry+20], 6, TEAL)
-    draw.text((528, ry+3), '%', fill=CARD_BG, font=FONT_BOLD)
-    rr(draw, [556, ry, 590, ry+20], 6, SECTION_BG)
-    draw.text((562, ry+3), 'dB', fill=GRAY, font=FONT_BOLD)
+    # The control a row declares is the control it draws: the name picks the
+    # painter, so a row declaring one the drawing has not got stops the run
+    # rather than leaving the old one under the new name.
+    painters = {'range': paint_range, 'toggle': paint_toggle, 'buttons': paint_buttons}
 
-    # Gain overlay, on here \u2014 it is what the overlay screenshot shows
-    ry += 38
-    toggle(draw, 554, ry, on=True)
+    ry = sy + FIRST_ROW
+    for label, desc, control, params in SETTING_ROWS:
+        draw.text((50, ry), s[label], fill=(204, 204, 204), font=FONT)
+        draw.text((50, ry+17), s[desc], fill=DIM, font=FONT_SM)
+        paint = painters.get(control)
+        if paint is None:
+            raise SystemExit(f'no way to draw a {control} on the {label} row')
+        paint(ry, **params)
+        ry += ROW_HEIGHT
 
     # Saved Channels section
-    cy = sy + 200
-    rr(draw, [30, cy, 610, cy+134], 10, CARD_BG)
+    cy = sy + card_h + CARD_BELOW_LAST
+    rr(draw, [30, cy, 610, cy + CHANNELS_HEIGHT], 10, CARD_BG)
     draw.text((50, cy+12), 'SAVED CHANNELS', fill=GRAY, font=FONT_SM)
 
     # .clear-all-btn at rest: grey on a bordered 4px-radius box, 4px 10px padding
