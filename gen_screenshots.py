@@ -165,6 +165,14 @@ HOW_MANY = {'range': lambda p: 1,
 ROW_HEIGHT = 38
 FIRST_ROW = 34
 CARD_BELOW_LAST = 14
+SETTINGS_TOP = 54
+CHANNELS_HEIGHT = 134
+
+def sheet_height(rows=None):
+    """The bottom of the settings sheet's last card, for a number of rows."""
+    many = len(SETTING_ROWS) if rows is None else rows
+    card = FIRST_ROW + many * ROW_HEIGHT
+    return SETTINGS_TOP + card + CARD_BELOW_LAST + CHANNELS_HEIGHT
 
 
 def rows_drawn():
@@ -309,8 +317,17 @@ def screenshot_settings(lang):
     # Settings section — the rows options.html lays out, in its order. The card
     # is as tall as the rows it holds, so declaring one more moves what follows
     # rather than drawing over it.
-    sy = 54
+    sy = SETTINGS_TOP
     card_h = FIRST_ROW + len(SETTING_ROWS) * ROW_HEIGHT
+    # The canvas is a fixed 640x400 and nothing clips to it, so a row too many
+    # is drawn off the bottom edge and saved at exit 0. A margin under the last
+    # card is not held here: the height moves a whole row at a time, so no
+    # number of rows lands inside one.
+    if sheet_height() > H:
+        raise SystemExit(
+            f'{len(SETTING_ROWS)} settings rows, the last of them '
+            f'{SETTING_ROWS[-1][0]}, need {sheet_height()} px '
+            f'of the {H} the sheet has')
     rr(draw, [30, sy, 610, sy + card_h], 10, CARD_BG)
     draw.text((50, sy+12), 'SETTINGS', fill=GRAY, font=FONT_SM)
 
@@ -351,7 +368,7 @@ def screenshot_settings(lang):
 
     # Saved Channels section
     cy = sy + card_h + CARD_BELOW_LAST
-    rr(draw, [30, cy, 610, cy+134], 10, CARD_BG)
+    rr(draw, [30, cy, 610, cy + CHANNELS_HEIGHT], 10, CARD_BG)
     draw.text((50, cy+12), 'SAVED CHANNELS', fill=GRAY, font=FONT_SM)
 
     # .clear-all-btn at rest: grey on a bordered 4px-radius box, 4px 10px padding
