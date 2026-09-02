@@ -246,8 +246,10 @@ function simulateBridgeMessage(data) {
 // whatever the listener returned made that contract invisible: every handler
 // answering from a .then could drop its `return true` and the popup would wait
 // for ever with this suite still green.
-function simulateRuntimeMessage(data) {
-  return new Promise((resolve) => {
+// A listener that declines a message it does not handle answers nothing and
+// keeps nothing open; a caller expecting that says so.
+function simulateRuntimeMessage(data, { expectNoAnswer = false } = {}) {
+  return new Promise((resolve, reject) => {
     const listener = mockRuntimeMessageListeners[0];
     if (!listener) {
       resolve(undefined);
@@ -257,8 +259,7 @@ function simulateRuntimeMessage(data) {
     let answered = false;
     const reply = (value) => {
       if (!open) {
-        // The port is shut; Chrome drops this. Say so rather than resolving.
-        resolve({ __lost: true, value });
+        reject(new Error(`${data?.type} answered after its port shut — Chrome drops that`));
         return;
       }
       answered = true;
@@ -267,8 +268,15 @@ function simulateRuntimeMessage(data) {
     const kept = listener(data, {}, reply);
     if (kept !== true) {
       open = false;
-      // Nothing more can arrive. An answer already made stands.
-      if (!answered) { resolve({ __lost: true, value: undefined }); }
+      // Handing back a marker and carrying on is not enough: the handler's own
+      // work is still in flight and the cases after this one move the storage
+      // it is holding, so the run wanders instead of stopping. This ends it.
+      if (!answered && !expectNoAnswer) {
+        reject(new Error(`${data?.type} neither kept its port open nor answered — `
+          + 'an answer sent from a .then after this reaches nobody'));
+      } else if (!answered) {
+        resolve(undefined);
+      }
     }
   });
 }
@@ -2216,4 +2224,10 @@ async function runTests() {
   process.exit(failed > 0 ? 1 : 0);
 }
 
-runTests();
+runTests().catch((err) => {
+  // A rejection here is the run stopping where it stood, which is the point:
+  // carrying on past a lost port runs the rest against state a handler nobody
+  // is waiting for is still writing to.
+  console.error('  FAIL:', err && err.message ? err.message : err);
+  process.exit(1);
+});
