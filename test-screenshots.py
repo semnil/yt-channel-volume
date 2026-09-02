@@ -1014,6 +1014,23 @@ finally:
 
 box = tempfile.mkdtemp()
 try:
+    # A name that had nothing there before it, and that this run did replace:
+    # the rollback has to take the image away again, not leave it. Every case
+    # here had put all six in place first, so that clause was never reached and
+    # could be turned around with the suite still green.
+    said = io.StringIO()
+    with contextlib.redirect_stderr(said):
+        code = gen_screenshots.write({'popup_ja.png': FakeImage(), 'popup_en.png': RefusedImage()},
+                                     box, named=True)
+    check(code == 2, f'the save that failed is answered for (exit {code})')
+    check(os.listdir(box) == [],
+          'and the name that held nothing before holds nothing after '
+          f'({sorted(os.listdir(box))})')
+finally:
+    shutil.rmtree(box)
+
+box = tempfile.mkdtemp()
+try:
     # And where putting one back is refused as well: it is the only name left
     # holding this run's image, it is named, and the copy taken of it is kept.
     stuck = 'popup_ja.png'
