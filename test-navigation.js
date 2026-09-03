@@ -883,6 +883,41 @@ async function runTests() {
   ytcv.commitGain(1.0);
   ytcv._set('currentLoudnessDb', chainLoudness);
 
+  // applyLoudness turns two requests down before it does anything, and no case
+  // had put either refusal to it beside the request it does honour.
+  section('Apply to channel: the two it declines');
+  const applyLoudnessBefore = ytcv.state.currentLoudnessDb;
+  const applyChannelBefore = ytcv.state.currentChannel;
+  ytcv._set('currentChannel', { id: 'UCapply', name: 'Apply Ch', url: 'https://y/UCapply' });
+  ytcv._set('currentVideoType', 'video');
+  ytcv._set('targetLufs', -18);
+
+  // Auto is doing the applying; the button must not write over it.
+  ytcv._set('currentAutoApplyLoudnessVideo', true);
+  ytcv._set('currentLoudnessDb', -6);
+  const whileAuto = await simulateRuntimeMessage({ type: 'applyLoudness' });
+  assert(whileAuto?.ok === false && whileAuto?.reason === 'auto apply enabled',
+    `with Auto on it is declined — got ${JSON.stringify(whileAuto)}`);
+
+  // Auto off, but nothing measured to apply.
+  ytcv._set('currentAutoApplyLoudnessVideo', false);
+  ytcv._set('currentLoudnessDb', null);
+  const withoutLoudness = await simulateRuntimeMessage({ type: 'applyLoudness' });
+  assert(withoutLoudness?.ok === false && withoutLoudness?.reason === 'no loudness data',
+    `with nothing measured it is declined — got ${JSON.stringify(withoutLoudness)}`);
+
+  // And with neither in the way it goes through. Without this the two above
+  // would hold for a handler that declined everything.
+  ytcv._set('currentLoudnessDb', -6);
+  const applied = await simulateRuntimeMessage({ type: 'applyLoudness' });
+  await tick();
+  assert(applied?.ok === true, `otherwise it applies — got ${JSON.stringify(applied)}`);
+  assert(Math.abs(applied.gain - ytcv.calcGainFromLoudness(-6)) < 0.001,
+    'and answers with the gain it worked out');
+
+  ytcv._set('currentLoudnessDb', applyLoudnessBefore);
+  ytcv._set('currentChannel', applyChannelBefore);
+
   section('Auto LUFS: the popup sets Target LUFS');
   ytcv._set('currentLoudnessDb', -6);
   const settingsBefore = mockStorage['autoLoudnessSettings'];
