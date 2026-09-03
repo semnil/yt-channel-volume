@@ -886,11 +886,16 @@ async function runTests() {
   ytcv.commitGain(1.0);
   ytcv._set('currentLoudnessDb', chainLoudness);
 
-  // applyLoudness turns two requests down before it does anything, and no case
-  // had put either refusal to it beside the request it does honour.
-  section('Apply to channel: the two it declines');
+  // applyLoudness turns three requests down before it does anything, and no
+  // case had put any of the refusals to it beside the request it does honour.
+  section('Apply to channel: what it declines, and where the gain it applies lands');
   const applyLoudnessBefore = ytcv.state.currentLoudnessDb;
   const applyChannelBefore = ytcv.state.currentChannel;
+  const applyStorageBefore = mockStorage['channelVolumes'];
+  // The Live gain is a sentinel: an apply on a Video is not allowed to move it.
+  mockStorage['channelVolumes'] = {
+    'UCapply': { name: 'Apply Ch', url: 'https://y/UCapply', gainVideo: 0.5, gainLive: 0.8 }
+  };
   ytcv._set('currentChannel', { id: 'UCapply', name: 'Apply Ch', url: 'https://y/UCapply' });
   ytcv._set('currentVideoType', 'video');
   ytcv._set('targetLufs', -18);
@@ -909,15 +914,44 @@ async function runTests() {
   assert(withoutLoudness?.ok === false && withoutLoudness?.reason === 'no loudness data',
     `with nothing measured it is declined — got ${JSON.stringify(withoutLoudness)}`);
 
-  // And with neither in the way it goes through. Without this the two above
-  // would hold for a handler that declined everything.
+  // Measured, but the page has not said whose channel it is yet. Applying now
+  // would move the level the viewer hears with nothing able to remember it.
   ytcv._set('currentLoudnessDb', -6);
+  ytcv._set('currentChannel', { id: '', name: '', url: '' });
+  const gainBeforeIdless = ytcv.state.currentGain;
+  const withoutChannel = await simulateRuntimeMessage({ type: 'applyLoudness' });
+  await tick();
+  assert(withoutChannel?.ok === false && withoutChannel?.reason === 'no loudness data',
+    `with no channel known it is declined — got ${JSON.stringify(withoutChannel)}`);
+  assert(ytcv.state.currentGain === gainBeforeIdless,
+    `and the gain that is playing is left alone (${ytcv.state.currentGain})`);
+  assert(Object.keys(mockStorage['channelVolumes']).length === 1,
+    'and no channel is written');
+
+  // And with none of the three in the way it goes through. Without this the
+  // refusals above would hold for a handler that declined everything.
+  ytcv._set('currentChannel', { id: 'UCapply', name: 'Apply Ch', url: 'https://y/UCapply' });
   const applied = await simulateRuntimeMessage({ type: 'applyLoudness' });
   await tick();
   assert(applied?.ok === true, `otherwise it applies — got ${JSON.stringify(applied)}`);
   assert(Math.abs(applied.gain - ytcv.calcGainFromLoudness(-6)) < 0.001,
     'and answers with the gain it worked out');
 
+  // Where it landed is the whole point of the button: this channel, the type
+  // being watched, as a choice Auto is not to take back over.
+  const appliedEntry = mockStorage['channelVolumes']['UCapply'];
+  assert(Math.abs(appliedEntry.gainVideo - applied.gain) < 0.001,
+    `the gain is saved as the Video gain of this channel (${appliedEntry.gainVideo})`);
+  assert(appliedEntry.gainLive === 0.8,
+    `and the Live gain it was not asked about is untouched (${appliedEntry.gainLive})`);
+  assert(appliedEntry.name === 'Apply Ch' && appliedEntry.url === 'https://y/UCapply',
+    'under the name and url of the channel being watched');
+  assert(appliedEntry.autoApplyLoudnessVideo === false,
+    'pinned as a manual choice, so an all-channel default cannot take it over');
+  assert(Math.abs(ytcv.state.currentGain - applied.gain) < 0.001,
+    `and it is the gain now playing (${ytcv.state.currentGain})`);
+
+  mockStorage['channelVolumes'] = applyStorageBefore;
   ytcv._set('currentLoudnessDb', applyLoudnessBefore);
   ytcv._set('currentChannel', applyChannelBefore);
 
