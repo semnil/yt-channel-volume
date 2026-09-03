@@ -101,8 +101,10 @@ globalThis.document = {
     mockEventListeners[type].push(fn);
   },
   createElement(tag) { return mockElement(tag); },
-  // Everything is in the document until a case says otherwise, which is what
-  // the overlay's "recreate if the navigation rebuilt the DOM" branch needs.
+  // A case can put a node outside the document. Nothing in content.js asks
+  // this today — the overlay moves rather than recreating — and the mock keeps
+  // answering so that a branch which recreates a detached node is measured the
+  // way a browser would run it.
   contains(node) { return !mockDetached.has(node); },
   get documentElement() { return { }; },
   get visibilityState() { return 'visible'; },
