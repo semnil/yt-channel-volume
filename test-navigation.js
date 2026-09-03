@@ -2500,6 +2500,117 @@ async function runTests() {
     `the id standing in for a name is replaced (${ytcv.state.currentChannel.name})`);
   mockDOMElements['channelName'] = null;
 
+  // ── What the popup waits for, and what the observer refuses to act on ──
+
+  // The retry exists because the bridge does not always answer the first ask.
+  // Nothing had driven a slow answer: the loudness was always there before the
+  // popup asked, so the interval that gives up and the one that asks again were
+  // the same to every case. The answer is delivered on the second ask here, so
+  // a first-timeout resolve cannot reach it.
+  section('Popup open: an answer that arrives on the second ask still reaches the popup');
+  setURL('/watch', 'slowVid1');
+  ytcv._set('currentChannel', { id: 'UCslow', name: 'Slow Ch', url: '' });
+  ytcv._set('currentChannelVideoId', '');
+  ytcv._set('currentLoudnessVideoId', '');
+  ytcv._set('currentLoudnessDb', null);
+  ytcv._set('_lastVideoId', 'slowVid1');
+  ytcv._set('_lastProcessedVideo', mockVideoEl);
+  ytcv._set('currentAutoApplyLoudnessVideo', false);
+  ytcv._set('currentVideoType', 'video');
+  mockStorage['channelVolumes'] = { UCslow: { name: 'Slow Ch', gainVideo: 0.5 } };
+  let bridgeAsks = 0;
+  mockPostMessageHandler = (data) => {
+    if (data?.type !== '__yt_channel_volume_request__') return;
+    bridgeAsks++;
+    if (bridgeAsks === 2) {
+      simulateBridgeMessage({
+        loudnessDb: -11, isLiveContent: false, videoId: 'slowVid1', channelId: 'UCslow', author: 'Slow Ch'
+      });
+    }
+  };
+  const slowAnswer = await simulateRuntimeMessage({ type: 'forceDetect' });
+  mockPostMessageHandler = null;
+  assert(bridgeAsks >= 2, `the bridge is asked again when the first ask goes unanswered (${bridgeAsks})`);
+  assert(slowAnswer?.loudnessDb === -11,
+    `and the popup is answered with what arrived (${JSON.stringify(slowAnswer?.loudnessDb)})`);
+
+  // Auto applies the gain itself and says so; the caller runs the saved-gain
+  // path only when it did not. Nothing had asked what saying so is worth, and
+  // the answer is invisible in the gain — both paths land on the same number.
+  // It is visible in the writing: the channel is written once per message.
+  section('Auto LUFS: a message Auto has answered is not applied a second time');
+  mockStorage['channelVolumes'] = {
+    UCwrites: { name: 'Writes Ch', gainVideo: 0.5, autoApplyLoudnessVideo: true }
+  };
+  setURL('/watch', 'writeVid1');
+  ytcv._set('currentChannel', { id: 'UCwrites', name: 'Writes Ch', url: '' });
+  ytcv._set('currentChannelVideoId', 'writeVid1');
+  ytcv._set('currentLoudnessVideoId', '');
+  ytcv._set('currentLoudnessDb', null);
+  ytcv._set('currentVideoType', 'video');
+  ytcv._set('currentAutoApplyLoudnessVideo', true);
+  ytcv._set('storageSettled', true);
+  ytcv._set('storageMigrated', true);
+  ytcv._set('targetLufs', -18);
+  mockSentMessages.length = 0;
+  simulateBridgeMessage({
+    loudnessDb: -6, isLiveContent: false, videoId: 'writeVid1', channelId: 'UCwrites', author: 'Writes Ch'
+  });
+  await tick();
+  await tick();
+  const writesForChannel = mockSentMessages.filter(m => m?.type === 'store:saveChannelGain');
+  assert(Math.abs(ytcv.state.currentGain - ytcv.calcGainFromLoudness(-6)) < 0.001,
+    `Auto applies the gain (${ytcv.state.currentGain})`);
+  assert(writesForChannel.length === 1,
+    `and the channel is written once for the message (${writesForChannel.length})`);
+
+  // The observer fires on every DOM change YouTube makes, which on a busy page
+  // is constantly. Its two triggers are guarded against the states that look
+  // like a change and are not, and no case had put either state to it.
+  section('Observer: the first video seen is not a video that changed');
+  setURL('/watch', 'obsVid1');
+  mockVideoEl = { id: 'observer-first-video' };
+  ytcv._set('_lastProcessedVideo', null);
+  ytcv._set('_lastVideoId', 'obsVid1');
+  ytcv._set('currentLoudnessVideoId', '');
+  ytcv._set('currentLoudnessDb', -3);
+  ytcv._set('_applyRunning', false);
+  fireObserver();
+  await tick();
+  assert(ytcv.state.currentLoudnessDb === -3,
+    `nothing is applied for a video nothing has processed yet (${ytcv.state.currentLoudnessDb})`);
+  assert(ytcv.state._lastProcessedVideo === null, 'and the video is still unprocessed');
+
+  section('Observer: a URL with no video id is not a video that changed');
+  mockLocation.pathname = '/watch';
+  mockLocation.search = '';
+  mockLocation.href = 'https://www.youtube.com/watch';
+  ytcv._set('_lastProcessedVideo', mockVideoEl);
+  ytcv._set('_lastVideoId', 'obsVid1');
+  ytcv._set('currentLoudnessDb', -3);
+  ytcv._set('_applyRunning', false);
+  fireObserver();
+  await tick();
+  assert(ytcv.state._lastVideoId === 'obsVid1',
+    `an empty video id does not count as a change (${ytcv.state._lastVideoId})`);
+  assert(ytcv.state.currentLoudnessDb === -3, 'and nothing is applied');
+
+  // The observer's own watch-page guard is not what keeps an apply off a page
+  // that is not a watch page — triggerApply refuses on its own, which is what
+  // this asks. The guard is there so the observer does no work at all on the
+  // pages that mutate the most.
+  section('Apply: a page that is not a watch page is refused');
+  setURL('/feed/subscriptions', null);
+  ytcv._set('_lastProcessedVideo', null);
+  ytcv._set('_lastVideoId', 'obsVid1');
+  ytcv._set('currentLoudnessDb', -3);
+  ytcv._set('_applyRunning', false);
+  await ytcv.triggerApply();
+  assert(ytcv.state._lastVideoId === 'obsVid1',
+    `no apply runs off a watch page (${ytcv.state._lastVideoId})`);
+  assert(ytcv.state._lastProcessedVideo === null, 'and no video is taken up');
+  setURL('/watch', 'obsVid1');
+
   // ── Summary ────────────────────────────────────────────────────────
 
   console.log(`\n${passed} passed, ${failed} failed`);
