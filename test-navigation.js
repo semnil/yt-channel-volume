@@ -50,12 +50,38 @@ function setURL(path, videoId) {
   }
 }
 
+// A node that can hold children, so a case can ask where the overlay ended up
+// rather than only that something was made.
+const mockDetached = new Set();
+function mockElement(tag) {
+  const el = {
+    tagName: tag,
+    style: { cssText: '' },
+    textContent: '',
+    parentNode: null,
+    children: [],
+    appendChild(child) {
+      if (child.parentNode) { child.parentNode.removeChild(child); }
+      child.parentNode = el;
+      el.children.push(child);
+      return child;
+    },
+    removeChild(child) {
+      const at = el.children.indexOf(child);
+      if (at > -1) { el.children.splice(at, 1); }
+      if (child.parentNode === el) { child.parentNode = null; }
+      return child;
+    },
+  };
+  return el;
+}
+
 // Minimal DOM mock
 globalThis.document = {
   querySelector(sel) {
     // video element
     if (sel.includes('video.html5-main-video') || (sel === 'video')) return mockVideoEl;
-    if (sel.includes('.ytp-volume-area')) return null;
+    if (sel.includes('.ytp-volume-area')) return mockDOMElements['volumeArea'] || null;
     if (sel.includes('ytd-watch-flexy')) return null;
     if (sel.includes('movie_player')) return null;
     // channel name (getChannelDisplayName)
@@ -74,16 +100,10 @@ globalThis.document = {
     mockEventListeners[type] = mockEventListeners[type] || [];
     mockEventListeners[type].push(fn);
   },
-  createElement(tag) {
-    return {
-      style: { cssText: '' },
-      textContent: '',
-      parentNode: null,
-      appendChild() {},
-      removeChild() {},
-    };
-  },
-  contains() { return true; },
+  createElement(tag) { return mockElement(tag); },
+  // Everything is in the document until a case says otherwise, which is what
+  // the overlay's "recreate if the navigation rebuilt the DOM" branch needs.
+  contains(node) { return !mockDetached.has(node); },
   get documentElement() { return { }; },
   get visibilityState() { return 'visible'; },
   get readyState() { return 'complete'; },
@@ -745,6 +765,78 @@ async function runTests() {
   // setTargetLufs answers from a .then, so it is one of the handlers that has
   // to keep the port open. No test drove it at all — the whole handler, its
   // save and its answer, was reached by nothing.
+  // The gain overlay: five branches of updateGainOverlay that no case reached,
+  // because the DOM mock could not hand it a volume area to draw into. Driven
+  // through commitGain, which is the production path that redraws it — the
+  // settings handler recomputes the gain before redrawing, so it says nothing
+  // about the gain the overlay is given.
+  section('Gain overlay: what it puts in the player, and takes back out');
+  const overlayLoudness = ytcv.state.currentLoudnessDb;
+  ytcv._set('currentLoudnessDb', null);
+  const overlaySetting = (on) => {
+    simulateStorageChange({
+      autoLoudnessSettings: {
+        newValue: { targetLufs: -18, displayUnit: '%', showGainOverlay: on }
+      }
+    });
+    return tick();
+  };
+  let area = mockElement('div');
+  mockDOMElements['volumeArea'] = area;
+  await overlaySetting(true);
+
+  ytcv.commitGain(1.5);
+  assert(area.children.length === 1,
+    `the overlay is put in the player (${area.children.length} children)`);
+  assert(area.children[0].textContent === '150%',
+    `and reads the gain as a percentage (${area.children[0].textContent})`);
+  const firstOverlay = area.children[0];
+
+  // Committing again changes the reading, not the number of overlays.
+  ytcv.commitGain(1.25);
+  assert(area.children.length === 1,
+    `a second commit leaves one overlay (${area.children.length})`);
+  assert(area.children[0] === firstOverlay, 'and it is the one already there');
+  assert(firstOverlay.textContent === '125%', 'with the gain it now plays');
+
+  // A navigation rebuilds the player: the volume area is a new node and the
+  // overlay we made is in the old one, outside the document. Reusing it would
+  // put the reading somewhere nobody can see.
+  area = mockElement('div');
+  mockDOMElements['volumeArea'] = area;
+  mockDetached.add(firstOverlay);
+  ytcv.commitGain(1.4);
+  assert(area.children.length === 1,
+    `the rebuilt player gets an overlay (${area.children.length})`);
+  assert(area.children[0] !== firstOverlay, 'and it is not the detached node');
+  assert(area.children[0].textContent === '140%', 'reading the current gain');
+
+  // At passthrough the player carries nothing of ours.
+  ytcv.commitGain(1.0);
+  assert(area.children.length === 0,
+    `a gain of exactly 1.0 shows nothing (${area.children.length})`);
+  ytcv.commitGain(1.5);
+  assert(area.children.length === 1, 'back at a raised gain it is there again');
+
+  // And with the setting off, nothing at any gain.
+  await overlaySetting(false);
+  ytcv.commitGain(1.6);
+  assert(area.children.length === 0,
+    `turned off, it is taken back out (${area.children.length})`);
+
+  // No volume area at all — the player YouTube has not built yet.
+  mockDOMElements['volumeArea'] = null;
+  await overlaySetting(true);
+  ytcv.commitGain(1.7);
+  assert(area.children.length === 0,
+    'and with no player there is nothing to put it in');
+
+  // Put the world back for the cases after this one.
+  await overlaySetting(false);
+  ytcv.commitGain(1.0);
+  ytcv._set('currentLoudnessDb', overlayLoudness);
+  mockDetached.clear();
+
   section('Auto LUFS: the popup sets Target LUFS');
   ytcv._set('currentLoudnessDb', -6);
   const settingsBefore = mockStorage['autoLoudnessSettings'];
