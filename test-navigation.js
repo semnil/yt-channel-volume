@@ -2611,6 +2611,55 @@ async function runTests() {
   assert(ytcv.state._lastProcessedVideo === null, 'and no video is taken up');
   setURL('/watch', 'obsVid1');
 
+  // ── Going quiet after a reload ──────────────────────────────────────
+
+  // reportFailure keeps the console clear after an extension reload, which is
+  // the one cause of these failures that is not worth reporting. The state it
+  // reads is the state at the failure, not at the request: a save already in
+  // flight is what fails on the reload. Nothing had made a failure land on an
+  // invalidated context, so the check had no case either way.
+  section('Extension reload: the failure it causes is not reported');
+  mockStorage['channelVolumes'] = {
+    UCreload: { name: 'Reload Ch', gainVideo: 0.5, autoApplyLoudnessVideo: true }
+  };
+  setURL('/watch', 'reloadVid1');
+  ytcv._set('currentChannel', { id: 'UCreload', name: 'Reload Ch', url: 'https://y/UCreload' });
+  ytcv._set('currentVideoType', 'video');
+  ytcv._set('currentAutoApplyLoudnessVideo', true);
+  ytcv._set('currentLoudnessDb', -6);
+  ytcv._set('_lastVideoId', 'reloadVid1');
+  ytcv._set('storageMigrated', true);
+  ytcv._set('storageReady', Promise.resolve());
+  const realConsoleError = console.error;
+  const realSet = chrome.storage.local.set;
+  let reported = [];
+  console.error = (...args) => { reported.push(args[0]); };
+  chrome.storage.local.set = () => Promise.reject(new Error('storage write failed'));
+  await ytcv.applyPreferredGain();
+  await tick();
+  console.error = realConsoleError;
+  // The service worker logs its own side of the same failure; content.js's is
+  // the one this is about.
+  const fromContent = () => reported.filter(m => String(m).includes('auto gain not stored'));
+  assert(fromContent().length === 1,
+    `a failure on a live context is reported (${JSON.stringify(reported)})`);
+
+  const idBeforeReload = chrome.runtime.id;
+  reported = [];
+  console.error = (...args) => { reported.push(args[0]); };
+  chrome.storage.local.set = () => {
+    // The reload is what makes the write fail, so it is gone by the rejection.
+    chrome.runtime.id = undefined;
+    return Promise.reject(new Error('storage write failed'));
+  };
+  await ytcv.applyPreferredGain();
+  await tick();
+  console.error = realConsoleError;
+  chrome.runtime.id = idBeforeReload;
+  chrome.storage.local.set = realSet;
+  assert(fromContent().length === 0,
+    `the same failure after a reload is not (${JSON.stringify(reported)})`);
+
   // ── Summary ────────────────────────────────────────────────────────
 
   console.log(`\n${passed} passed, ${failed} failed`);
