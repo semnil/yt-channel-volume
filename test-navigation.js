@@ -803,16 +803,19 @@ async function runTests() {
   assert(firstOverlay.textContent === '125%', 'with the gain it now plays');
 
   // A navigation rebuilds the player: the volume area is a new node and the
-  // overlay we made is in the old one, outside the document. Reusing it would
-  // put the reading somewhere nobody can see.
+  // overlay is in the old one, outside the document. One overlay exists, and
+  // it is in the player the viewer is looking at — a second one abandoned in
+  // the replaced area is as wrong as none in the new one.
+  const replacedArea = area;
   area = mockElement('div');
   mockDOMElements['volumeArea'] = area;
   mockDetached.add(firstOverlay);
   ytcv.commitGain(1.4);
   assert(area.children.length === 1,
     `the rebuilt player gets an overlay (${area.children.length})`);
-  assert(area.children[0] !== firstOverlay, 'and it is not the detached node');
   assert(area.children[0].textContent === '140%', 'reading the current gain');
+  assert(replacedArea.children.length === 0,
+    `and none is left behind in the area it replaced (${replacedArea.children.length})`);
 
   // At passthrough the player carries nothing of ours.
   ytcv.commitGain(1.0);
