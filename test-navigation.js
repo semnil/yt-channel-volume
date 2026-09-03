@@ -2439,6 +2439,22 @@ async function runTests() {
   ytcv._set('storageMigrated', true);
   mockDOMElements['canonical'] = null;
   mockDOMElements['channelName'] = null;
+  // A page whose URL names no video — the home page, a channel page — still
+  // plays one, and there is nothing there to compare the answer against.
+  section('Bridge message: a URL naming no video takes the answer as it comes');
+  ytcv._set('currentChannel', { id: '', name: '', url: '' });
+  ytcv._set('currentChannelVideoId', '');
+  ytcv._set('currentLoudnessVideoId', '');
+  ytcv._set('currentLoudnessDb', null);
+  setURL('/', null);
+  simulateBridgeMessage({
+    loudnessDb: -8, isLiveContent: false, videoId: 'homePreview', channelId: 'UChome', author: 'Home Ch'
+  });
+  await tick();
+  assert(ytcv.state.currentLoudnessDb === -8,
+    `the answer is taken where the URL names no video (${ytcv.state.currentLoudnessDb})`);
+  assert(ytcv.state.currentChannel.id === 'UChome', 'and so is the channel it names');
+
   section('Bridge message: a video id in the path is compared');
   ytcv._set('currentChannel', { id: '', name: '', url: '' });
   ytcv._set('currentChannelVideoId', '');

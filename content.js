@@ -155,17 +155,15 @@
 
   let loudnessWaiters = [];
 
+  // The bridge answers for the video it read, and `getUrlVideoId` gives the
+  // video the URL names — `?v=` where there is one, the `/live/` path segment
+  // otherwise. An answer naming another video was queued for a page this tab
+  // has already left.
   function isBridgeMessageForCurrentVideo(videoId) {
     if (!videoId) return true;
     const urlVideoId = getUrlVideoId();
     if (!urlVideoId) return true;
-    if (location.pathname === '/watch') return videoId === urlVideoId;
-    // `/live/<handle>` does not necessarily contain a video ID. Only compare
-    // the path segment when it has the shape of a YouTube video ID.
-    if (location.pathname.startsWith('/live/') && urlVideoId.length === 11) {
-      return videoId === urlVideoId;
-    }
-    return true;
+    return videoId === urlVideoId;
   }
 
   window.addEventListener('message', (event) => {

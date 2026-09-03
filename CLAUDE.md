@@ -21,7 +21,7 @@ background.js (service worker)
      adoptHandleEntry / migrateLegacyGains)
 
 utils.js → content.js (ISOLATED world content scripts, document_idle)
-├── postMessage listener: receives loudnessDb from page-bridge.js
+├── postMessage listener: receives loudnessDb from page-bridge.js. An answer naming a video other than the one the URL names (`?v=`, or the `/live/` path segment) was queued for a page this tab has left, and is dropped; where the URL names no video the answer is taken as it comes
 ├── requestLoudnessWithRetry: asks page-bridge.js again on demand
 ├── Gain calculation (manual apply / per-channel automatic LUFS apply. Both store into the same per-type gain)
 │   ├── contentLUFS = -14 + loudnessDb (YouTube reference = -14 LUFS)
