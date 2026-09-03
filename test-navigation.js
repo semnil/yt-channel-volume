@@ -101,8 +101,10 @@ globalThis.document = {
     mockEventListeners[type].push(fn);
   },
   createElement(tag) { return mockElement(tag); },
-  // Everything is in the document until a case says otherwise, which is what
-  // the overlay's "recreate if the navigation rebuilt the DOM" branch needs.
+  // A case can put a node outside the document. Nothing in content.js asks
+  // this today — the overlay moves rather than recreating — and the mock keeps
+  // answering so that a branch which recreates a detached node is measured the
+  // way a browser would run it.
   contains(node) { return !mockDetached.has(node); },
   get documentElement() { return { }; },
   get visibilityState() { return 'visible'; },
@@ -2427,6 +2429,271 @@ async function runTests() {
   const keyBefore = buildNotifyKey(stateBeforeLive);
   const keyAfter = buildNotifyKey(stateAfterLive);
   assert(keyBefore !== keyAfter, 'dedup key differs when isLiveNow changes');
+
+  // ── The bridge message: which video it is for, and who names the channel ──
+
+  // isBridgeMessageForCurrentVideo compares the message's video id with the one
+  // in the URL, and no case had been on a `/live/` URL at all — the comparison
+  // there was reached by nothing.
+  mockStorage['channelVolumes'] = {};
+  ytcv._set('storageMigrated', true);
+  mockDOMElements['canonical'] = null;
+  mockDOMElements['channelName'] = null;
+  section('Bridge message: a video id in the path is compared');
+  ytcv._set('currentChannel', { id: '', name: '', url: '' });
+  ytcv._set('currentChannelVideoId', '');
+  ytcv._set('currentLoudnessVideoId', '');
+  ytcv._set('currentLoudnessDb', null);
+  setURL('/live/aBcDeFgHiJk', null);
+  simulateBridgeMessage({
+    loudnessDb: -9, isLiveContent: true, isLiveNow: true,
+    videoId: 'zZzZzZzZzZz', channelId: 'UCstale', author: 'Stale Ch'
+  });
+  await tick();
+  assert(ytcv.state.currentLoudnessDb === null,
+    `an answer queued for another video is dropped (${ytcv.state.currentLoudnessDb})`);
+  assert(ytcv.state.currentChannel.id === '', 'and it does not name the channel either');
+  simulateBridgeMessage({
+    loudnessDb: -9, isLiveContent: true, isLiveNow: true,
+    videoId: 'aBcDeFgHiJk', channelId: 'UCfresh', author: 'Fresh Ch'
+  });
+  await tick();
+  assert(ytcv.state.currentLoudnessDb === -9, 'the answer for the one being watched is taken');
+  assert(ytcv.state.currentChannel.id === 'UCfresh', 'and it names the channel');
+
+  // The name of a channel already identified has three sources with an order:
+  // the bridge author is the player's own answer for this video, the DOM lags
+  // an SPA navigation, and what is held is either a real name or the channel id
+  // standing in for one. Only the stub case had a test.
+  section('Bridge message: the author outranks the DOM for a channel already known');
+  setURL('/watch', 'nameVid1');
+  ytcv._set('currentChannelVideoId', '');
+  ytcv._set('currentLoudnessVideoId', '');
+  ytcv._set('currentChannel', { id: 'UCnamed', name: 'Saved Name', url: 'https://y/UCnamed' });
+  mockDOMElements['channelName'] = { textContent: 'DOM Name' };
+  simulateBridgeMessage({
+    loudnessDb: -5, isLiveContent: false, videoId: 'nameVid1',
+    channelId: 'UCnamed', author: 'Bridge Name'
+  });
+  await tick();
+  assert(ytcv.state.currentChannel.name === 'Bridge Name',
+    `the author names the channel (${ytcv.state.currentChannel.name})`);
+
+  section('Bridge message: with no author, a name already held is kept over the DOM');
+  ytcv._set('currentChannelVideoId', '');
+  ytcv._set('currentLoudnessVideoId', '');
+  ytcv._set('currentChannel', { id: 'UCnamed', name: 'Saved Name', url: 'https://y/UCnamed' });
+  simulateBridgeMessage({
+    loudnessDb: -5, isLiveContent: false, videoId: 'nameVid1', channelId: 'UCnamed'
+  });
+  await tick();
+  assert(ytcv.state.currentChannel.name === 'Saved Name',
+    `the DOM does not overwrite a real name (${ytcv.state.currentChannel.name})`);
+
+  section('Bridge message: with no author, the DOM fills in for the channel id');
+  ytcv._set('currentChannelVideoId', '');
+  ytcv._set('currentLoudnessVideoId', '');
+  ytcv._set('currentChannel', { id: 'UCnamed', name: 'UCnamed', url: 'https://y/UCnamed' });
+  simulateBridgeMessage({
+    loudnessDb: -5, isLiveContent: false, videoId: 'nameVid1', channelId: 'UCnamed'
+  });
+  await tick();
+  assert(ytcv.state.currentChannel.name === 'DOM Name',
+    `the id standing in for a name is replaced (${ytcv.state.currentChannel.name})`);
+  mockDOMElements['channelName'] = null;
+
+  // ── What the popup waits for, and what the observer refuses to act on ──
+
+  // The retry exists because the bridge does not always answer the first ask.
+  // Nothing had driven a slow answer: the loudness was always there before the
+  // popup asked, so the interval that gives up and the one that asks again were
+  // the same to every case. The answer is delivered on the second ask here, so
+  // a first-timeout resolve cannot reach it.
+  section('Popup open: an answer that arrives on the second ask still reaches the popup');
+  setURL('/watch', 'slowVid1');
+  ytcv._set('currentChannel', { id: 'UCslow', name: 'Slow Ch', url: '' });
+  ytcv._set('currentChannelVideoId', '');
+  ytcv._set('currentLoudnessVideoId', '');
+  ytcv._set('currentLoudnessDb', null);
+  ytcv._set('_lastVideoId', 'slowVid1');
+  ytcv._set('_lastProcessedVideo', mockVideoEl);
+  ytcv._set('currentAutoApplyLoudnessVideo', false);
+  ytcv._set('currentVideoType', 'video');
+  mockStorage['channelVolumes'] = { UCslow: { name: 'Slow Ch', gainVideo: 0.5 } };
+  let bridgeAsks = 0;
+  mockPostMessageHandler = (data) => {
+    if (data?.type !== '__yt_channel_volume_request__') return;
+    bridgeAsks++;
+    if (bridgeAsks === 2) {
+      simulateBridgeMessage({
+        loudnessDb: -11, isLiveContent: false, videoId: 'slowVid1', channelId: 'UCslow', author: 'Slow Ch'
+      });
+    }
+  };
+  const slowAnswer = await simulateRuntimeMessage({ type: 'forceDetect' });
+  mockPostMessageHandler = null;
+  assert(bridgeAsks >= 2, `the bridge is asked again when the first ask goes unanswered (${bridgeAsks})`);
+  assert(slowAnswer?.loudnessDb === -11,
+    `and the popup is answered with what arrived (${JSON.stringify(slowAnswer?.loudnessDb)})`);
+
+  // Auto applies the gain itself and says so; the caller runs the saved-gain
+  // path only when it did not. Nothing had asked what saying so is worth, and
+  // the answer is invisible in the gain — both paths land on the same number.
+  // It is visible in the writing: the channel is written once per message.
+  section('Auto LUFS: a message Auto has answered is not applied a second time');
+  mockStorage['channelVolumes'] = {
+    UCwrites: { name: 'Writes Ch', gainVideo: 0.5, autoApplyLoudnessVideo: true }
+  };
+  setURL('/watch', 'writeVid1');
+  ytcv._set('currentChannel', { id: 'UCwrites', name: 'Writes Ch', url: '' });
+  ytcv._set('currentChannelVideoId', 'writeVid1');
+  ytcv._set('currentLoudnessVideoId', '');
+  ytcv._set('currentLoudnessDb', null);
+  ytcv._set('currentVideoType', 'video');
+  ytcv._set('currentAutoApplyLoudnessVideo', true);
+  ytcv._set('storageSettled', true);
+  ytcv._set('storageMigrated', true);
+  ytcv._set('targetLufs', -18);
+  mockSentMessages.length = 0;
+  simulateBridgeMessage({
+    loudnessDb: -6, isLiveContent: false, videoId: 'writeVid1', channelId: 'UCwrites', author: 'Writes Ch'
+  });
+  await tick();
+  await tick();
+  const writesForChannel = mockSentMessages.filter(m => m?.type === 'store:saveChannelGain');
+  assert(Math.abs(ytcv.state.currentGain - ytcv.calcGainFromLoudness(-6)) < 0.001,
+    `Auto applies the gain (${ytcv.state.currentGain})`);
+  assert(writesForChannel.length === 1,
+    `and the channel is written once for the message (${writesForChannel.length})`);
+
+  // The observer fires on every DOM change YouTube makes, which on a busy page
+  // is constantly. Its two triggers are guarded against the states that look
+  // like a change and are not, and no case had put either state to it.
+  section('Observer: the first video seen is not a video that changed');
+  setURL('/watch', 'obsVid1');
+  mockVideoEl = { id: 'observer-first-video' };
+  ytcv._set('_lastProcessedVideo', null);
+  ytcv._set('_lastVideoId', 'obsVid1');
+  ytcv._set('currentLoudnessVideoId', '');
+  ytcv._set('currentLoudnessDb', -3);
+  ytcv._set('_applyRunning', false);
+  fireObserver();
+  await tick();
+  assert(ytcv.state.currentLoudnessDb === -3,
+    `nothing is applied for a video nothing has processed yet (${ytcv.state.currentLoudnessDb})`);
+  assert(ytcv.state._lastProcessedVideo === null, 'and the video is still unprocessed');
+
+  section('Observer: a URL with no video id is not a video that changed');
+  mockLocation.pathname = '/watch';
+  mockLocation.search = '';
+  mockLocation.href = 'https://www.youtube.com/watch';
+  ytcv._set('_lastProcessedVideo', mockVideoEl);
+  ytcv._set('_lastVideoId', 'obsVid1');
+  ytcv._set('currentLoudnessDb', -3);
+  ytcv._set('_applyRunning', false);
+  fireObserver();
+  await tick();
+  assert(ytcv.state._lastVideoId === 'obsVid1',
+    `an empty video id does not count as a change (${ytcv.state._lastVideoId})`);
+  assert(ytcv.state.currentLoudnessDb === -3, 'and nothing is applied');
+
+  // The observer's own watch-page guard is not what keeps an apply off a page
+  // that is not a watch page — triggerApply refuses on its own, which is what
+  // this asks. The guard is there so the observer does no work at all on the
+  // pages that mutate the most.
+  section('Apply: a page that is not a watch page is refused');
+  setURL('/feed/subscriptions', null);
+  ytcv._set('_lastProcessedVideo', null);
+  ytcv._set('_lastVideoId', 'obsVid1');
+  ytcv._set('currentLoudnessDb', -3);
+  ytcv._set('_applyRunning', false);
+  await ytcv.triggerApply();
+  assert(ytcv.state._lastVideoId === 'obsVid1',
+    `no apply runs off a watch page (${ytcv.state._lastVideoId})`);
+  assert(ytcv.state._lastProcessedVideo === null, 'and no video is taken up');
+  setURL('/watch', 'obsVid1');
+
+  // ── Going quiet after a reload ──────────────────────────────────────
+
+  // reportFailure keeps the console clear after an extension reload, which is
+  // the one cause of these failures that is not worth reporting. The state it
+  // reads is the state at the failure, not at the request: a save already in
+  // flight is what fails on the reload. Nothing had made a failure land on an
+  // invalidated context, so the check had no case either way.
+  section('Extension reload: the failure it causes is not reported');
+  mockStorage['channelVolumes'] = {
+    UCreload: { name: 'Reload Ch', gainVideo: 0.5, autoApplyLoudnessVideo: true }
+  };
+  setURL('/watch', 'reloadVid1');
+  ytcv._set('currentChannel', { id: 'UCreload', name: 'Reload Ch', url: 'https://y/UCreload' });
+  ytcv._set('currentVideoType', 'video');
+  ytcv._set('currentAutoApplyLoudnessVideo', true);
+  ytcv._set('currentLoudnessDb', -6);
+  ytcv._set('_lastVideoId', 'reloadVid1');
+  ytcv._set('storageMigrated', true);
+  ytcv._set('storageReady', Promise.resolve());
+  const realConsoleError = console.error;
+  const realSet = chrome.storage.local.set;
+  let reported = [];
+  console.error = (...args) => { reported.push(args[0]); };
+  chrome.storage.local.set = () => Promise.reject(new Error('storage write failed'));
+  await ytcv.applyPreferredGain();
+  await tick();
+  console.error = realConsoleError;
+  // The service worker logs its own side of the same failure; content.js's is
+  // the one this is about.
+  const fromContent = () => reported.filter(m => String(m).includes('auto gain not stored'));
+  assert(fromContent().length === 1,
+    `a failure on a live context is reported (${JSON.stringify(reported)})`);
+
+  const idBeforeReload = chrome.runtime.id;
+  reported = [];
+  console.error = (...args) => { reported.push(args[0]); };
+  chrome.storage.local.set = () => {
+    // The reload is what makes the write fail, so it is gone by the rejection.
+    chrome.runtime.id = undefined;
+    return Promise.reject(new Error('storage write failed'));
+  };
+  await ytcv.applyPreferredGain();
+  await tick();
+  console.error = realConsoleError;
+  chrome.runtime.id = idBeforeReload;
+  chrome.storage.local.set = realSet;
+  assert(fromContent().length === 0,
+    `the same failure after a reload is not (${JSON.stringify(reported)})`);
+
+  // Every write goes through one function, and after a reload that function is
+  // the last thing standing between the page and a chrome.runtime call that
+  // throws. Nothing had asked it to refuse: the case below is also what the
+  // startup fold's own context check leans on, since the fold does its work
+  // through here.
+  section('Extension reload: no write is attempted');
+  mockStorage['channelVolumes'] = { UCquiet: { name: 'Quiet Ch', gainVideo: 0.5 } };
+  const idBeforeQuiet = chrome.runtime.id;
+  chrome.runtime.id = undefined;
+  mockSentMessages.length = 0;
+  await ytcv.saveChannelGain('UCquiet', 'Quiet Ch', 0.9, 'video', '');
+  await ytcv.saveChannelAutoApply('UCquiet', 'Quiet Ch', true, 'video', '');
+  await tick();
+  chrome.runtime.id = idBeforeQuiet;
+  assert(mockSentMessages.filter(m => String(m?.type).startsWith('store:')).length === 0,
+    `nothing is sent to the worker after a reload (${JSON.stringify(mockSentMessages.map(m => m?.type))})`);
+  assert(mockStorage['channelVolumes']['UCquiet'].gainVideo === 0.5,
+    `and the channel keeps the gain it had (${mockStorage['channelVolumes']['UCquiet'].gainVideo})`);
+
+  // The same function refuses a write with no channel to write it under. The
+  // key it would use is the empty string, which is a channel the extension can
+  // read back and show.
+  section('A gain with no channel is not written');
+  mockSentMessages.length = 0;
+  await ytcv.saveChannelGain('', 'No Ch', 0.9, 'video', '');
+  await ytcv.saveChannelAutoApply('', 'No Ch', true, 'video', '');
+  await ytcv.deleteChannelGain('');
+  await tick();
+  assert(mockSentMessages.filter(m => String(m?.type).startsWith('store:')).length === 0,
+    `nothing is sent for a channel with no id (${JSON.stringify(mockSentMessages.map(m => m?.type))})`);
+  assert(!('' in mockStorage['channelVolumes']),
+    'and no entry is made under an empty key');
 
   // ── Summary ────────────────────────────────────────────────────────
 
