@@ -2428,6 +2428,78 @@ async function runTests() {
   const keyAfter = buildNotifyKey(stateAfterLive);
   assert(keyBefore !== keyAfter, 'dedup key differs when isLiveNow changes');
 
+  // ── The bridge message: which video it is for, and who names the channel ──
+
+  // isBridgeMessageForCurrentVideo compares the message's video id with the one
+  // in the URL, and no case had been on a `/live/` URL at all — the comparison
+  // there was reached by nothing.
+  mockStorage['channelVolumes'] = {};
+  ytcv._set('storageMigrated', true);
+  mockDOMElements['canonical'] = null;
+  mockDOMElements['channelName'] = null;
+  section('Bridge message: a video id in the path is compared');
+  ytcv._set('currentChannel', { id: '', name: '', url: '' });
+  ytcv._set('currentChannelVideoId', '');
+  ytcv._set('currentLoudnessVideoId', '');
+  ytcv._set('currentLoudnessDb', null);
+  setURL('/live/aBcDeFgHiJk', null);
+  simulateBridgeMessage({
+    loudnessDb: -9, isLiveContent: true, isLiveNow: true,
+    videoId: 'zZzZzZzZzZz', channelId: 'UCstale', author: 'Stale Ch'
+  });
+  await tick();
+  assert(ytcv.state.currentLoudnessDb === null,
+    `an answer queued for another video is dropped (${ytcv.state.currentLoudnessDb})`);
+  assert(ytcv.state.currentChannel.id === '', 'and it does not name the channel either');
+  simulateBridgeMessage({
+    loudnessDb: -9, isLiveContent: true, isLiveNow: true,
+    videoId: 'aBcDeFgHiJk', channelId: 'UCfresh', author: 'Fresh Ch'
+  });
+  await tick();
+  assert(ytcv.state.currentLoudnessDb === -9, 'the answer for the one being watched is taken');
+  assert(ytcv.state.currentChannel.id === 'UCfresh', 'and it names the channel');
+
+  // The name of a channel already identified has three sources with an order:
+  // the bridge author is the player's own answer for this video, the DOM lags
+  // an SPA navigation, and what is held is either a real name or the channel id
+  // standing in for one. Only the stub case had a test.
+  section('Bridge message: the author outranks the DOM for a channel already known');
+  setURL('/watch', 'nameVid1');
+  ytcv._set('currentChannelVideoId', '');
+  ytcv._set('currentLoudnessVideoId', '');
+  ytcv._set('currentChannel', { id: 'UCnamed', name: 'Saved Name', url: 'https://y/UCnamed' });
+  mockDOMElements['channelName'] = { textContent: 'DOM Name' };
+  simulateBridgeMessage({
+    loudnessDb: -5, isLiveContent: false, videoId: 'nameVid1',
+    channelId: 'UCnamed', author: 'Bridge Name'
+  });
+  await tick();
+  assert(ytcv.state.currentChannel.name === 'Bridge Name',
+    `the author names the channel (${ytcv.state.currentChannel.name})`);
+
+  section('Bridge message: with no author, a name already held is kept over the DOM');
+  ytcv._set('currentChannelVideoId', '');
+  ytcv._set('currentLoudnessVideoId', '');
+  ytcv._set('currentChannel', { id: 'UCnamed', name: 'Saved Name', url: 'https://y/UCnamed' });
+  simulateBridgeMessage({
+    loudnessDb: -5, isLiveContent: false, videoId: 'nameVid1', channelId: 'UCnamed'
+  });
+  await tick();
+  assert(ytcv.state.currentChannel.name === 'Saved Name',
+    `the DOM does not overwrite a real name (${ytcv.state.currentChannel.name})`);
+
+  section('Bridge message: with no author, the DOM fills in for the channel id');
+  ytcv._set('currentChannelVideoId', '');
+  ytcv._set('currentLoudnessVideoId', '');
+  ytcv._set('currentChannel', { id: 'UCnamed', name: 'UCnamed', url: 'https://y/UCnamed' });
+  simulateBridgeMessage({
+    loudnessDb: -5, isLiveContent: false, videoId: 'nameVid1', channelId: 'UCnamed'
+  });
+  await tick();
+  assert(ytcv.state.currentChannel.name === 'DOM Name',
+    `the id standing in for a name is replaced (${ytcv.state.currentChannel.name})`);
+  mockDOMElements['channelName'] = null;
+
   // ── Summary ────────────────────────────────────────────────────────
 
   console.log(`\n${passed} passed, ${failed} failed`);
