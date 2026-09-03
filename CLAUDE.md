@@ -110,7 +110,7 @@ options.html / options.js (settings screen, opened in its own tab)
 | `tools/verify-version.sh` | Holds a release tag to the manifest: `version_name` where the manifest has one (which has to begin with `version`), `version` otherwise. Run only where a release is being made |
 | `tools/fonts/` | The drawing font M PLUS 1p (Regular / Bold) and OFL.txt. Taken from `ofl/mplus1p` in google/fonts (commit `66a36c8`). Committed to the repository so that CI and each machine produce the same pixels |
 | `test.js` | Unit tests (node test.js) |
-| `test-navigation.js` | Navigation and state-transition tests (node test-navigation.js) |
+| `test-navigation.js` | Navigation and state-transition tests (node test-navigation.js). Its `simulateRuntimeMessage` models Chrome's message port: a listener returning anything but `true` shuts it, so a handler that answers from a `.then` without `return true` ends the run naming the message rather than leaving the suite to wander against storage it is still writing to. A caller that means to send a message the listener declines passes `expectNoAnswer` |
 | `test-screenshots.py` | Tests for `gen_screenshots.py`'s arguments, output destination, and the shapes `--check` turns down (python3 test-screenshots.py. Also run from `node test.js`. Where symlinks cannot be created and where `resource` is absent, the affected cases are reported as skipped) |
 
 ## Key design decisions
