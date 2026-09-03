@@ -484,10 +484,6 @@
     const volumeArea = document.querySelector('.ytp-volume-area');
     if (!volumeArea) return;
 
-    // Recreate if detached from document (SPA navigation rebuilds DOM)
-    if (_overlayEl && !document.contains(_overlayEl)) {
-      _overlayEl = null;
-    }
     if (!_overlayEl) {
       _overlayEl = document.createElement('span');
       _overlayEl.style.cssText =
@@ -496,6 +492,8 @@
         'line-height:normal;display:inline-flex;align-items:center;';
     }
     _overlayEl.textContent = Math.round(currentGain * 100) + '%';
+    // A rebuilt player is a different volume area, and appending moves the
+    // overlay already made into it rather than leaving a copy in the old one.
     if (_overlayEl.parentNode !== volumeArea) {
       volumeArea.appendChild(_overlayEl);
     }

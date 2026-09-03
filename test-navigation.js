@@ -50,12 +50,38 @@ function setURL(path, videoId) {
   }
 }
 
+// A node that can hold children, so a case can ask where the overlay ended up
+// rather than only that something was made.
+const mockDetached = new Set();
+function mockElement(tag) {
+  const el = {
+    tagName: tag,
+    style: { cssText: '' },
+    textContent: '',
+    parentNode: null,
+    children: [],
+    appendChild(child) {
+      if (child.parentNode) { child.parentNode.removeChild(child); }
+      child.parentNode = el;
+      el.children.push(child);
+      return child;
+    },
+    removeChild(child) {
+      const at = el.children.indexOf(child);
+      if (at > -1) { el.children.splice(at, 1); }
+      if (child.parentNode === el) { child.parentNode = null; }
+      return child;
+    },
+  };
+  return el;
+}
+
 // Minimal DOM mock
 globalThis.document = {
   querySelector(sel) {
     // video element
     if (sel.includes('video.html5-main-video') || (sel === 'video')) return mockVideoEl;
-    if (sel.includes('.ytp-volume-area')) return null;
+    if (sel.includes('.ytp-volume-area')) return mockDOMElements['volumeArea'] || null;
     if (sel.includes('ytd-watch-flexy')) return null;
     if (sel.includes('movie_player')) return null;
     // channel name (getChannelDisplayName)
@@ -74,16 +100,10 @@ globalThis.document = {
     mockEventListeners[type] = mockEventListeners[type] || [];
     mockEventListeners[type].push(fn);
   },
-  createElement(tag) {
-    return {
-      style: { cssText: '' },
-      textContent: '',
-      parentNode: null,
-      appendChild() {},
-      removeChild() {},
-    };
-  },
-  contains() { return true; },
+  createElement(tag) { return mockElement(tag); },
+  // Everything is in the document until a case says otherwise, which is what
+  // the overlay's "recreate if the navigation rebuilt the DOM" branch needs.
+  contains(node) { return !mockDetached.has(node); },
   get documentElement() { return { }; },
   get visibilityState() { return 'visible'; },
   get readyState() { return 'complete'; },
@@ -188,12 +208,15 @@ globalThis.MutationObserver = class {
   disconnect() {}
 };
 
-// AudioContext mock
+// AudioContext mock. What it did not keep was any record of being asked: a
+// resume nobody counted and a disconnect nobody counted are two of the things
+// ensureAudioChain does that a case can only ask about if the mock remembers.
+let mockAudioAsks = { resumes: 0, disconnects: 0 };
 globalThis.AudioContext = class {
   constructor() { this.state = 'running'; }
-  resume() { this.state = 'running'; return Promise.resolve(); }
+  resume() { mockAudioAsks.resumes += 1; this.state = 'running'; return Promise.resolve(); }
   createMediaElementSource() {
-    return { connect() {}, disconnect() {} };
+    return { connect() {}, disconnect() { mockAudioAsks.disconnects += 1; } };
   }
   createGain() {
     return { gain: { value: 1.0 }, connect() {} };
@@ -745,6 +768,193 @@ async function runTests() {
   // setTargetLufs answers from a .then, so it is one of the handlers that has
   // to keep the port open. No test drove it at all — the whole handler, its
   // save and its answer, was reached by nothing.
+  // The gain overlay: five branches of updateGainOverlay that no case reached,
+  // because the DOM mock could not hand it a volume area to draw into. Driven
+  // through commitGain, which is the production path that redraws it — the
+  // settings handler recomputes the gain before redrawing, so it says nothing
+  // about the gain the overlay is given.
+  section('Gain overlay: what it puts in the player, and takes back out');
+  const overlayLoudness = ytcv.state.currentLoudnessDb;
+  ytcv._set('currentLoudnessDb', null);
+  const overlaySetting = (on) => {
+    simulateStorageChange({
+      autoLoudnessSettings: {
+        newValue: { targetLufs: -18, displayUnit: '%', showGainOverlay: on }
+      }
+    });
+    return tick();
+  };
+  let area = mockElement('div');
+  mockDOMElements['volumeArea'] = area;
+  await overlaySetting(true);
+
+  ytcv.commitGain(1.5);
+  assert(area.children.length === 1,
+    `the overlay is put in the player (${area.children.length} children)`);
+  assert(area.children[0].textContent === '150%',
+    `and reads the gain as a percentage (${area.children[0].textContent})`);
+  const firstOverlay = area.children[0];
+
+  // Committing again changes the reading, not the number of overlays.
+  ytcv.commitGain(1.25);
+  assert(area.children.length === 1,
+    `a second commit leaves one overlay (${area.children.length})`);
+  assert(area.children[0] === firstOverlay, 'and it is the one already there');
+  assert(firstOverlay.textContent === '125%', 'with the gain it now plays');
+
+  // A navigation rebuilds the player: the volume area is a new node and the
+  // overlay is in the old one, outside the document. One overlay exists, and
+  // it is in the player the viewer is looking at — a second one abandoned in
+  // the replaced area is as wrong as none in the new one.
+  const replacedArea = area;
+  area = mockElement('div');
+  mockDOMElements['volumeArea'] = area;
+  mockDetached.add(firstOverlay);
+  ytcv.commitGain(1.4);
+  assert(area.children.length === 1,
+    `the rebuilt player gets an overlay (${area.children.length})`);
+  assert(area.children[0].textContent === '140%', 'reading the current gain');
+  assert(replacedArea.children.length === 0,
+    `and none is left behind in the area it replaced (${replacedArea.children.length})`);
+
+  // At passthrough the player carries nothing of ours.
+  ytcv.commitGain(1.0);
+  assert(area.children.length === 0,
+    `a gain of exactly 1.0 shows nothing (${area.children.length})`);
+  ytcv.commitGain(1.5);
+  assert(area.children.length === 1, 'back at a raised gain it is there again');
+
+  // And with the setting off, nothing at any gain.
+  await overlaySetting(false);
+  ytcv.commitGain(1.6);
+  assert(area.children.length === 0,
+    `turned off, it is taken back out (${area.children.length})`);
+
+  // No volume area at all — the player YouTube has not built yet.
+  mockDOMElements['volumeArea'] = null;
+  await overlaySetting(true);
+  ytcv.commitGain(1.7);
+  assert(area.children.length === 0,
+    'and with no player there is nothing to put it in');
+
+  // Put the world back for the cases after this one.
+  await overlaySetting(false);
+  ytcv.commitGain(1.0);
+  ytcv._set('currentLoudnessDb', overlayLoudness);
+  mockDetached.clear();
+
+  // ensureAudioChain: three things it does that no case had asked about, since
+  // the mock forgot being asked and the context was never anything but running.
+  section('Audio chain: what building it does');
+  const chainLoudness = ytcv.state.currentLoudnessDb;
+  ytcv._set('currentLoudnessDb', null);
+  const videoBeforeChain = mockVideoEl;
+
+  // A new element means a new chain: the source taken for the old one has to be
+  // let go, or it stays connected to a player nobody is listening to.
+  mockAudioAsks.disconnects = 0;
+  mockVideoEl = { id: 'chain-second-video' };
+  ytcv.commitGain(1.3);
+  assert(mockAudioAsks.disconnects === 1,
+    `the source taken for the previous element is disconnected (${mockAudioAsks.disconnects})`);
+  assert(ytcv.state.gainNode.gain.value === 1.3,
+    `and the gain reaches the new GainNode (${ytcv.state.gainNode.gain.value})`);
+
+  // Building it again for the same element takes nothing new and lets nothing go.
+  mockAudioAsks.disconnects = 0;
+  ytcv.commitGain(1.35);
+  assert(mockAudioAsks.disconnects === 0,
+    `the chain already built is kept (${mockAudioAsks.disconnects} disconnects)`);
+  assert(ytcv.state.gainNode.gain.value === 1.35, 'and the gain still reaches it');
+
+  // A context the page has not let start yet is resumed; one already running
+  // is not asked again.
+  mockAudioAsks.resumes = 0;
+  ytcv.state.audioCtx.state = 'suspended';
+  mockVideoEl = { id: 'chain-third-video' };
+  ytcv.commitGain(1.4);
+  assert(mockAudioAsks.resumes === 1,
+    `a suspended context is resumed while the chain is built (${mockAudioAsks.resumes})`);
+  assert(ytcv.state.audioCtx.state === 'running', 'and it is running afterwards');
+  mockAudioAsks.resumes = 0;
+  mockVideoEl = { id: 'chain-fourth-video' };
+  ytcv.commitGain(1.45);
+  assert(mockAudioAsks.resumes === 0,
+    `a running context is not asked again (${mockAudioAsks.resumes})`);
+
+  mockVideoEl = videoBeforeChain;
+  ytcv.commitGain(1.0);
+  ytcv._set('currentLoudnessDb', chainLoudness);
+
+  // applyLoudness turns three requests down before it does anything, and no
+  // case had put any of the refusals to it beside the request it does honour.
+  section('Apply to channel: what it declines, and where the gain it applies lands');
+  const applyLoudnessBefore = ytcv.state.currentLoudnessDb;
+  const applyChannelBefore = ytcv.state.currentChannel;
+  const applyStorageBefore = mockStorage['channelVolumes'];
+  // The Live gain is a sentinel: an apply on a Video is not allowed to move it.
+  mockStorage['channelVolumes'] = {
+    'UCapply': { name: 'Apply Ch', url: 'https://y/UCapply', gainVideo: 0.5, gainLive: 0.8 }
+  };
+  ytcv._set('currentChannel', { id: 'UCapply', name: 'Apply Ch', url: 'https://y/UCapply' });
+  ytcv._set('currentVideoType', 'video');
+  ytcv._set('targetLufs', -18);
+
+  // Auto is doing the applying; the button must not write over it.
+  ytcv._set('currentAutoApplyLoudnessVideo', true);
+  ytcv._set('currentLoudnessDb', -6);
+  const whileAuto = await simulateRuntimeMessage({ type: 'applyLoudness' });
+  assert(whileAuto?.ok === false && whileAuto?.reason === 'auto apply enabled',
+    `with Auto on it is declined — got ${JSON.stringify(whileAuto)}`);
+
+  // Auto off, but nothing measured to apply.
+  ytcv._set('currentAutoApplyLoudnessVideo', false);
+  ytcv._set('currentLoudnessDb', null);
+  const withoutLoudness = await simulateRuntimeMessage({ type: 'applyLoudness' });
+  assert(withoutLoudness?.ok === false && withoutLoudness?.reason === 'no loudness data',
+    `with nothing measured it is declined — got ${JSON.stringify(withoutLoudness)}`);
+
+  // Measured, but the page has not said whose channel it is yet. Applying now
+  // would move the level the viewer hears with nothing able to remember it.
+  ytcv._set('currentLoudnessDb', -6);
+  ytcv._set('currentChannel', { id: '', name: '', url: '' });
+  const gainBeforeIdless = ytcv.state.currentGain;
+  const withoutChannel = await simulateRuntimeMessage({ type: 'applyLoudness' });
+  await tick();
+  assert(withoutChannel?.ok === false && withoutChannel?.reason === 'no loudness data',
+    `with no channel known it is declined — got ${JSON.stringify(withoutChannel)}`);
+  assert(ytcv.state.currentGain === gainBeforeIdless,
+    `and the gain that is playing is left alone (${ytcv.state.currentGain})`);
+  assert(Object.keys(mockStorage['channelVolumes']).length === 1,
+    'and no channel is written');
+
+  // And with none of the three in the way it goes through. Without this the
+  // refusals above would hold for a handler that declined everything.
+  ytcv._set('currentChannel', { id: 'UCapply', name: 'Apply Ch', url: 'https://y/UCapply' });
+  const applied = await simulateRuntimeMessage({ type: 'applyLoudness' });
+  await tick();
+  assert(applied?.ok === true, `otherwise it applies — got ${JSON.stringify(applied)}`);
+  assert(Math.abs(applied.gain - ytcv.calcGainFromLoudness(-6)) < 0.001,
+    'and answers with the gain it worked out');
+
+  // Where it landed is the whole point of the button: this channel, the type
+  // being watched, as a choice Auto is not to take back over.
+  const appliedEntry = mockStorage['channelVolumes']['UCapply'];
+  assert(Math.abs(appliedEntry.gainVideo - applied.gain) < 0.001,
+    `the gain is saved as the Video gain of this channel (${appliedEntry.gainVideo})`);
+  assert(appliedEntry.gainLive === 0.8,
+    `and the Live gain it was not asked about is untouched (${appliedEntry.gainLive})`);
+  assert(appliedEntry.name === 'Apply Ch' && appliedEntry.url === 'https://y/UCapply',
+    'under the name and url of the channel being watched');
+  assert(appliedEntry.autoApplyLoudnessVideo === false,
+    'pinned as a manual choice, so an all-channel default cannot take it over');
+  assert(Math.abs(ytcv.state.currentGain - applied.gain) < 0.001,
+    `and it is the gain now playing (${ytcv.state.currentGain})`);
+
+  mockStorage['channelVolumes'] = applyStorageBefore;
+  ytcv._set('currentLoudnessDb', applyLoudnessBefore);
+  ytcv._set('currentChannel', applyChannelBefore);
+
   section('Auto LUFS: the popup sets Target LUFS');
   ytcv._set('currentLoudnessDb', -6);
   const settingsBefore = mockStorage['autoLoudnessSettings'];
