@@ -2660,6 +2660,39 @@ async function runTests() {
   assert(fromContent().length === 0,
     `the same failure after a reload is not (${JSON.stringify(reported)})`);
 
+  // Every write goes through one function, and after a reload that function is
+  // the last thing standing between the page and a chrome.runtime call that
+  // throws. Nothing had asked it to refuse: the case below is also what the
+  // startup fold's own context check leans on, since the fold does its work
+  // through here.
+  section('Extension reload: no write is attempted');
+  mockStorage['channelVolumes'] = { UCquiet: { name: 'Quiet Ch', gainVideo: 0.5 } };
+  const idBeforeQuiet = chrome.runtime.id;
+  chrome.runtime.id = undefined;
+  mockSentMessages.length = 0;
+  await ytcv.saveChannelGain('UCquiet', 'Quiet Ch', 0.9, 'video', '');
+  await ytcv.saveChannelAutoApply('UCquiet', 'Quiet Ch', true, 'video', '');
+  await tick();
+  chrome.runtime.id = idBeforeQuiet;
+  assert(mockSentMessages.filter(m => String(m?.type).startsWith('store:')).length === 0,
+    `nothing is sent to the worker after a reload (${JSON.stringify(mockSentMessages.map(m => m?.type))})`);
+  assert(mockStorage['channelVolumes']['UCquiet'].gainVideo === 0.5,
+    `and the channel keeps the gain it had (${mockStorage['channelVolumes']['UCquiet'].gainVideo})`);
+
+  // The same function refuses a write with no channel to write it under. The
+  // key it would use is the empty string, which is a channel the extension can
+  // read back and show.
+  section('A gain with no channel is not written');
+  mockSentMessages.length = 0;
+  await ytcv.saveChannelGain('', 'No Ch', 0.9, 'video', '');
+  await ytcv.saveChannelAutoApply('', 'No Ch', true, 'video', '');
+  await ytcv.deleteChannelGain('');
+  await tick();
+  assert(mockSentMessages.filter(m => String(m?.type).startsWith('store:')).length === 0,
+    `nothing is sent for a channel with no id (${JSON.stringify(mockSentMessages.map(m => m?.type))})`);
+  assert(!('' in mockStorage['channelVolumes']),
+    'and no entry is made under an empty key');
+
   // ── Summary ────────────────────────────────────────────────────────
 
   console.log(`\n${passed} passed, ${failed} failed`);

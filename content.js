@@ -971,6 +971,7 @@
       saveChannelGain,
       saveManualChannelGain,
       saveChannelAutoApply,
+      deleteChannelGain,
       applyPreferredGain,
       notifyPopup,
       // Setters for test setup
