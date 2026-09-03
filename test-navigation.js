@@ -331,6 +331,94 @@ function simulateStorageChange(changes) {
 // Helper to wait for async
 function tick() { return new Promise(r => setTimeout(r, 10)); }
 
+
+// ── page-bridge.js ───────────────────────────────────────────────────
+// The MAIN-world half of the pair. No suite in any of the three extensions
+// had ever loaded a bridge, so everything it decides — which answers it
+// refuses, where it reads the level from, what it puts in a message — was
+// held by nothing. It runs in a context of its own here: the page's window,
+// the fetch it wraps, and the DOM it reads.
+
+function createBridge({ pathname = '/watch', videoId = 'urlVideoIdA' } = {}) {
+  const posted = [];
+  const listeners = {};
+  const logged = [];
+  let flexy = null;
+  let moviePlayer = null;
+  let fetchAnswer = null;
+
+  const location = {};
+  const setUrl = (path, id) => {
+    location.pathname = path;
+    location.search = id ? '?v=' + id : '';
+    location.href = 'https://www.youtube.com' + path + (id ? '?v=' + id : '');
+  };
+  setUrl(pathname, pathname === '/watch' ? videoId : '');
+
+  const window = {
+    addEventListener(type, fn) { (listeners[type] ||= []).push(fn); },
+    postMessage(data) { posted.push(data); },
+    // What the bridge wraps. A player request answers with whatever the case
+    // last handed to `answerPlayerRequest`.
+    fetch(url) {
+      const body = fetchAnswer;
+      return Promise.resolve({
+        clone: () => ({ json: () => Promise.resolve(body) }),
+        url
+      });
+    }
+  };
+
+  const sandbox = {
+    window, location, console: { log: (...args) => logged.push(args) },
+    URL, Promise, JSON, Object, Math, Date, String, Number, Boolean,
+    document: {
+      querySelector: (selector) => (selector.includes('ytd-watch-flexy') ? flexy : null),
+      getElementById: (id) => (id === 'movie_player' ? moviePlayer : null)
+    }
+  };
+  sandbox.globalThis = sandbox;
+  vm.createContext(sandbox);
+  vm.runInContext(fs.readFileSync('./page-bridge.js', 'utf8'), sandbox, { filename: 'page-bridge.js' });
+
+  const deliver = (data) => {
+    for (const fn of listeners['message'] || []) fn({ source: window, data });
+  };
+
+  return {
+    posted,
+    logged,
+    setUrl,
+    // Method 1: the page assigns its player response.
+    assign(playerResponse) { window.ytInitialPlayerResponse = playerResponse; },
+    // Method 2: a player request answered mid-navigation.
+    async fetchPlayer(playerResponse, url = 'https://www.youtube.com/youtubei/v1/player?key=x') {
+      fetchAnswer = playerResponse;
+      await window.fetch(url);
+      await tick();
+    },
+    // Method 3 and the on-demand path: what content.js asks for.
+    async request() { deliver({ type: '__yt_channel_volume_request__' }); await tick(); },
+    async diagnose() { deliver({ type: '__yt_channel_volume_diag__' }); await tick(); },
+    setFlexy(playerResponse) { flexy = playerResponse ? { __data: { playerResponse } } : null; },
+    setMoviePlayer(playerResponse) {
+      moviePlayer = playerResponse ? { getPlayerResponse: () => playerResponse } : null;
+    },
+    last() { return posted[posted.length - 1]; }
+  };
+}
+
+const playerResponse = (over = {}) => ({
+  playerConfig: { audioConfig: { loudnessDb: over.loudnessDb ?? -7.5 } },
+  videoDetails: {
+    videoId: over.videoId ?? 'urlVideoIdA',
+    channelId: over.channelId ?? 'UCbridge',
+    author: over.author ?? 'Bridge Ch',
+    isLiveContent: over.isLiveContent ?? false,
+    isLive: over.isLive ?? false
+  }
+});
+
 // ── Tests ────────────────────────────────────────────────────────────
 
 async function runTests() {
@@ -2710,6 +2798,173 @@ async function runTests() {
     `nothing is sent for a channel with no id (${JSON.stringify(mockSentMessages.map(m => m?.type))})`);
   assert(!('' in mockStorage['channelVolumes']),
     'and no entry is made under an empty key');
+
+  // ── page-bridge.js: what it reads, and what it refuses ──────────────
+
+  section('Bridge: the page assigns its player response');
+  {
+    const bridge = createBridge();
+    bridge.assign(playerResponse({ loudnessDb: -7.5, isLiveContent: true, isLive: true }));
+    const msg = bridge.last();
+    assert(bridge.posted.length === 1, `one message is posted (${bridge.posted.length})`);
+    assert(msg?.type === '__yt_channel_volume__', `addressed to the content script (${msg?.type})`);
+    assert(msg?.loudnessDb === -7.5, `carrying the level the page holds (${msg?.loudnessDb})`);
+    assert(msg?.videoId === 'urlVideoIdA', `and the video it belongs to (${msg?.videoId})`);
+    assert(msg?.channelId === 'UCbridge' && msg?.author === 'Bridge Ch',
+      `and who published it (${msg?.channelId} / ${msg?.author})`);
+    assert(msg?.isLiveContent === true && msg?.isLiveNow === true,
+      `and that it is live now (${msg?.isLiveContent} / ${msg?.isLiveNow})`);
+    assert(msg?.source === 'define', `saying where it came from (${msg?.source})`);
+  }
+
+  section('Bridge: an answer for another video is not passed on');
+  {
+    const bridge = createBridge();
+    bridge.assign(playerResponse({ videoId: 'someOtherId' }));
+    assert(bridge.posted.length === 0,
+      `nothing is posted for a video the URL does not name (${bridge.posted.length})`);
+    bridge.assign(playerResponse({ videoId: 'urlVideoIdA' }));
+    assert(bridge.posted.length === 1, 'the one it does name is passed on');
+  }
+
+  section('Bridge: an answer that names no video is passed on');
+  {
+    const bridge = createBridge();
+    bridge.assign(playerResponse({ videoId: '' }));
+    assert(bridge.posted.length === 1,
+      `an answer with no video id has nothing to compare (${bridge.posted.length})`);
+    assert(bridge.last()?.videoId === 'urlVideoIdA',
+      `so the message carries the video the URL names (${bridge.last()?.videoId})`);
+  }
+
+  section('Bridge: a watch URL naming no video takes what arrives');
+  {
+    const bridge = createBridge();
+    bridge.setUrl('/watch', null);
+    bridge.assign(playerResponse({ videoId: 'whateverPlays' }));
+    assert(bridge.posted.length === 1,
+      `with no id in the URL there is nothing to compare against (${bridge.posted.length})`);
+  }
+
+  section('Bridge: a page that is not a watch page is left alone');
+  {
+    const bridge = createBridge();
+    bridge.setUrl('/feed/subscriptions', null);
+    bridge.assign(playerResponse());
+    assert(bridge.posted.length === 0,
+      `nothing is posted off a watch page (${bridge.posted.length})`);
+  }
+
+  section('Bridge: the player request a navigation makes');
+  {
+    const bridge = createBridge();
+    await bridge.fetchPlayer(playerResponse({ loudnessDb: -3.25 }));
+    assert(bridge.posted.length === 1, `the answer is read (${bridge.posted.length})`);
+    assert(bridge.last()?.loudnessDb === -3.25, `for its level (${bridge.last()?.loudnessDb})`);
+    assert(bridge.last()?.source === 'fetch', `named as the request it was (${bridge.last()?.source})`);
+
+    await bridge.fetchPlayer(playerResponse({ videoId: 'someOtherId' }));
+    assert(bridge.posted.length === 1, 'an answer for another video is not passed on');
+
+    await bridge.fetchPlayer(playerResponse(), 'https://www.youtube.com/youtubei/v1/next');
+    assert(bridge.posted.length === 1, 'and a request that is not for a player is not read');
+  }
+
+  section('Bridge: an archive is live content that is not live now');
+  {
+    const bridge = createBridge();
+    bridge.assign(playerResponse({ isLiveContent: true, isLive: false }));
+    assert(bridge.last()?.isLiveContent === true,
+      `the recording of a stream is live content (${bridge.last()?.isLiveContent})`);
+    assert(bridge.last()?.isLiveNow === false,
+      `and nothing is going out now (${bridge.last()?.isLiveNow})`);
+  }
+
+  section('Bridge: the page element holding another video is not read');
+  {
+    const bridge = createBridge();
+    bridge.setFlexy(playerResponse({ videoId: 'someOtherId', loudnessDb: -9.5, channelId: 'UCstale' }));
+    await bridge.request();
+    assert(bridge.last()?.loudnessDb === null,
+      `a level for another video is not answered with (${bridge.last()?.loudnessDb})`);
+    assert(bridge.last()?.channelId === '',
+      `nor the channel it names (${JSON.stringify(bridge.last()?.channelId)})`);
+    assert(bridge.last()?.videoId === 'urlVideoIdA', 'and the answer names the video being watched');
+  }
+
+  section('Bridge: the level it reads when the first field is absent');
+  {
+    const bridge = createBridge();
+    const perceptual = playerResponse();
+    delete perceptual.playerConfig.audioConfig.loudnessDb;
+    perceptual.playerConfig.audioConfig.perceptualLoudnessDb = -11.5;
+    bridge.assign(perceptual);
+    assert(bridge.last()?.loudnessDb === -11.5,
+      `the second field stands in for the first (${bridge.last()?.loudnessDb})`);
+
+    const neither = playerResponse();
+    neither.playerConfig.audioConfig = {};
+    bridge.assign(neither);
+    assert(bridge.last()?.loudnessDb === null,
+      `and with neither there is no level to report (${bridge.last()?.loudnessDb})`);
+  }
+
+  section('Bridge: answering what the content script asks for');
+  {
+    const bridge = createBridge();
+    bridge.assign(playerResponse({ loudnessDb: -6.5 }));
+    await bridge.request();
+    assert(bridge.last()?.source === 'request', `the ask is answered (${bridge.last()?.source})`);
+    assert(bridge.last()?.loudnessDb === -6.5,
+      `from what the page gave at load (${bridge.last()?.loudnessDb})`);
+  }
+
+  section('Bridge: with nothing captured it reads the player it can see');
+  {
+    const bridge = createBridge();
+    bridge.setFlexy(playerResponse({ loudnessDb: -9.5, channelId: 'UCflexy' }));
+    await bridge.request();
+    assert(bridge.last()?.loudnessDb === -9.5,
+      `the page's own element answers (${bridge.last()?.loudnessDb})`);
+    assert(bridge.last()?.channelId === 'UCflexy', 'with the channel it names');
+
+    const other = createBridge();
+    other.setMoviePlayer(playerResponse({ loudnessDb: -4.5, channelId: 'UCmovie' }));
+    await other.request();
+    assert(other.last()?.loudnessDb === -4.5,
+      `and the player itself when the element is not there (${other.last()?.loudnessDb})`);
+
+    const empty = createBridge();
+    await empty.request();
+    assert(empty.last()?.loudnessDb === null && empty.last()?.channelId === '',
+      `with neither, the answer says so rather than staying silent (${JSON.stringify(empty.last()?.loudnessDb)})`);
+    assert(empty.last()?.videoId === 'urlVideoIdA', 'and still names the video being watched');
+  }
+
+  section('Bridge: a stream that went live after the page loaded');
+  {
+    const bridge = createBridge();
+    // The load-time answer for a stream that had not started.
+    bridge.assign(playerResponse({ isLiveContent: true, isLive: false }));
+    bridge.setMoviePlayer(playerResponse({ isLiveContent: true, isLive: true }));
+    await bridge.request();
+    assert(bridge.last()?.isLiveNow === true,
+      `the player's answer is preferred over the one from load (${bridge.last()?.isLiveNow})`);
+  }
+
+  section('Bridge: what the popup-open dump reports');
+  {
+    const bridge = createBridge();
+    bridge.assign(playerResponse({ loudnessDb: -2.5 }));
+    await bridge.diagnose();
+    const [tag, dump] = bridge.logged[bridge.logged.length - 1] || [];
+    assert(tag === '[YTCV][bridge-diag]', `the dump is written (${tag})`);
+    assert(dump?.urlVideoId === 'urlVideoIdA', `naming the video in the URL (${dump?.urlVideoId})`);
+    assert(dump?.captured?.loudnessDb === -2.5,
+      `and the level the page gave (${dump?.captured?.loudnessDb})`);
+    assert(dump?.flexy === null && dump?.moviePlayer === null,
+      'and says outright that the other two answered nothing');
+  }
 
   // ── Summary ────────────────────────────────────────────────────────
 
