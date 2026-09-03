@@ -346,6 +346,8 @@ function createBridge({ pathname = '/watch', videoId = 'urlVideoIdA' } = {}) {
   let flexy = null;
   let moviePlayer = null;
   let fetchAnswer = null;
+  let fetchRejection = null;
+  let fromNetwork = null;
 
   const location = {};
   const setUrl = (path, id) => {
@@ -358,14 +360,14 @@ function createBridge({ pathname = '/watch', videoId = 'urlVideoIdA' } = {}) {
   const window = {
     addEventListener(type, fn) { (listeners[type] ||= []).push(fn); },
     postMessage(data) { posted.push(data); },
-    // What the bridge wraps. A player request answers with whatever the case
-    // last handed to `answerPlayerRequest`.
+    // What the bridge wraps. The answer it gives is kept, so a case can ask
+    // whether the page was handed that same answer back.
     fetch(url) {
       const body = fetchAnswer;
-      return Promise.resolve({
-        clone: () => ({ json: () => Promise.resolve(body) }),
-        url
-      });
+      fromNetwork = fetchRejection
+        ? Promise.reject(fetchRejection)
+        : Promise.resolve({ clone: () => ({ json: () => Promise.resolve(body) }), url });
+      return fromNetwork;
     }
   };
 
@@ -391,12 +393,19 @@ function createBridge({ pathname = '/watch', videoId = 'urlVideoIdA' } = {}) {
     setUrl,
     // Method 1: the page assigns its player response.
     assign(playerResponse) { window.ytInitialPlayerResponse = playerResponse; },
-    // Method 2: a player request answered mid-navigation.
+    // Method 2: a player request answered mid-navigation. What the page is
+    // handed back comes with it, beside the answer the network gave.
     async fetchPlayer(playerResponse, url = 'https://www.youtube.com/youtubei/v1/player?key=x') {
       fetchAnswer = playerResponse;
-      await window.fetch(url);
+      const returned = window.fetch(url);
+      // A wrapper that hands the page nothing is a case's answer to give, not
+      // a crash in the harness reading it.
+      if (returned && typeof returned.catch === 'function') await returned.catch(() => {});
       await tick();
+      fetchRejection = null;
+      return { returned, fromNetwork };
     },
+    failNextFetch(error) { fetchRejection = error; },
     // Method 3 and the on-demand path: what content.js asks for.
     async request() { deliver({ type: '__yt_channel_volume_request__' }); await tick(); },
     async diagnose() { deliver({ type: '__yt_channel_volume_diag__' }); await tick(); },
@@ -2890,6 +2899,57 @@ async function runTests() {
     assert(bridge.last()?.channelId === '',
       `nor the channel it names (${JSON.stringify(bridge.last()?.channelId)})`);
     assert(bridge.last()?.videoId === 'urlVideoIdA', 'and the answer names the video being watched');
+  }
+
+  section('Bridge: the page is handed back what the network answered');
+  {
+    const bridge = createBridge();
+    const player = await bridge.fetchPlayer(playerResponse());
+    assert(player.returned === player.fromNetwork,
+      'a player request reaches the page as it came off the network');
+    assert(bridge.posted.length === 1, 'and it is read on the way past');
+    const other = await bridge.fetchPlayer(playerResponse(), 'https://www.youtube.com/youtubei/v1/next');
+    assert(other.returned === other.fromNetwork,
+      'and so does a request the bridge does not read');
+
+    // A request that failed has to fail for the page too.
+    bridge.failNextFetch(new TypeError('Failed to fetch'));
+    const failedPlayer = await bridge.fetchPlayer(playerResponse());
+    let failed = null;
+    await Promise.resolve(failedPlayer.returned).catch((err) => { failed = err; });
+    assert(failed instanceof TypeError,
+      `a player request that failed still fails for the page (${failed})`);
+    bridge.failNextFetch(new TypeError('Failed to fetch'));
+    const otherFailed = await bridge.fetchPlayer(playerResponse(), 'https://www.youtube.com/other');
+    let failedOther = null;
+    await Promise.resolve(otherFailed.returned).catch((err) => { failedOther = err; });
+    assert(failedOther instanceof TypeError,
+      `and so does one it does not read (${failedOther})`);
+  }
+
+  section('Bridge: a player answer off a watch page is not read');
+  {
+    const bridge = createBridge();
+    bridge.setUrl('/feed/subscriptions', null);
+    await bridge.fetchPlayer(playerResponse());
+    assert(bridge.posted.length === 0,
+      `a request answered off a watch page is not passed on (${bridge.posted.length})`);
+  }
+
+  section('Bridge: a /live/ URL is a watch page, and names the programme');
+  {
+    const bridge = createBridge();
+    bridge.setUrl('/live/urlVideoIdA', null);
+    bridge.assign(playerResponse({ videoId: 'urlVideoIdA' }));
+    assert(bridge.posted.length === 1,
+      `the assignment on a live URL is read (${bridge.posted.length})`);
+    await bridge.fetchPlayer(playerResponse({ videoId: 'urlVideoIdA' }));
+    assert(bridge.posted.length === 2,
+      `and so is the request a navigation makes (${bridge.posted.length})`);
+    bridge.assign(playerResponse({ videoId: 'someOtherId' }));
+    await bridge.fetchPlayer(playerResponse({ videoId: 'someOtherId' }));
+    assert(bridge.posted.length === 2,
+      `an answer for another programme is passed on by neither (${bridge.posted.length})`);
   }
 
   section('Bridge: the level it reads when the first field is absent');
