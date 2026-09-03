@@ -208,12 +208,15 @@ globalThis.MutationObserver = class {
   disconnect() {}
 };
 
-// AudioContext mock
+// AudioContext mock. What it did not keep was any record of being asked: a
+// resume nobody counted and a disconnect nobody counted are two of the things
+// ensureAudioChain does that a case can only ask about if the mock remembers.
+let mockAudioAsks = { resumes: 0, disconnects: 0 };
 globalThis.AudioContext = class {
   constructor() { this.state = 'running'; }
-  resume() { this.state = 'running'; return Promise.resolve(); }
+  resume() { mockAudioAsks.resumes += 1; this.state = 'running'; return Promise.resolve(); }
   createMediaElementSource() {
-    return { connect() {}, disconnect() {} };
+    return { connect() {}, disconnect() { mockAudioAsks.disconnects += 1; } };
   }
   createGain() {
     return { gain: { value: 1.0 }, connect() {} };
@@ -836,6 +839,49 @@ async function runTests() {
   ytcv.commitGain(1.0);
   ytcv._set('currentLoudnessDb', overlayLoudness);
   mockDetached.clear();
+
+  // ensureAudioChain: three things it does that no case had asked about, since
+  // the mock forgot being asked and the context was never anything but running.
+  section('Audio chain: what building it does');
+  const chainLoudness = ytcv.state.currentLoudnessDb;
+  ytcv._set('currentLoudnessDb', null);
+  const videoBeforeChain = mockVideoEl;
+
+  // A new element means a new chain: the source taken for the old one has to be
+  // let go, or it stays connected to a player nobody is listening to.
+  mockAudioAsks.disconnects = 0;
+  mockVideoEl = { id: 'chain-second-video' };
+  ytcv.commitGain(1.3);
+  assert(mockAudioAsks.disconnects === 1,
+    `the source taken for the previous element is disconnected (${mockAudioAsks.disconnects})`);
+  assert(ytcv.state.gainNode.gain.value === 1.3,
+    `and the gain reaches the new GainNode (${ytcv.state.gainNode.gain.value})`);
+
+  // Building it again for the same element takes nothing new and lets nothing go.
+  mockAudioAsks.disconnects = 0;
+  ytcv.commitGain(1.35);
+  assert(mockAudioAsks.disconnects === 0,
+    `the chain already built is kept (${mockAudioAsks.disconnects} disconnects)`);
+  assert(ytcv.state.gainNode.gain.value === 1.35, 'and the gain still reaches it');
+
+  // A context the page has not let start yet is resumed; one already running
+  // is not asked again.
+  mockAudioAsks.resumes = 0;
+  ytcv.state.audioCtx.state = 'suspended';
+  mockVideoEl = { id: 'chain-third-video' };
+  ytcv.commitGain(1.4);
+  assert(mockAudioAsks.resumes === 1,
+    `a suspended context is resumed while the chain is built (${mockAudioAsks.resumes})`);
+  assert(ytcv.state.audioCtx.state === 'running', 'and it is running afterwards');
+  mockAudioAsks.resumes = 0;
+  mockVideoEl = { id: 'chain-fourth-video' };
+  ytcv.commitGain(1.45);
+  assert(mockAudioAsks.resumes === 0,
+    `a running context is not asked again (${mockAudioAsks.resumes})`);
+
+  mockVideoEl = videoBeforeChain;
+  ytcv.commitGain(1.0);
+  ytcv._set('currentLoudnessDb', chainLoudness);
 
   section('Auto LUFS: the popup sets Target LUFS');
   ytcv._set('currentLoudnessDb', -6);
