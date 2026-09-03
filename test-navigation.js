@@ -241,14 +241,43 @@ function simulateBridgeMessage(data) {
   }
 }
 
-function simulateRuntimeMessage(data) {
-  return new Promise((resolve) => {
+// Chrome closes the message port when the listener returns anything but true,
+// and a sendResponse made after that reaches nobody. Resolving on the callback
+// whatever the listener returned made that contract invisible: every handler
+// answering from a .then could drop its `return true` and the popup would wait
+// for ever with this suite still green.
+// A listener that declines a message it does not handle answers nothing and
+// keeps nothing open; a caller expecting that says so.
+function simulateRuntimeMessage(data, { expectNoAnswer = false } = {}) {
+  return new Promise((resolve, reject) => {
     const listener = mockRuntimeMessageListeners[0];
     if (!listener) {
       resolve(undefined);
       return;
     }
-    listener(data, {}, resolve);
+    let open = true;
+    let answered = false;
+    const reply = (value) => {
+      if (!open) {
+        reject(new Error(`${data?.type} answered after its port shut — Chrome drops that`));
+        return;
+      }
+      answered = true;
+      resolve(value);
+    };
+    const kept = listener(data, {}, reply);
+    if (kept !== true) {
+      open = false;
+      // Handing back a marker and carrying on is not enough: the handler's own
+      // work is still in flight and the cases after this one move the storage
+      // it is holding, so the run wanders instead of stopping. This ends it.
+      if (!answered && !expectNoAnswer) {
+        reject(new Error(`${data?.type} neither kept its port open nor answered — `
+          + 'an answer sent from a .then after this reaches nobody'));
+      } else if (!answered) {
+        resolve(undefined);
+      }
+    }
   });
 }
 
@@ -712,6 +741,25 @@ async function runTests() {
   });
   await tick();
   assert(Math.abs(ytcv.state.currentGain - 1.0) < 0.001, 'new target applied immediately');
+
+  // setTargetLufs answers from a .then, so it is one of the handlers that has
+  // to keep the port open. No test drove it at all — the whole handler, its
+  // save and its answer, was reached by nothing.
+  section('Auto LUFS: the popup sets Target LUFS');
+  ytcv._set('currentLoudnessDb', -6);
+  const settingsBefore = mockStorage['autoLoudnessSettings'];
+  const targetAnswer = await simulateRuntimeMessage({ type: 'setTargetLufs', value: -14 });
+  await tick();
+  assert(targetAnswer?.ok === true,
+    `the popup is answered — got ${JSON.stringify(targetAnswer)}`);
+  assert(mockStorage['autoLoudnessSettings']?.targetLufs === -14,
+    'and the target it asked for is the one stored');
+  assert(ytcv.state.targetLufs === -14, 'and the one the page is working from');
+  // Without this the answer above could come from a handler that stored
+  // nothing, since the value it was given is the value it was already at.
+  assert(settingsBefore?.targetLufs !== -14,
+    'the value asked for is not the one it already held');
+  ytcv._set('currentLoudnessDb', null);
 
   section('Auto LUFS: disabling restores saved channel gain');
   const manualEntry = { name: 'Auto Ch', gainVideo: 0.4 };
@@ -2176,4 +2224,10 @@ async function runTests() {
   process.exit(failed > 0 ? 1 : 0);
 }
 
-runTests();
+runTests().catch((err) => {
+  // A rejection here is the run stopping where it stood, which is the point:
+  // carrying on past a lost port runs the rest against state a handler nobody
+  // is waiting for is still writing to.
+  console.error('  FAIL:', err && err.message ? err.message : err);
+  process.exit(1);
+});

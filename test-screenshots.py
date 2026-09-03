@@ -236,6 +236,22 @@ try:
     check(changed.returncode == 1, f'a changed pixel is reported (exit {changed.returncode})')
     check('popup_ja.png: differs from what the code draws now' in changed.stderr,
           'and the line names the file and what is wrong with it')
+    # The line that says what to do about it. The exit code is decided
+    # elsewhere, so this could be printed for a clean tree and withheld from a
+    # stale one with every other case still passing.
+    advice = 'Run `python3 gen_screenshots.py` and commit the result.'
+    check(advice in changed.stderr, 'and it says what to run to fix it')
+finally:
+    shutil.rmtree(box)
+
+box = sandbox()
+try:
+    # And that line is not printed where nothing is stale: it is advice, and
+    # advice given for a tree that needs nothing is advice nobody can act on.
+    clean = run(box, '--check')
+    check(clean.returncode == 0, f'the copy matches (exit {clean.returncode})')
+    check('Run `python3 gen_screenshots.py` and commit the result.' not in clean.stderr,
+          'and nothing tells the reader to redraw it')
 finally:
     shutil.rmtree(box)
 
@@ -1009,6 +1025,23 @@ try:
     check(still == was, 'and every name holds what it held before the run')
     check(sorted(os.listdir(box)) == sorted(IMAGES),
           f'with nothing of the run left behind ({sorted(os.listdir(box))})')
+finally:
+    shutil.rmtree(box)
+
+box = tempfile.mkdtemp()
+try:
+    # A name that had nothing there before it, and that this run did replace:
+    # the rollback has to take the image away again, not leave it. Every case
+    # here had put all six in place first, so that clause was never reached and
+    # could be turned around with the suite still green.
+    said = io.StringIO()
+    with contextlib.redirect_stderr(said):
+        code = gen_screenshots.write({'popup_ja.png': FakeImage(), 'popup_en.png': RefusedImage()},
+                                     box, named=True)
+    check(code == 2, f'the save that failed is answered for (exit {code})')
+    check(os.listdir(box) == [],
+          'and the name that held nothing before holds nothing after '
+          f'({sorted(os.listdir(box))})')
 finally:
     shutil.rmtree(box)
 
