@@ -348,6 +348,7 @@ function createBridge({ pathname = '/watch', videoId = 'urlVideoIdA' } = {}) {
   let fetchAnswer = null;
   let fetchRejection = null;
   let fromNetwork = null;
+  const networkCalls = [];
 
   const location = {};
   const setUrl = (path, id) => {
@@ -360,13 +361,16 @@ function createBridge({ pathname = '/watch', videoId = 'urlVideoIdA' } = {}) {
   const window = {
     addEventListener(type, fn) { (listeners[type] ||= []).push(fn); },
     postMessage(data) { posted.push(data); },
-    // What the bridge wraps. The answer it gives is kept, so a case can ask
-    // whether the page was handed that same answer back.
-    fetch(url) {
+    // What the bridge wraps. Every call is recorded as it arrived — the
+    // receiver and the argument list — because the page's own requests go
+    // through here, and the answer it gives is kept so a case can ask whether
+    // the page was handed that same answer back.
+    fetch(...args) {
+      networkCalls.push({ thisArg: this, args });
       const body = fetchAnswer;
       fromNetwork = fetchRejection
         ? Promise.reject(fetchRejection)
-        : Promise.resolve({ clone: () => ({ json: () => Promise.resolve(body) }), url });
+        : Promise.resolve({ clone: () => ({ json: () => Promise.resolve(body) }), args });
       return fromNetwork;
     }
   };
@@ -394,10 +398,13 @@ function createBridge({ pathname = '/watch', videoId = 'urlVideoIdA' } = {}) {
     // Method 1: the page assigns its player response.
     assign(playerResponse) { window.ytInitialPlayerResponse = playerResponse; },
     // Method 2: a player request answered mid-navigation. What the page is
-    // handed back comes with it, beside the answer the network gave.
-    async fetchPlayer(playerResponse, url = 'https://www.youtube.com/youtubei/v1/player?key=x') {
+    // handed back comes with it, beside the answer the network gave. The
+    // request is passed on as the page made it — a URL, a URL and an init, or
+    // a Request object.
+    async fetchPlayer(playerResponse, ...args) {
       fetchAnswer = playerResponse;
-      const returned = window.fetch(url);
+      if (!args.length) args = ['https://www.youtube.com/youtubei/v1/player?key=x'];
+      const returned = window.fetch(...args);
       // A wrapper that hands the page nothing is a case's answer to give, not
       // a crash in the harness reading it.
       if (returned && typeof returned.catch === 'function') await returned.catch(() => {});
@@ -406,6 +413,8 @@ function createBridge({ pathname = '/watch', videoId = 'urlVideoIdA' } = {}) {
       return { returned, fromNetwork };
     },
     failNextFetch(error) { fetchRejection = error; },
+    networkCalls,
+    window,
     // Method 3 and the on-demand path: what content.js asks for.
     async request() { deliver({ type: '__yt_channel_volume_request__' }); await tick(); },
     async diagnose() { deliver({ type: '__yt_channel_volume_diag__' }); await tick(); },
@@ -2925,6 +2934,39 @@ async function runTests() {
     await Promise.resolve(otherFailed.returned).catch((err) => { failedOther = err; });
     assert(failedOther instanceof TypeError,
       `and so does one it does not read (${failedOther})`);
+  }
+
+  section('Bridge: the request reaches the network as the page made it');
+  {
+    const bridge = createBridge();
+    const url = 'https://www.youtube.com/youtubei/v1/player?key=x';
+    const init = { method: 'POST', body: '{"context":{}}' };
+    await bridge.fetchPlayer(playerResponse(), url, init);
+    assert(bridge.networkCalls.length === 1,
+      `the network is asked once (${bridge.networkCalls.length})`);
+    assert(bridge.networkCalls[0].thisArg === bridge.window,
+      'on the object the page called it on');
+    assert(bridge.networkCalls[0].args.length === 2,
+      `with the arguments the page passed, and no more (${bridge.networkCalls[0].args.length})`);
+    assert(bridge.networkCalls[0].args[0] === url && bridge.networkCalls[0].args[1] === init,
+      'each of them the object the page passed, in that order');
+    assert(bridge.posted.length === 1, 'and the answer is still read on the way past');
+  }
+
+  section('Bridge: a request made as a Request object is read too');
+  {
+    const bridge = createBridge();
+    const request = { url: 'https://www.youtube.com/youtubei/v1/player?key=x' };
+    await bridge.fetchPlayer(playerResponse(), request);
+    assert(bridge.posted.length === 1,
+      `a player request named by a Request object is read (${bridge.posted.length})`);
+    assert(bridge.networkCalls[0].args[0] === request,
+      'and what goes out is the object itself');
+
+    const other = createBridge();
+    await other.fetchPlayer(playerResponse(), { url: 'https://www.youtube.com/youtubei/v1/next' });
+    assert(other.posted.length === 0,
+      `while one for something else is not (${other.posted.length})`);
   }
 
   section('Bridge: a player answer off a watch page is not read');
