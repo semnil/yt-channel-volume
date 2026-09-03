@@ -61,9 +61,8 @@
       const vid = data?.videoDetails?.videoId;
       if (!vid) return true;
       const cur = currentVideoId();
-      // On /live/HANDLE form, pathname id may be a channel handle, not a videoId.
-      // Accept in that case to avoid false negatives.
-      if (!cur || cur.length !== 11) return true;
+      // Where the URL names no video there is nothing to compare against.
+      if (!cur) return true;
       return vid === cur;
     } catch (_) { return true; }
   }
