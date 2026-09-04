@@ -2054,10 +2054,6 @@ async function runTests() {
     type: 'setAutoApplyLoudness', channelId: 'UCwritefail', videoType: 'video', enabled: true
   });
   assert(failedToggle?.ok === false, 'a rejected Auto toggle answers the popup instead of hanging');
-  const failedDelete = await simulateRuntimeMessage({
-    type: 'clearChannel', channelId: 'UCwritefail'
-  });
-  assert(failedDelete?.ok === false, 'a rejected delete answers the popup instead of hanging');
   ytcv._set('currentLoudnessDb', -6);
   ytcv._set('targetLufs', -18);
   ytcv._set('currentAutoApplyLoudnessVideo', false);
@@ -2138,12 +2134,21 @@ async function runTests() {
   ytcv._set('currentLoudnessDb', -6);
   ytcv._set('targetLufs', -18);
   ytcv._set('defaultAutoApplyLoudnessVideo', true);
-  const deleteResponse = await simulateRuntimeMessage({
-    type: 'clearChannel', channelId: 'UCdeleted'
+  ytcv._set('currentGain', 0.5);
+  await chrome.runtime.sendMessage({ type: 'store:deleteChannel', channelId: 'UCdeleted' });
+  simulateStorageChange({
+    channelVolumes: {
+      oldValue: { UCdeleted: { name: 'Deleted Ch', gainVideo: 0.5 } },
+      newValue: {}
+    }
   });
-  assert(deleteResponse?.ok === true, 'the channel is deleted');
+  await tick();
   assert(!('UCdeleted' in mockStorage['channelVolumes']), 'the entry is gone');
-  assert(ytcv.state.currentGain === 1.0, 'playback returns to passthrough');
+  // The all-channel default covers this channel again the moment its own entry
+  // is gone, and there is a measurement in hand, so Auto takes it over rather
+  // than dropping to passthrough.
+  assert(Math.abs(ytcv.state.currentGain - ytcv.calcGainFromLoudness(-6)) < 0.001,
+    `the default takes the channel over at once (${ytcv.state.currentGain})`);
   // The all-channel default still covers this channel, so the next apply
   // manages it again and stores the gain it calculates.
   await ytcv.applyPreferredGain();
@@ -2844,12 +2849,12 @@ async function runTests() {
   mockSentMessages.length = 0;
   await ytcv.saveChannelGain('', 'No Ch', 0.9, 'video', '');
   await ytcv.saveChannelAutoApply('', 'No Ch', true, 'video', '');
-  await ytcv.deleteChannelGain('');
   await tick();
   assert(mockSentMessages.filter(m => String(m?.type).startsWith('store:')).length === 0,
     `nothing is sent for a channel with no id (${JSON.stringify(mockSentMessages.map(m => m?.type))})`);
   assert(!('' in mockStorage['channelVolumes']),
     'and no entry is made under an empty key');
+
 
   // ── page-bridge.js: what it reads, and what it refuses ──────────────
 
