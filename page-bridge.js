@@ -110,7 +110,8 @@
 
   // The page holds a player response in two places, and they can disagree: the
   // element keeps the one the page was built with, the player the one it is
-  // running now.
+  // running now. They are returned in that order — oldest first — and only for
+  // the video the URL names.
   function currentPlayerResponses() {
     const found = [];
     try {
@@ -157,13 +158,15 @@
       if (onPage.length) result = extractFromPlayerResponse(onPage[0]);
     }
 
-    // Whichever answer the level came from, the page's own responses are what
-    // say a stream has started: the one kept from load can name a video this
-    // tab has left, and the element can hold the response from before the
-    // stream began.
-    if (!result.isLiveNow && onPage.some(pr => !!pr?.videoDetails?.isLive)) {
-      result.isLiveNow = true;
-    }
+    // Whichever answer the level came from, whether a stream is on air right
+    // now is taken from the most current answer that names this video: the
+    // player over the element, the element over the one kept from load. Taking
+    // it from any of them that says yes would leave the badge up after the
+    // stream has ended, since only the player knows that it has.
+    const newest = onPage.length
+      ? onPage[onPage.length - 1]
+      : (resp && isCurrentVideo(resp) ? resp : null);
+    result.isLiveNow = !!newest?.videoDetails?.isLive;
 
     postResult(result, 'request');
   });

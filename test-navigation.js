@@ -3114,6 +3114,36 @@ async function runTests() {
     assert(waiting.last()?.isLiveNow === false,
       `a stream still waiting is not reported as started (${waiting.last()?.isLiveNow})`);
 
+    // A stream that has ended: the player is the only answer that knows, and
+    // the badge has to come down while the tab is still on the page.
+    const ended = createBridge();
+    ended.assign(playerResponse({ isLiveContent: true, isLive: true }));
+    ended.setFlexy(playerResponse({ isLiveContent: true, isLive: true }));
+    ended.setMoviePlayer(playerResponse({ isLiveContent: true, isLive: false }));
+    await ended.request();
+    assert(ended.last()?.isLiveNow === false,
+      `a stream that has ended is no longer reported as live (${ended.last()?.isLiveNow})`);
+    assert(ended.last()?.isLiveContent === true,
+      'while it stays live content, which is what the gain is kept under');
+
+    // The other direction of the same check: a player showing another video
+    // cannot take the badge down either.
+    const endedElsewhere = createBridge();
+    endedElsewhere.assign(playerResponse({ isLiveContent: true, isLive: true }));
+    endedElsewhere.setMoviePlayer(playerResponse({ videoId: 'someOtherId', isLiveContent: true, isLive: false }));
+    await endedElsewhere.request();
+    assert(endedElsewhere.last()?.isLiveNow === true,
+      `a stream that ended under another video leaves this one alone (${endedElsewhere.last()?.isLiveNow})`);
+
+    // Before the page has built a player, the only answer on hand is the one
+    // kept from load, and after a navigation that one names the video the tab
+    // has left.
+    const bare = createBridge();
+    bare.assign(playerResponse({ videoId: 'someOtherId', isLiveContent: true, isLive: true }));
+    await bare.request();
+    assert(bare.last()?.isLiveNow === false,
+      `a stream running under the video this tab left is not this one (${bare.last()?.isLiveNow})`);
+
     // The player can be showing another video by the time the ask arrives.
     const elsewhere = createBridge();
     elsewhere.assign(playerResponse({ isLiveContent: true, isLive: false }));
