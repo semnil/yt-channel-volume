@@ -3280,6 +3280,106 @@ async function runTests() {
     assert(both?.captured?.loudnessDb === -2.5, 'with the one from load as well');
   }
 
+  // ── After a reload, and what a message has to be to be read ────────
+
+  // The write path was put to this already; the reads and the popup were not.
+  section('Extension reload: nothing is read either');
+  {
+    mockStorage['channelVolumes'] = { UCread: { name: 'Read Ch', gainVideo: 0.5 } };
+    mockStorage['autoLoudnessSettings'] = { targetLufs: -20, displayUnit: '%' };
+    ytcv._set('targetLufs', -18);
+    const idBefore = chrome.runtime.id;
+    const realGet = chrome.storage.local.get;
+    let reads = 0;
+    chrome.storage.local.get = (key) => { reads += 1; return realGet(key); };
+    chrome.runtime.id = undefined;
+    const entry = await ytcv.loadChannelEntry('UCread');
+    await tick();
+    chrome.storage.local.get = realGet;
+    chrome.runtime.id = idBefore;
+    assert(reads === 0, `no read is issued after a reload (${reads})`);
+    assert(entry === null, `and the caller is told there is nothing (${JSON.stringify(entry)})`);
+    assert(ytcv.state.targetLufs === -18, 'the target the page is working from is left as it was');
+  }
+
+  // The settings are read on every apply and written when the popup moves the
+  // target; after a reload neither may touch storage.
+  section('Extension reload: the settings are neither read nor written');
+  {
+    setURL('/watch', 'quietVid');
+    mockVideoEl = { id: 'quiet-video' };
+    ytcv._set('_lastProcessedVideo', null);
+    ytcv._set('_applyRunning', false);
+    ytcv._set('targetLufs', -18);
+    const idBefore = chrome.runtime.id;
+    const realGet = chrome.storage.local.get;
+    const realSet = chrome.storage.local.set;
+    let reads = 0, writes = 0;
+    chrome.storage.local.get = (key) => { reads += 1; return realGet(key); };
+    chrome.storage.local.set = (obj) => { writes += 1; return realSet(obj); };
+    chrome.runtime.id = undefined;
+    await ytcv.applyVideoVolume();
+    const answer = await simulateRuntimeMessage({ type: 'setTargetLufs', value: -14 });
+    await tick();
+    chrome.storage.local.get = realGet;
+    chrome.storage.local.set = realSet;
+    chrome.runtime.id = idBefore;
+    assert(reads === 0, `an apply after a reload reads nothing (${reads})`);
+    assert(writes === 0, `and the target the popup asked for is not written (${writes})`);
+    assert(answer?.ok === true, `while the popup is still answered (${JSON.stringify(answer)})`);
+    assert(ytcv.state.targetLufs === -18,
+      `and the target in hand is left as it was (${ytcv.state.targetLufs})`);
+  }
+
+  section('Extension reload: the popup is not written to');
+  {
+    setURL('/watch', 'quietVid');
+    ytcv._set('currentChannel', { id: 'UCquiet', name: 'Quiet Ch', url: '' });
+    ytcv._set('currentGain', 1.23);
+    const idBefore = chrome.runtime.id;
+    chrome.runtime.id = undefined;
+    mockSentMessages.length = 0;
+    ytcv.notifyPopup();
+    chrome.runtime.id = idBefore;
+    assert(mockSentMessages.length === 0,
+      `nothing is sent to a popup that cannot be there (${mockSentMessages.length})`);
+  }
+
+  // The bridge posts into the page, and everything else on the page can post
+  // there too — content.js reads one kind of message, from this window.
+  section('Bridge message: what content.js takes it to be');
+  {
+    setURL('/watch', 'guardVid');
+    ytcv._set('currentChannel', { id: '', name: '', url: '' });
+    ytcv._set('currentChannelVideoId', '');
+    ytcv._set('currentLoudnessVideoId', '');
+    ytcv._set('currentLoudnessDb', null);
+
+    // A message of another kind, from this window.
+    for (const fn of mockEventListeners['message'] || []) {
+      fn({ source: globalThis.window, data: { type: '__something_else__', loudnessDb: -3, channelId: 'UCother' } });
+    }
+    await tick();
+    assert(ytcv.state.currentLoudnessDb === null,
+      `a message of another kind is not read (${ytcv.state.currentLoudnessDb})`);
+    assert(ytcv.state.currentChannel.id === '', 'and it does not name the channel');
+
+    // The right kind, from another window in the page.
+    for (const fn of mockEventListeners['message'] || []) {
+      fn({ source: { name: 'an iframe' }, data: { type: '__yt_channel_volume__', loudnessDb: -3, isLiveContent: false, channelId: 'UCframe' } });
+    }
+    await tick();
+    assert(ytcv.state.currentLoudnessDb === null,
+      `nor is one from another window (${ytcv.state.currentLoudnessDb})`);
+    assert(ytcv.state.currentChannel.id === '', 'and that one names no channel either');
+
+    // The bridge's own, which is both.
+    simulateBridgeMessage({ loudnessDb: -3, isLiveContent: false, videoId: 'guardVid', channelId: 'UCbridgeok' });
+    await tick();
+    assert(ytcv.state.currentLoudnessDb === -3, 'the bridge is read');
+    assert(ytcv.state.currentChannel.id === 'UCbridgeok', 'and names the channel');
+  }
+
   // ── Summary ────────────────────────────────────────────────────────
 
   console.log(`\n${passed} passed, ${failed} failed`);
