@@ -4287,6 +4287,90 @@ async function runTests() {
     await tick();
   }
 
+  // ── Which link names the channel, and what it is called ───────────
+
+  section('Channel detection: the three places a UC can be, in order');
+  {
+    setURL('/watch', 'detectVid');
+    mockDOMElements['channelName'] = { textContent: 'The Name On Screen' };
+    mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCcanonical' };
+    mockDOMElements['ownerLink'] = { href: 'https://www.youtube.com/channel/UCowner' };
+    mockDOMElements['metaChannel'] = { content: 'UCmeta' };
+    assert(ytcv.detectChannel().id === 'UCcanonical',
+      `the canonical link is taken first (${ytcv.detectChannel().id})`);
+
+    mockDOMElements['canonical'] = null;
+    assert(ytcv.detectChannel().id === 'UCowner',
+      `the owner link comes next (${ytcv.detectChannel().id})`);
+
+    mockDOMElements['ownerLink'] = null;
+    assert(ytcv.detectChannel().id === 'UCmeta',
+      `and the meta tag last (${ytcv.detectChannel().id})`);
+
+    mockDOMElements['metaChannel'] = null;
+    assert(ytcv.detectChannel().id === '',
+      `with nothing there, nothing is named (${ytcv.detectChannel().id})`);
+  }
+
+  section('Channel detection: a link that is there but carries no UC');
+  {
+    // The page keeps the element and puts a handle in it during an SPA
+    // navigation. A handle is not an identifier here, so the next place is
+    // asked rather than the id being taken from what is in hand.
+    mockDOMElements['canonical'] = { href: 'https://www.youtube.com/@some-handle' };
+    mockDOMElements['ownerLink'] = { href: 'https://www.youtube.com/channel/UCowner' };
+    mockDOMElements['metaChannel'] = null;
+    assert(ytcv.detectChannel().id === 'UCowner',
+      `a canonical carrying no UC hands on (${ytcv.detectChannel().id})`);
+
+    mockDOMElements['canonical'] = null;
+    mockDOMElements['ownerLink'] = { href: 'https://www.youtube.com/@some-handle' };
+    mockDOMElements['metaChannel'] = { content: 'UCmeta' };
+    assert(ytcv.detectChannel().id === 'UCmeta',
+      `and so does an owner link carrying none (${ytcv.detectChannel().id})`);
+
+    mockDOMElements['ownerLink'] = { href: 'https://www.youtube.com/@some-handle' };
+    mockDOMElements['metaChannel'] = null;
+    assert(ytcv.detectChannel().id === '',
+      `with a handle everywhere, nothing is named (${ytcv.detectChannel().id})`);
+  }
+
+  section('Channel detection: what the channel is called');
+  {
+    mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCnamed' };
+    mockDOMElements['ownerLink'] = null;
+    mockDOMElements['metaChannel'] = null;
+    mockDOMElements['channelName'] = { textContent: '  The Name On Screen  ' };
+    let found = ytcv.detectChannel();
+    assert(found.name === 'The Name On Screen',
+      `the name on screen is taken, trimmed (${JSON.stringify(found.name)})`);
+    assert(found.url === 'https://www.youtube.com/channel/UCnamed',
+      `and the url is built from the id (${found.url})`);
+
+    // Nothing on screen: the meta tag the page carries for the title.
+    mockDOMElements['channelName'] = { textContent: '   ' };
+    mockDOMElements['metaName'] = { content: 'The Name In The Head' };
+    found = ytcv.detectChannel();
+    assert(found.name === 'The Name In The Head',
+      `an element holding only spaces is not a name (${JSON.stringify(found.name)})`);
+
+    // Nothing anywhere: the id stands in, so the popup shows something stable.
+    mockDOMElements['channelName'] = null;
+    mockDOMElements['metaName'] = null;
+    found = ytcv.detectChannel();
+    assert(found.name === 'UCnamed',
+      `with no name to be had the id stands in (${found.name})`);
+
+    // The same stand-in for each of the other two places.
+    mockDOMElements['canonical'] = null;
+    mockDOMElements['ownerLink'] = { href: 'https://www.youtube.com/channel/UCowner' };
+    assert(ytcv.detectChannel().name === 'UCowner', 'for the owner link as well');
+    mockDOMElements['ownerLink'] = null;
+    mockDOMElements['metaChannel'] = { content: 'UCmeta' };
+    assert(ytcv.detectChannel().name === 'UCmeta', 'and for the meta tag');
+    mockDOMElements['metaChannel'] = null;
+  }
+
   // ── Summary ────────────────────────────────────────────────────────
 
   console.log(`\n${passed} passed, ${failed} failed`);
