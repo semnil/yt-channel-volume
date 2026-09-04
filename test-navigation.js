@@ -3076,6 +3076,28 @@ async function runTests() {
     await bridge.request();
     assert(bridge.last()?.isLiveNow === true,
       `the player's answer is preferred over the one from load (${bridge.last()?.isLiveNow})`);
+
+    // The page's own element holds a response too, and on a stream that was
+    // waiting when the page loaded it holds the waiting one. Reading it first
+    // and stopping there leaves the popup showing a stream that has started as
+    // not started.
+    const both = createBridge();
+    both.assign(playerResponse({ isLiveContent: true, isLive: false, loudnessDb: -4.5 }));
+    both.setFlexy(playerResponse({ isLiveContent: true, isLive: false, loudnessDb: -4.5 }));
+    both.setMoviePlayer(playerResponse({ isLiveContent: true, isLive: true }));
+    await both.request();
+    assert(both.last()?.isLiveNow === true,
+      `the player is asked even where the element answered first (${both.last()?.isLiveNow})`);
+    assert(both.last()?.loudnessDb === -4.5,
+      `and the level still comes from the answer that carries one (${both.last()?.loudnessDb})`);
+
+    // The player can be showing another video by the time the ask arrives.
+    const elsewhere = createBridge();
+    elsewhere.assign(playerResponse({ isLiveContent: true, isLive: false }));
+    elsewhere.setMoviePlayer(playerResponse({ videoId: 'someOtherId', isLiveContent: true, isLive: true }));
+    await elsewhere.request();
+    assert(elsewhere.last()?.isLiveNow === false,
+      `a stream running under another video does not make this one live (${elsewhere.last()?.isLiveNow})`);
   }
 
   section('Bridge: what the two listeners take, and what they leave alone');

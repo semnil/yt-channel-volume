@@ -108,26 +108,31 @@
   // ── Method 3: Extract from ytplayer config (SPA navigation) ────────
   // YouTube stores player data in DOM element's data property on SPA nav.
 
-  function extractFromYtPlayer() {
+  // The page holds a player response in two places, and they can disagree: the
+  // element keeps the one the page was built with, the player the one it is
+  // running now.
+  function currentPlayerResponses() {
+    const found = [];
     try {
       const flexy = document.querySelector('ytd-watch-flexy');
-      if (flexy) {
-        const pr = flexy.__data?.playerResponse || flexy.playerResponse;
-        if (pr && isCurrentVideo(pr)) {
-          return extractFromPlayerResponse(pr);
-        }
-      }
+      const pr = flexy?.__data?.playerResponse || flexy?.playerResponse;
+      if (pr) found.push(pr);
     } catch (_) {}
 
     try {
       const player = document.getElementById('movie_player');
       if (player && typeof player.getPlayerResponse === 'function') {
         const pr = player.getPlayerResponse();
-        if (pr && isCurrentVideo(pr)) {
-          return extractFromPlayerResponse(pr);
-        }
+        if (pr) found.push(pr);
       }
     } catch (_) {}
+
+    return found.filter(isCurrentVideo);
+  }
+
+  function extractFromYtPlayer() {
+    const [pr] = currentPlayerResponses();
+    if (pr) return extractFromPlayerResponse(pr);
 
     return {
       db: null,
@@ -162,12 +167,11 @@
     // Only fall back if no useful data was extracted at all
     if (result.db === null && !result.channelId) {
       result = extractFromYtPlayer();
-    } else {
-      // _capturedResp reflects page-load state; isLiveNow may have changed
-      // since then (e.g. waiting → live). movie_player holds the current
-      // state, so prefer its isLiveNow when available.
-      const live = extractFromYtPlayer();
-      if (live.isLiveNow && !result.isLiveNow) {
+    } else if (!result.isLiveNow) {
+      // The answer above is the one from page load, which says a stream that
+      // has since started is still waiting. Both of the page's own responses
+      // are asked, because the element can hold the waiting one as well.
+      if (currentPlayerResponses().some(pr => !!pr?.videoDetails?.isLive)) {
         result.isLiveNow = true;
       }
     }
