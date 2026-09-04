@@ -130,20 +130,6 @@
     return found.filter(isCurrentVideo);
   }
 
-  function extractFromYtPlayer() {
-    const [pr] = currentPlayerResponses();
-    if (pr) return extractFromPlayerResponse(pr);
-
-    return {
-      db: null,
-      isLiveContent: false,
-      isLiveNow: false,
-      videoId: currentVideoId(),
-      channelId: '',
-      author: ''
-    };
-  }
-
   // ── On-demand extraction (content script can request) ──────────────
 
   window.addEventListener('message', (event) => {
@@ -159,6 +145,8 @@
       author: ''
     };
 
+    const onPage = currentPlayerResponses();
+
     const resp = _capturedResp || window.ytInitialPlayerResponse;
     if (resp && isCurrentVideo(resp)) {
       result = extractFromPlayerResponse(resp);
@@ -166,14 +154,15 @@
 
     // Only fall back if no useful data was extracted at all
     if (result.db === null && !result.channelId) {
-      result = extractFromYtPlayer();
-    } else if (!result.isLiveNow) {
-      // The answer above is the one from page load, which says a stream that
-      // has since started is still waiting. Both of the page's own responses
-      // are asked, because the element can hold the waiting one as well.
-      if (currentPlayerResponses().some(pr => !!pr?.videoDetails?.isLive)) {
-        result.isLiveNow = true;
-      }
+      if (onPage.length) result = extractFromPlayerResponse(onPage[0]);
+    }
+
+    // Whichever answer the level came from, the page's own responses are what
+    // say a stream has started: the one kept from load can name a video this
+    // tab has left, and the element can hold the response from before the
+    // stream began.
+    if (!result.isLiveNow && onPage.some(pr => !!pr?.videoDetails?.isLive)) {
+      result.isLiveNow = true;
     }
 
     postResult(result, 'request');

@@ -3091,6 +3091,29 @@ async function runTests() {
     assert(both.last()?.loudnessDb === -4.5,
       `and the level still comes from the answer that carries one (${both.last()?.loudnessDb})`);
 
+    // After an SPA navigation the answer kept from load belongs to the video
+    // this tab has left, so the level and the channel come from the page
+    // instead — and the same two responses still have to say whether the
+    // stream has started.
+    const navigated = createBridge();
+    navigated.assign(playerResponse({ videoId: 'someOtherId', loudnessDb: -1.5 }));
+    navigated.setFlexy(playerResponse({ isLiveContent: true, isLive: false, loudnessDb: -6.5, channelId: 'UCstream' }));
+    navigated.setMoviePlayer(playerResponse({ isLiveContent: true, isLive: true }));
+    await navigated.request();
+    assert(navigated.last()?.loudnessDb === -6.5,
+      `the page answers for the video now being watched (${navigated.last()?.loudnessDb})`);
+    assert(navigated.last()?.channelId === 'UCstream', 'with the channel it names');
+    assert(navigated.last()?.isLiveNow === true,
+      `and the stream is reported as started (${navigated.last()?.isLiveNow})`);
+
+    // The same navigation, with nothing on the page saying it has started.
+    const waiting = createBridge();
+    waiting.assign(playerResponse({ videoId: 'someOtherId', loudnessDb: -1.5 }));
+    waiting.setFlexy(playerResponse({ isLiveContent: true, isLive: false, loudnessDb: -6.5 }));
+    await waiting.request();
+    assert(waiting.last()?.isLiveNow === false,
+      `a stream still waiting is not reported as started (${waiting.last()?.isLiveNow})`);
+
     // The player can be showing another video by the time the ask arrives.
     const elsewhere = createBridge();
     elsewhere.assign(playerResponse({ isLiveContent: true, isLive: false }));
