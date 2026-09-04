@@ -4639,6 +4639,11 @@ async function runTests() {
       `nothing is applied while the fold has not settled (${ytcv.state.currentGain})`);
     await tick();
     await tick();
+    // Auto declining is what sends the message down the saved-gain path, which
+    // waits for the fold itself: the channel ends up at what storage holds.
+    assert(ytcv.state.currentGain === 0.4,
+      `and the saved gain takes the message instead (${ytcv.state.currentGain})`);
+    ytcv._set('currentGain', 1.0);
 
     // With the fold settled but no measurement, Auto has nothing to work from.
     ytcv._set('storageSettled', true);
