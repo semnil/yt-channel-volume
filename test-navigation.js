@@ -4736,6 +4736,205 @@ async function runTests() {
       `a context already running is not asked again (${mockAudioAsks.resumes})`);
   }
 
+  // ── The last five the sweep left standing ──────────────────────────
+
+  section('Bridge message: naming a channel the answer has just introduced');
+  {
+    setURL('/watch', 'introVid');
+    mockStorage['channelVolumes'] = {};
+    mockDOMElements['channelName'] = { textContent: 'The Name On Screen' };
+    ytcv._set('currentChannel', { id: '', name: '', url: '' });
+    ytcv._set('currentChannelVideoId', '');
+    ytcv._set('currentLoudnessVideoId', '');
+    ytcv._set('currentLoudnessDb', null);
+    ytcv._set('storageMigrated', true);
+    // With an author, that is the name — the DOM can still describe the video
+    // the tab has left.
+    simulateBridgeMessage({
+      loudnessDb: -5, isLiveContent: false, videoId: 'introVid',
+      channelId: 'UCintro', author: 'The Author'
+    });
+    await tick();
+    assert(ytcv.state.currentChannel.name === 'The Author',
+      `the author names a channel it introduces (${ytcv.state.currentChannel.name})`);
+
+    // With no author, the screen answers.
+    ytcv._set('currentChannel', { id: '', name: '', url: '' });
+    ytcv._set('currentChannelVideoId', '');
+    ytcv._set('currentLoudnessVideoId', '');
+    simulateBridgeMessage({
+      loudnessDb: -5, isLiveContent: false, videoId: 'introVid', channelId: 'UCintro2'
+    });
+    await tick();
+    assert(ytcv.state.currentChannel.name === 'The Name On Screen',
+      `the screen names it when the answer does not (${ytcv.state.currentChannel.name})`);
+
+    // With neither, the id stands in so the popup has something to show.
+    mockDOMElements['channelName'] = null;
+    mockDOMElements['metaName'] = null;
+    ytcv._set('currentChannel', { id: '', name: '', url: '' });
+    ytcv._set('currentChannelVideoId', '');
+    ytcv._set('currentLoudnessVideoId', '');
+    simulateBridgeMessage({
+      loudnessDb: -5, isLiveContent: false, videoId: 'introVid', channelId: 'UCintro3'
+    });
+    await tick();
+    assert(ytcv.state.currentChannel.name === 'UCintro3',
+      `and the id stands in when nothing else can (${ytcv.state.currentChannel.name})`);
+  }
+
+  section('Popup open: a level already in hand answers without waiting');
+  {
+    setURL('/watch', 'haveVid');
+    mockStorage['channelVolumes'] = { UChave: { name: 'Have Ch', gainVideo: 0.5 } };
+    ytcv._set('currentChannel', { id: 'UChave', name: 'Have Ch', url: '' });
+    ytcv._set('currentVideoType', 'video');
+    ytcv._set('currentLoudnessDb', -9);
+    ytcv._set('currentLoudnessVideoId', 'haveVid');
+    ytcv._set('_lastVideoId', 'haveVid');
+    ytcv._set('_lastProcessedVideo', mockVideoEl);
+    ytcv._set('_applyRunning', false);
+    ytcv._set('storageMigrated', true);
+    let asks = 0;
+    mockPostMessageHandler = (data) => {
+      if (data?.type === '__yt_channel_volume_request__') asks += 1;
+    };
+    const answer = await simulateRuntimeMessage({ type: 'forceDetect' });
+    mockPostMessageHandler = null;
+    assert(answer?.loudnessDb === -9,
+      `the level in hand is what the popup is told (${answer?.loudnessDb})`);
+    assert(asks === 1,
+      `and the bridge is asked once rather than ten times over (${asks})`);
+  }
+
+  section('Auto LUFS: a channel that is not on Auto lets the saved gain stand');
+  {
+    setURL('/watch', 'notAutoVid');
+    mockStorage['channelVolumes'] = { UCnotauto: { name: 'Not Auto Ch', gainVideo: 0.45 } };
+    ytcv._set('currentChannel', { id: 'UCnotauto', name: 'Not Auto Ch', url: '' });
+    ytcv._set('currentVideoType', 'video');
+    ytcv._set('currentAutoApplyLoudnessVideo', false);
+    ytcv._set('currentLoudnessDb', null);
+    ytcv._set('currentLoudnessVideoId', '');
+    ytcv._set('currentGain', 1.0);
+    ytcv._set('storageMigrated', true);
+    ytcv._set('storageSettled', true);
+    simulateBridgeMessage({
+      loudnessDb: -6, isLiveContent: false, videoId: 'notAutoVid', channelId: 'UCnotauto'
+    });
+    assert(ytcv.state.currentGain === 1.0,
+      `Auto does not answer for a channel that is not on it (${ytcv.state.currentGain})`);
+    await tick();
+    await tick();
+    assert(ytcv.state.currentGain === 0.45,
+      `the saved gain answers instead (${ytcv.state.currentGain})`);
+  }
+
+  section('Apply: the answer that arrives after the apply is applied too');
+  {
+    setURL('/watch', 'lateVid');
+    mockStorage['channelVolumes'] = {
+      UClate: { name: 'Late Ch', gainVideo: 0.2, autoApplyLoudnessVideo: true }
+    };
+    mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UClate' };
+    mockVideoEl = { id: 'late-video' };
+    ytcv._set('targetLufs', -18);
+    ytcv._set('_lastVideoId', 'lateVid');
+    ytcv._set('_lastProcessedVideo', null);
+    ytcv._set('_applyRunning', false);
+    ytcv._set('currentChannel', { id: 'UClate', name: 'Late Ch', url: '' });
+    ytcv._set('currentChannelVideoId', 'lateVid');
+    ytcv._set('currentLoudnessVideoId', '');
+    ytcv._set('currentLoudnessDb', null);
+    ytcv._set('currentVideoType', 'video');
+    ytcv._set('currentAutoApplyLoudnessVideo', true);
+    ytcv._set('currentGain', 1.0);
+    ytcv._set('storageMigrated', true);
+    ytcv._set('storageSettled', true);
+    // The bridge answers while the apply is asking for it.
+    mockPostMessageHandler = (data) => {
+      if (data?.type !== '__yt_channel_volume_request__') return;
+      mockPostMessageHandler = null;
+      simulateBridgeMessage({
+        loudnessDb: -6, isLiveContent: false, videoId: 'lateVid', channelId: 'UClate'
+      });
+    };
+    await ytcv.applyVideoVolume();
+    await tick();
+    await tick();
+    mockPostMessageHandler = null;
+    assert(Math.abs(ytcv.state.currentGain - ytcv.calcGainFromLoudness(-6)) < 0.001,
+      `the level that arrived while the apply asked for it is applied (${ytcv.state.currentGain})`);
+    assert(mockStorage['channelVolumes']['UClate'].gainVideo !== 0.2,
+      `and stored as the channel's gain (${mockStorage['channelVolumes']['UClate'].gainVideo})`);
+  }
+
+  section('Apply: the popup is told the gain the late answer settled on');
+  {
+    setURL('/watch', 'settleVid');
+    mockStorage['channelVolumes'] = { UCsettle: { name: 'Settle Ch', gainVideo: 0.55 } };
+    mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCsettle' };
+    mockVideoEl = { id: 'settle-video' };
+    ytcv._set('_lastVideoId', 'settleVid');
+    ytcv._set('_lastProcessedVideo', null);
+    ytcv._set('_applyRunning', false);
+    ytcv._set('currentChannel', { id: 'UCsettle', name: 'Settle Ch', url: '' });
+    ytcv._set('currentChannelVideoId', 'settleVid');
+    ytcv._set('currentLoudnessVideoId', '');
+    ytcv._set('currentLoudnessDb', null);
+    ytcv._set('currentVideoType', 'video');
+    ytcv._set('currentAutoApplyLoudnessVideo', false);
+    ytcv._set('currentGain', 1.0);
+    ytcv._set('storageMigrated', true);
+    ytcv._set('storageSettled', true);
+    // Another tab saves a new gain while this apply is waiting for the bridge,
+    // and the answer that ends the wait carries no level of its own.
+    mockPostMessageHandler = (data) => {
+      if (data?.type !== '__yt_channel_volume_request__') return;
+      mockPostMessageHandler = null;
+      mockStorage['channelVolumes'] = { UCsettle: { name: 'Settle Ch', gainVideo: 0.8 } };
+      simulateBridgeMessage({
+        loudnessDb: null, isLiveContent: false, videoId: 'settleVid', channelId: 'UCsettle'
+      });
+    };
+    await ytcv.applyVideoVolume();
+    mockSentMessages.length = 0;
+    await tick();
+    await tick();
+    mockPostMessageHandler = null;
+    assert(ytcv.state.currentGain === 0.8,
+      `the gain the wait settled on is applied (${ytcv.state.currentGain})`);
+    const told = mockSentMessages.filter(m => m?.type === 'stateChanged');
+    assert(told.length > 0, `and the popup is told (${told.length})`);
+    assert(!told.some((m) => m?.gain === 0.55),
+      `and it is not told the gain from before the wait on the way (${JSON.stringify(told.map((m) => m?.gain))})`);
+    assert(told[told.length - 1]?.gain === 0.8,
+      `what it ends up with is the gain that settled (${told[told.length - 1]?.gain})`);
+  }
+
+  section('Observer: a video the page swapped under the extension');
+  {
+    setURL('/watch', 'swapVid2');
+    mockStorage['channelVolumes'] = { UCswapped: { name: 'Swapped Ch', gainVideo: 0.55 } };
+    mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCswapped' };
+    ytcv._set('storageMigrated', true);
+    ytcv._set('storageSettled', true);
+    ytcv._set('_lastVideoId', 'swapVid2');
+    ytcv._set('_applyRunning', false);
+    ytcv._set('currentGain', 1.0);
+    const firstVideo = { id: 'observer-first' };
+    mockVideoEl = firstVideo;
+    ytcv._set('_lastProcessedVideo', firstVideo);
+    // The page replaces the element without changing the URL.
+    mockVideoEl = { id: 'observer-second' };
+    fireObserver();
+    await tick();
+    assert(ytcv.state._lastProcessedVideo === mockVideoEl,
+      `the element that replaced it is taken up (${ytcv.state._lastProcessedVideo?.id})`);
+    assert(ytcv.state.currentGain === 0.55,
+      `and the channel's gain is applied to it (${ytcv.state.currentGain})`);
+  }
+
   // ── Summary ────────────────────────────────────────────────────────
 
   console.log(`\n${passed} passed, ${failed} failed`);
