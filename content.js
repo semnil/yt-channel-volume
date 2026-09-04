@@ -146,11 +146,6 @@
     });
   }
 
-  function deleteChannelGain(channelId) {
-    if (!channelId) return Promise.resolve();
-    return requestChannelWrite('deleteChannel', { channelId });
-  }
-
   // ── Loudness from page-bridge.js (MAIN world) ─────────────────────
 
   let loudnessWaiters = [];
@@ -552,11 +547,23 @@
     });
   }
 
+  // What a gesture from the popup was made against. The popup echoes it back
+  // with the gesture, and a gesture whose state has moved on is not applied to
+  // the state that replaced it. Derived from the state itself, so there is no
+  // counter to advance and none to forget.
+  function currentGestureState() {
+    // The video is part of it: a navigation within one channel changes what the
+    // popup is showing — the measurement above all — while the channel and the
+    // type stay as they were.
+    return currentChannel.id + '|' + currentVideoType + '|' + getUrlVideoId();
+  }
+
   function getState() {
     const contentLufs = currentLoudnessDb !== null
       ? YT_REFERENCE_LUFS + currentLoudnessDb
       : null;
     return {
+      appliesTo: currentGestureState(),
       channel: currentChannel,
       gain: currentGain,
       loudnessDb: currentLoudnessDb,
@@ -574,7 +581,10 @@
   function notifyPopup() {
     if (!isContextValid()) return;
     const state = getState();
-    const key = state.loudnessDb + '|' + state.gain + '|' + state.channel.id + '|' + state.channel.name + '|' + state.videoType + '|' + state.isLiveNow + '|' + state.autoApplyLoudnessVideo + '|' + state.autoApplyLoudnessLive;
+    // The state a gesture would be made against is part of the key: a video
+    // changing under the popup moves nothing else it shows, and the popup has
+    // to be given the state that replaced it or its next gesture is refused.
+    const key = state.appliesTo + '|' + state.loudnessDb + '|' + state.gain + '|' + state.channel.id + '|' + state.channel.name + '|' + state.videoType + '|' + state.isLiveNow + '|' + state.autoApplyLoudnessVideo + '|' + state.autoApplyLoudnessLive;
     if (key === _lastNotifiedState) return;
     _lastNotifiedState = key;
     chrome.runtime.sendMessage({ type: 'stateChanged', ...state }).catch(() => {});
@@ -775,6 +785,10 @@
     }
 
     if (msg.type === 'applyLoudness') {
+      if (msg.appliesTo !== currentGestureState()) {
+        sendResponse({ ok: false, reason: 'state moved' });
+        return true;
+      }
       if (isCurrentAutoApplyEnabled()) {
         sendResponse({ ok: false, reason: 'auto apply enabled' });
         return true;
@@ -802,6 +816,10 @@
     }
 
     if (msg.type === 'setGainLive') {
+      if (msg.appliesTo !== currentGestureState()) {
+        sendResponse({ ok: false, reason: 'state moved' });
+        return true;
+      }
       if (isCurrentManualGainLocked()) {
         sendResponse({ ok: false, reason: 'auto apply controls current gain' });
         return true;
@@ -812,14 +830,21 @@
     }
 
     if (msg.type === 'setGain') {
+      if (msg.appliesTo !== currentGestureState()) {
+        // The preview may have moved the level while the state still held, so
+        // the level goes back to what storage has for the state now in hand.
+        restoreGainAfterFailedSave().then(() =>
+          sendResponse({ ok: false, reason: 'state moved' }));
+        return true;
+      }
       if (isCurrentManualGainLocked()) {
         sendResponse({ ok: false, reason: 'auto apply controls current gain' });
         return true;
       }
-      const { channelId, gain } = msg;
+      const { gain } = msg;
       fillCurrentChannelNameFromDomFallback();
       commitGain(gain);
-      saveManualChannelGain(channelId, currentChannel.name, gain, currentVideoType, currentChannel.url).then(() => {
+      saveManualChannelGain(currentChannel.id, currentChannel.name, gain, currentVideoType, currentChannel.url).then(() => {
         notifyPopup();
         sendResponse({ ok: true });
       }).catch(err => {
@@ -830,27 +855,12 @@
       return true;
     }
 
-    if (msg.type === 'clearChannel') {
-      const { channelId } = msg;
-      deleteChannelGain(channelId).then(() => {
-        currentAutoApplyLoudnessVideo = false;
-        currentAutoApplyLoudnessLive = false;
-        commitGain(1.0);
-        notifyPopup();
-        sendResponse({ ok: true });
-      }).catch(err => {
-        reportFailure('clearChannel failed', err);
-        sendResponse({ ok: false, reason: 'request failed' });
-      });
-      return true;
-    }
-
     if (msg.type === 'setAutoApplyLoudness') {
-      if (!currentChannel.id || msg.channelId !== currentChannel.id) {
-        sendResponse({ ok: false, reason: 'channel mismatch' });
+      if (!currentChannel.id || msg.appliesTo !== currentGestureState()) {
+        sendResponse({ ok: false, reason: 'state moved' });
         return true;
       }
-      const videoType = msg.videoType === 'live' ? 'live' : 'video';
+      const videoType = currentVideoType;
       fillCurrentChannelNameFromDomFallback();
       saveChannelAutoApply(
         currentChannel.id,
@@ -969,7 +979,7 @@
       saveChannelGain,
       saveManualChannelGain,
       saveChannelAutoApply,
-      deleteChannelGain,
+      foldLegacyGains,
       applyPreferredGain,
       notifyPopup,
       // Setters for test setup
@@ -993,6 +1003,12 @@
           case 'storageSettled': storageSettled = val; break;
           case 'storageMigrated': storageMigrated = val; break;
           case 'currentLoudnessVideoId': currentLoudnessVideoId = val; break;
+          // The audio chain is built once per element and never taken down in
+          // production; a case that means to ask what building it does starts
+          // from nothing.
+          case 'gainNode': gainNode = val; break;
+          case 'sourceNode': sourceNode = val; break;
+          case 'connectedVideo': connectedVideo = val; break;
         }
       }
     };
