@@ -358,9 +358,27 @@ function createBridge({ pathname = '/watch', videoId = 'urlVideoIdA' } = {}) {
   };
   setUrl(pathname, pathname === '/watch' ? videoId : '');
 
+  // Chrome hands a same-window postMessage back to that window's own message
+  // listeners, with source === window — measured on 151, where a listener that
+  // answers by posting again is called for its own answer and the cascade only
+  // stops when something refuses it. The mock does the same, with a depth cap
+  // so a guard that goes missing ends the run instead of spinning it.
+  const CASCADE_LIMIT = 50;
+  let cascade = 0;
   const window = {
     addEventListener(type, fn) { (listeners[type] ||= []).push(fn); },
-    postMessage(data) { posted.push(data); },
+    postMessage(data) {
+      posted.push(data);
+      cascade += 1;
+      try {
+        if (cascade > CASCADE_LIMIT) {
+          throw new Error(`the page is answering its own message — ${cascade} deep and still posting`);
+        }
+        for (const fn of (listeners['message'] || []).slice()) fn({ source: window, data });
+      } finally {
+        cascade -= 1;
+      }
+    },
     // What the bridge wraps. Every call is recorded as it arrived — the
     // receiver and the argument list — because the page's own requests go
     // through here, and the answer it gives is kept so a case can ask whether
@@ -418,6 +436,12 @@ function createBridge({ pathname = '/watch', videoId = 'urlVideoIdA' } = {}) {
     // Method 3 and the on-demand path: what content.js asks for.
     async request() { deliver({ type: '__yt_channel_volume_request__' }); await tick(); },
     async diagnose() { deliver({ type: '__yt_channel_volume_diag__' }); await tick(); },
+    // A message that reached this window from somewhere else — another frame,
+    // or the page's own script posting to it.
+    async deliverAs(source, data) {
+      for (const fn of (listeners['message'] || []).slice()) fn({ source, data });
+      await tick();
+    },
     setFlexy(playerResponse) { flexy = playerResponse ? { __data: { playerResponse } } : null; },
     setMoviePlayer(playerResponse) {
       moviePlayer = playerResponse ? { getPlayerResponse: () => playerResponse } : null;
@@ -3052,6 +3076,40 @@ async function runTests() {
     await bridge.request();
     assert(bridge.last()?.isLiveNow === true,
       `the player's answer is preferred over the one from load (${bridge.last()?.isLiveNow})`);
+  }
+
+  section('Bridge: what the two listeners take, and what they leave alone');
+  {
+    const bridge = createBridge();
+    bridge.assign(playerResponse({ loudnessDb: -6.5 }));
+    const afterAssign = bridge.posted.length;
+
+    // The answer the bridge posts comes back to it, as it does in a browser.
+    // Both listeners have to leave it where it lies: answering it would answer
+    // that answer in turn, and the page would post until it stopped responding.
+    await bridge.request();
+    assert(bridge.posted.length === afterAssign + 1,
+      `an ask is answered once, and the answer is not answered again (${bridge.posted.length - afterAssign})`);
+    const afterRequest = bridge.posted.length;
+
+    await bridge.diagnose();
+    assert(bridge.logged.length === 1, `the dump is written once (${bridge.logged.length})`);
+    assert(bridge.posted.length === afterRequest,
+      `and the dump posts nothing (${bridge.posted.length - afterRequest})`);
+
+    // A message of another kind, from this window.
+    await bridge.deliverAs(bridge.window, { type: '__something_else__' });
+    assert(bridge.posted.length === afterRequest,
+      `a message of another kind is left alone (${bridge.posted.length - afterRequest})`);
+    assert(bridge.logged.length === 1, 'by the dump as well');
+
+    // The right kind, from somewhere else — another frame in the page.
+    const otherFrame = { name: 'an iframe' };
+    await bridge.deliverAs(otherFrame, { type: '__yt_channel_volume_request__' });
+    assert(bridge.posted.length === afterRequest,
+      `an ask from another window is not answered (${bridge.posted.length - afterRequest})`);
+    await bridge.deliverAs(otherFrame, { type: '__yt_channel_volume_diag__' });
+    assert(bridge.logged.length === 1, 'and it gets no dump either');
   }
 
   section('Bridge: what the popup-open dump reports');
