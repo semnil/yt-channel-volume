@@ -339,7 +339,7 @@ function tick() { return new Promise(r => setTimeout(r, 10)); }
 // held by nothing. It runs in a context of its own here: the page's window,
 // the fetch it wraps, and the DOM it reads.
 
-function createBridge({ pathname = '/watch', videoId = 'urlVideoIdA' } = {}) {
+function createBridge({ pathname = '/watch', videoId = 'urlVideoIdA', preassigned = null } = {}) {
   const posted = [];
   const listeners = {};
   const logged = [];
@@ -403,6 +403,9 @@ function createBridge({ pathname = '/watch', videoId = 'urlVideoIdA' } = {}) {
   };
   sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
+  // document_start is early, but not always early enough: the page can have
+  // assigned its response before the bridge is there to hook the assignment.
+  if (preassigned) window.ytInitialPlayerResponse = preassigned;
   vm.runInContext(fs.readFileSync('./page-bridge.js', 'utf8'), sandbox, { filename: 'page-bridge.js' });
 
   const deliver = (data) => {
@@ -2859,6 +2862,52 @@ async function runTests() {
     assert(msg?.source === 'define', `saying where it came from (${msg?.source})`);
   }
 
+  section('Bridge: a response the page had already assigned is taken');
+  {
+    const bridge = createBridge({ preassigned: playerResponse({ loudnessDb: -12.5 }) });
+    assert(bridge.posted.length === 0,
+      `nothing is posted for it on its own (${bridge.posted.length})`);
+    await bridge.request();
+    assert(bridge.last()?.loudnessDb === -12.5,
+      `and the ask is answered from it (${bridge.last()?.loudnessDb})`);
+  }
+
+  section('Bridge: the answer from load is preferred over the page');
+  {
+    const bridge = createBridge();
+    bridge.assign(playerResponse({ loudnessDb: -6.5, channelId: 'UCload' }));
+    bridge.setFlexy(playerResponse({ loudnessDb: -3.5, channelId: 'UCpage' }));
+    await bridge.request();
+    assert(bridge.last()?.loudnessDb === -6.5,
+      `the level answered is the one from load (${bridge.last()?.loudnessDb})`);
+    assert(bridge.last()?.channelId === 'UCload',
+      `and so is the channel (${bridge.last()?.channelId})`);
+  }
+
+  section('Bridge: an answer with a level and no channel is still an answer');
+  {
+    const bridge = createBridge();
+    bridge.assign(playerResponse({ loudnessDb: -6.5, channelId: '' }));
+    bridge.setFlexy(playerResponse({ loudnessDb: -3.5, channelId: 'UCpage' }));
+    await bridge.request();
+    assert(bridge.last()?.loudnessDb === -6.5,
+      `the page does not take over from an answer that carries a level (${bridge.last()?.loudnessDb})`);
+  }
+
+  section('Bridge: an answer that cannot be read is taken as this video');
+  {
+    const bridge = createBridge();
+    const unreadable = playerResponse();
+    Object.defineProperty(unreadable, 'videoDetails', {
+      get() { throw new Error('the page took it away'); }
+    });
+    bridge.assign(unreadable);
+    assert(bridge.posted.length === 1,
+      `an answer whose fields throw is still passed on (${bridge.posted.length})`);
+    assert(bridge.last()?.videoId === 'urlVideoIdA',
+      `named as the video the URL names (${bridge.last()?.videoId})`);
+  }
+
   section('Bridge: an answer for another video is not passed on');
   {
     const bridge = createBridge();
@@ -2886,6 +2935,8 @@ async function runTests() {
     bridge.assign(playerResponse({ videoId: 'whateverPlays' }));
     assert(bridge.posted.length === 1,
       `with no id in the URL there is nothing to compare against (${bridge.posted.length})`);
+    assert(bridge.last()?.videoId === 'whateverPlays',
+      `and the message names the video the answer named (${bridge.last()?.videoId})`);
   }
 
   section('Bridge: a page that is not a watch page is left alone');
@@ -3215,6 +3266,18 @@ async function runTests() {
       `and the level the page gave (${dump?.captured?.loudnessDb})`);
     assert(dump?.flexy === null && dump?.moviePlayer === null,
       'and says outright that the other two answered nothing');
+
+    const full = createBridge();
+    full.assign(playerResponse({ loudnessDb: -2.5 }));
+    full.setFlexy(playerResponse({ loudnessDb: -3.5, channelId: 'UCflexy' }));
+    full.setMoviePlayer(playerResponse({ loudnessDb: -4.5, channelId: 'UCmovie', isLive: true }));
+    await full.diagnose();
+    const [, both] = full.logged[full.logged.length - 1] || [];
+    assert(both?.flexy?.loudnessDb === -3.5 && both?.flexy?.channelId === 'UCflexy',
+      `the element's answer is reported as it is (${JSON.stringify(both?.flexy?.loudnessDb)})`);
+    assert(both?.moviePlayer?.loudnessDb === -4.5 && both?.moviePlayer?.isLive === true,
+      `and the player's beside it (${JSON.stringify(both?.moviePlayer?.loudnessDb)})`);
+    assert(both?.captured?.loudnessDb === -2.5, 'with the one from load as well');
   }
 
   // ── Summary ────────────────────────────────────────────────────────
