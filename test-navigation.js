@@ -3650,6 +3650,119 @@ async function runTests() {
       `a move in the other type's gain leaves this one where it is (${ytcv.state.currentGain})`);
   }
 
+  // ── What the popup asks for, and what is refused ───────────────────
+
+  section('Popup: the state it asks for over the port');
+  {
+    setURL('/watch', 'askVid');
+    ytcv._set('currentChannel', { id: 'UCask', name: 'Ask Ch', url: 'https://y/UCask' });
+    ytcv._set('currentVideoType', 'video');
+    ytcv._set('currentLoudnessDb', -7);
+    ytcv._set('currentGain', 1.4);
+    const state = await simulateRuntimeMessage({ type: 'getState' });
+    assert(state?.channel?.id === 'UCask',
+      `the channel being watched is answered (${state?.channel?.id})`);
+    assert(state?.gain === 1.4 && state?.loudnessDb === -7,
+      `with the gain and the level (${state?.gain} / ${state?.loudnessDb})`);
+  }
+
+  section('Popup: a message this content script does not handle');
+  {
+    const answer = await simulateRuntimeMessage({ type: 'somethingElse' }, { expectNoAnswer: true });
+    assert(answer === undefined,
+      `a message of another kind is declined rather than answered (${JSON.stringify(answer)})`);
+  }
+
+  section('Popup: a gesture meant for another channel');
+  {
+    mockStorage['channelVolumes'] = { UChere: { name: 'Here Ch', gainVideo: 0.5 } };
+    setURL('/watch', 'mismatchVid');
+    ytcv._set('currentChannel', { id: 'UChere', name: 'Here Ch', url: '' });
+    ytcv._set('currentVideoType', 'video');
+    ytcv._set('currentGain', 0.5);
+    ytcv._set('storageMigrated', true);
+    const answer = await simulateRuntimeMessage({
+      type: 'setAutoApplyLoudness', channelId: 'UCgone', enabled: true, videoType: 'video'
+    });
+    await tick();
+    assert(answer?.ok === false && answer?.reason === 'channel mismatch',
+      `an Auto toggle for another channel is refused — got ${JSON.stringify(answer)}`);
+    assert(!('UCgone' in mockStorage['channelVolumes']),
+      'and nothing is written for the channel the popup named');
+
+    // The same toggle with no channel detected at all.
+    ytcv._set('currentChannel', { id: '', name: '', url: '' });
+    const nameless = await simulateRuntimeMessage({
+      type: 'setAutoApplyLoudness', channelId: '', enabled: true, videoType: 'video'
+    });
+    await tick();
+    assert(nameless?.ok === false && nameless?.reason === 'channel mismatch',
+      `with no channel to save under it is refused as well — got ${JSON.stringify(nameless)}`);
+    assert(ytcv.state.currentGain === 0.5,
+      `and the gain that is playing is untouched throughout (${ytcv.state.currentGain})`);
+  }
+
+  section('Popup on open: what counts as a video it has not applied yet');
+  {
+    mockStorage['channelVolumes'] = { UCopen: { name: 'Open Ch', gainVideo: 0.35 } };
+    setURL('/watch', 'openVid');
+    mockVideoEl = { id: 'popup-open-video' };
+    mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCopen' };
+    ytcv._set('currentChannel', { id: 'UCopen', name: 'Open Ch', url: '' });
+    ytcv._set('_lastVideoId', 'openVid');
+    ytcv._set('_lastProcessedVideo', mockVideoEl);
+    ytcv._set('currentGain', 1.0);
+    ytcv._set('currentLoudnessDb', null);
+    ytcv._set('storageMigrated', true);
+    ytcv._set('_applyRunning', false);
+    // The video in the URL is the one already taken up, so opening the popup
+    // answers from what is in hand rather than running an apply over it.
+    ytcv._set('_lastProcessedVideo', null);
+    const same = await simulateRuntimeMessage({ type: 'forceDetect' });
+    await tick();
+    assert(same?.channel?.id === 'UCopen', `the popup is answered (${same?.channel?.id})`);
+    assert(ytcv.state._lastProcessedVideo === null,
+      `and no apply was run over a video already taken up (${ytcv.state._lastProcessedVideo})`);
+
+    // A navigation the extension has not caught up with: the URL names a video
+    // that was never applied, so opening the popup applies it.
+    setURL('/watch', 'newVid');
+    mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCopen' };
+    const moved = await simulateRuntimeMessage({ type: 'forceDetect' });
+    await tick();
+    assert(moved?.channel?.id === 'UCopen', 'the popup is answered there too');
+    assert(ytcv.state._lastVideoId === 'newVid',
+      `and the video the URL names is taken up (${ytcv.state._lastVideoId})`);
+    assert(ytcv.state._lastProcessedVideo === mockVideoEl,
+      'with the element the page is playing');
+  }
+
+  section('Popup: a handler that throws names the message in the console');
+  {
+    setURL('/watch', 'throwVid');
+    ytcv._set('currentChannel', { id: 'UCthrow', name: 'Throw Ch', url: '' });
+    ytcv._set('currentLoudnessDb', -6);
+    ytcv._set('currentAutoApplyLoudnessVideo', false);
+    ytcv._set('targetLufs', -18);
+    const realConsoleError = console.error;
+    const reported = [];
+    console.error = (...args) => { reported.push(args[0]); };
+    const throwingCtx = ytcv.state.audioCtx;
+    const realCreate = throwingCtx.createMediaElementSource;
+    throwingCtx.createMediaElementSource = () => { throw new Error('InvalidStateError'); };
+    const videoBefore = mockVideoEl;
+    mockVideoEl = { id: 'owned-elsewhere' };
+    const answer = await simulateRuntimeMessage({ type: 'applyLoudness' });
+    await tick();
+    throwingCtx.createMediaElementSource = realCreate;
+    mockVideoEl = videoBefore;
+    console.error = realConsoleError;
+    assert(answer?.ok === false && answer?.reason === 'request failed',
+      `the popup is told the request failed — got ${JSON.stringify(answer)}`);
+    assert(reported.some(m => String(m).startsWith('[YTCV] applyLoudness failed')),
+      `and the console names the message that failed (${JSON.stringify(reported)})`);
+  }
+
   // ── Summary ────────────────────────────────────────────────────────
 
   console.log(`\n${passed} passed, ${failed} failed`);
