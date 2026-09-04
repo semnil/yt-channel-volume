@@ -3763,6 +3763,152 @@ async function runTests() {
       `and the console names the message that failed (${JSON.stringify(reported)})`);
   }
 
+  // ── What an apply carries over a navigation, and what it drops ─────
+
+  section('Apply: what the bridge already said for this video is kept');
+  {
+    mockStorage['channelVolumes'] = { UCearly: { name: 'Early Ch', gainVideo: 0.5 } };
+    setURL('/watch', 'earlyVid');
+    mockVideoEl = { id: 'early-video' };
+    mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCstale' };
+    ytcv._set('storageMigrated', true);
+    ytcv._set('storageSettled', true);
+    ytcv._set('_lastVideoId', 'previousVid');
+    ytcv._set('_lastProcessedVideo', null);
+    ytcv._set('_applyRunning', false);
+    // The bridge answered for the video the URL now names, before the apply
+    // for that navigation ran.
+    ytcv._set('currentChannel', { id: 'UCearly', name: 'Early Ch', url: 'https://y/UCearly' });
+    ytcv._set('currentChannelVideoId', 'earlyVid');
+    ytcv._set('currentLoudnessVideoId', 'earlyVid');
+    ytcv._set('currentLoudnessDb', -6);
+    ytcv._set('currentVideoType', 'live');
+    await ytcv.applyVideoVolume();
+    await tick();
+    assert(ytcv.state.currentChannel.id === 'UCearly',
+      `the channel the bridge named is kept over the DOM (${ytcv.state.currentChannel.id})`);
+    assert(ytcv.state.currentLoudnessDb === -6,
+      `and so is the level it gave (${ytcv.state.currentLoudnessDb})`);
+    assert(ytcv.state.currentVideoType === 'live',
+      `and the type it decided (${ytcv.state.currentVideoType})`);
+  }
+
+  section('Apply: a video the bridge has not spoken for starts clean');
+  {
+    mockStorage['channelVolumes'] = {};
+    setURL('/watch', 'freshVid');
+    mockVideoEl = { id: 'fresh-video' };
+    mockDOMElements['canonical'] = null;
+    mockDOMElements['ownerLink'] = null;
+    mockDOMElements['metaChannel'] = null;
+    ytcv._set('_lastVideoId', 'previousVid');
+    ytcv._set('_lastProcessedVideo', null);
+    ytcv._set('_applyRunning', false);
+    // What is in hand belongs to the video the tab has left.
+    ytcv._set('currentChannel', { id: 'UCprevious', name: 'Previous Ch', url: 'https://y/UCprevious' });
+    ytcv._set('currentChannelVideoId', 'previousVid');
+    ytcv._set('currentLoudnessVideoId', 'previousVid');
+    ytcv._set('currentLoudnessDb', -9);
+    ytcv._set('currentVideoType', 'live');
+    ytcv._set('currentAutoApplyLoudnessVideo', true);
+    ytcv._set('currentAutoApplyLoudnessLive', true);
+    await ytcv.applyVideoVolume();
+    await tick();
+    assert(ytcv.state.currentChannel.id === '',
+      `the channel of the video left behind is dropped (${ytcv.state.currentChannel.id})`);
+    assert(ytcv.state.currentLoudnessDb === null,
+      `its level with it (${ytcv.state.currentLoudnessDb})`);
+    assert(ytcv.state.currentVideoType === 'video',
+      `and the type goes back to what a page starts as (${ytcv.state.currentVideoType})`);
+    assert(ytcv.state.currentAutoApplyLoudnessVideo === false
+      && ytcv.state.currentAutoApplyLoudnessLive === false,
+      'and the Auto state read for that channel is dropped too');
+    assert(ytcv.state._lastProcessedVideo === mockVideoEl,
+      'while the element the page is playing is taken up');
+  }
+
+  section('Apply: the first video of a tab is not a navigation');
+  {
+    mockStorage['channelVolumes'] = { UCfirst: { name: 'First Ch', gainVideo: 0.25 } };
+    setURL('/watch', 'firstVid');
+    mockVideoEl = { id: 'first-video' };
+    mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCfirst' };
+    ytcv._set('_lastVideoId', '');
+    ytcv._set('_lastProcessedVideo', null);
+    ytcv._set('_applyRunning', false);
+    // The bridge answered before the first apply ran; with no previous video
+    // there is nothing to clear, and the answer stands.
+    ytcv._set('currentChannel', { id: 'UCfirst', name: 'First Ch', url: '' });
+    ytcv._set('currentChannelVideoId', '');
+    ytcv._set('currentLoudnessVideoId', 'firstVid');
+    ytcv._set('currentLoudnessDb', -4);
+    await ytcv.applyVideoVolume();
+    await tick();
+    assert(ytcv.state.currentLoudnessDb === -4,
+      `the level for this video is kept on the first apply (${ytcv.state.currentLoudnessDb})`);
+    assert(ytcv.state.currentChannel.id === 'UCfirst', 'and the channel with it');
+
+    // The same first apply, with nothing in the DOM to name the channel and a
+    // bridge answer that carried no video id: there is no previous video to
+    // have left, so what is in hand is this video's and stays.
+    mockDOMElements['canonical'] = null;
+    ytcv._set('_lastVideoId', '');
+    ytcv._set('_lastProcessedVideo', null);
+    ytcv._set('currentChannel', { id: 'UCfirst', name: 'First Ch', url: '' });
+    ytcv._set('currentChannelVideoId', '');
+    await ytcv.applyVideoVolume();
+    await tick();
+    assert(ytcv.state.currentChannel.id === 'UCfirst',
+      `nothing is cleared where there is no previous video (${ytcv.state.currentChannel.id})`);
+  }
+
+  section('Apply: a page with no player, and a page that is not a watch page');
+  {
+    setURL('/watch', 'noPlayerVid');
+    const videoBefore = mockVideoEl;
+    mockVideoEl = null;
+    ytcv._set('_lastVideoId', 'keptVid');
+    ytcv._set('_lastProcessedVideo', null);
+    ytcv._set('_applyRunning', false);
+    await ytcv.applyVideoVolume();
+    await tick();
+    assert(ytcv.state._lastVideoId === 'keptVid',
+      `a page with no player is left where it was (${ytcv.state._lastVideoId})`);
+    assert(ytcv.state._lastProcessedVideo === null, 'with no element taken up');
+
+    mockVideoEl = videoBefore;
+    setURL('/feed/subscriptions', null);
+    await ytcv.applyVideoVolume();
+    await tick();
+    assert(ytcv.state._lastVideoId === 'keptVid',
+      `and so is a page that is not a watch page (${ytcv.state._lastVideoId})`);
+    setURL('/watch', 'keptVid');
+  }
+
+  section('Apply: the settings are read before the gain is worked out');
+  {
+    mockStorage['channelVolumes'] = { UCsettings: { name: 'Settings Ch', autoApplyLoudnessVideo: true } };
+    mockStorage['autoLoudnessSettings'] = { targetLufs: -24, displayUnit: '%' };
+    setURL('/watch', 'settingsVid');
+    mockVideoEl = { id: 'settings-video' };
+    mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCsettings' };
+    ytcv._set('targetLufs', -18);
+    ytcv._set('_lastVideoId', 'settingsVid');
+    ytcv._set('_lastProcessedVideo', null);
+    ytcv._set('_applyRunning', false);
+    ytcv._set('currentChannel', { id: 'UCsettings', name: 'Settings Ch', url: '' });
+    ytcv._set('currentChannelVideoId', 'settingsVid');
+    ytcv._set('currentLoudnessVideoId', 'settingsVid');
+    ytcv._set('currentLoudnessDb', -6);
+    ytcv._set('currentAutoApplyLoudnessVideo', true);
+    await ytcv.applyVideoVolume();
+    await tick();
+    assert(ytcv.state.targetLufs === -24,
+      `the target stored is the one in hand afterwards (${ytcv.state.targetLufs})`);
+    assert(Math.abs(ytcv.state.currentGain - ytcv.calcGainFromLoudness(-6)) < 0.001,
+      `and the gain is worked out from it (${ytcv.state.currentGain})`);
+  }
+
   // ── Summary ────────────────────────────────────────────────────────
 
   console.log(`\n${passed} passed, ${failed} failed`);
