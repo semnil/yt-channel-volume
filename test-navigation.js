@@ -3380,6 +3380,276 @@ async function runTests() {
     assert(ytcv.state.currentChannel.id === 'UCbridgeok', 'and names the channel');
   }
 
+  // ── What a change in another tab is allowed to move ────────────────
+
+  section('Cross-tab: a change outside local storage is not one of ours');
+  {
+    setURL('/watch', 'syncVid');
+    mockStorage['channelVolumes'] = { UCsync: { name: 'Sync Ch', gainVideo: 0.5 } };
+    ytcv._set('currentChannel', { id: 'UCsync', name: 'Sync Ch', url: '' });
+    ytcv._set('currentVideoType', 'video');
+    ytcv._set('currentLoudnessDb', null);
+    ytcv._set('storageMigrated', true);
+    ytcv._set('storageSettled', true);
+    ytcv._set('currentGain', 0.5);
+    for (const fn of chrome.storage.onChanged._listeners) {
+      fn({ channelVolumes: { newValue: { UCsync: { name: 'Sync Ch', gainVideo: 0.9 } } } }, 'sync');
+    }
+    await tick();
+    assert(ytcv.state.currentGain === 0.5,
+      `a change in another area is left alone (${ytcv.state.currentGain})`);
+  }
+
+  section('Cross-tab: the fold mark is adopted, and only for what it is');
+  {
+    ytcv._set('storageMigrated', false);
+    ytcv._set('storageSettled', false);
+    simulateStorageChange({ autoLoudnessSettings: { newValue: { targetLufs: -18, displayUnit: '%' } } });
+    await tick();
+    assert(ytcv.state.storageMigrated === false,
+      `a settings change is not a fold (${ytcv.state.storageMigrated})`);
+    simulateStorageChange({ unifiedGains: { newValue: true } });
+    await tick();
+    assert(ytcv.state.storageMigrated === true, 'the mark is what says the profile was folded');
+    assert(ytcv.state.storageSettled === true, 'and the wait for it is over');
+  }
+
+  section('Cross-tab: the fold mark arriving with the channels does not apply twice');
+  {
+    mockStorage['channelVolumes'] = { UCfold: { name: 'Fold Ch', gainVideo: 0.4 } };
+    ytcv._set('currentChannel', { id: 'UCfold', name: 'Fold Ch', url: '' });
+    ytcv._set('currentVideoType', 'video');
+    ytcv._set('currentLoudnessDb', null);
+    ytcv._set('storageMigrated', false);
+    ytcv._set('storageSettled', false);
+    ytcv._set('currentGain', 1.0);
+    const realGet = chrome.storage.local.get;
+    let reads = 0;
+    chrome.storage.local.get = (key) => { reads += 1; return realGet(key); };
+    simulateStorageChange({
+      unifiedGains: { newValue: true },
+      channelVolumes: {
+        oldValue: { UCfold: { name: 'Fold Ch', gainVideo: 0.4 } },
+        newValue: { UCfold: { name: 'Fold Ch', gainVideo: 0.8 } }
+      }
+    });
+    await tick();
+    await tick();
+    chrome.storage.local.get = realGet;
+    assert(ytcv.state.currentGain === 0.8,
+      `the gain the notification carried is applied (${ytcv.state.currentGain})`);
+    assert(reads === 0,
+      `and storage is not read again for what the notification already said (${reads})`);
+  }
+
+  section('Cross-tab: the Auto state that moved is the one being watched');
+  {
+    mockStorage['channelVolumes'] = {};
+    ytcv._set('storageMigrated', true);
+    ytcv._set('storageSettled', true);
+    ytcv._set('currentChannel', { id: 'UCtype', name: 'Type Ch', url: '' });
+    ytcv._set('currentVideoType', 'live');
+    ytcv._set('currentLoudnessDb', -6);
+    ytcv._set('targetLufs', -18);
+    ytcv._set('currentAutoApplyLoudnessVideo', false);
+    ytcv._set('currentAutoApplyLoudnessLive', false);
+    ytcv._set('currentGain', 0.3);
+    // Auto goes on for Live, which is the type being watched: the gain the
+    // measurement asks for is applied. The Video slot moving on its own is not
+    // this video's business.
+    simulateStorageChange({
+      channelVolumes: {
+        oldValue: { UCtype: { name: 'Type Ch', gainLive: 0.3, autoApplyLoudnessLive: false } },
+        newValue: { UCtype: { name: 'Type Ch', gainLive: 0.3, autoApplyLoudnessLive: true } }
+      }
+    });
+    await tick();
+    assert(Math.abs(ytcv.state.currentGain - ytcv.calcGainFromLoudness(-6)) < 0.001,
+      `Auto going on for the type being watched applies the measurement (${ytcv.state.currentGain})`);
+
+    ytcv._set('currentGain', 0.3);
+    ytcv._set('currentAutoApplyLoudnessLive', false);
+    ytcv._set('currentAutoApplyLoudnessVideo', false);
+    simulateStorageChange({
+      channelVolumes: {
+        oldValue: { UCtype: { name: 'Type Ch', gainLive: 0.3, autoApplyLoudnessVideo: false } },
+        newValue: { UCtype: { name: 'Type Ch', gainLive: 0.3, autoApplyLoudnessVideo: true } }
+      }
+    });
+    await tick();
+    assert(ytcv.state.currentGain === 0.3,
+      `Auto going on for the other type leaves this one playing (${ytcv.state.currentGain})`);
+    assert(ytcv.state.currentAutoApplyLoudnessVideo === true,
+      `while the popup is told the other type moved (${JSON.stringify({v: ytcv.state.currentAutoApplyLoudnessVideo, l: ytcv.state.currentAutoApplyLoudnessLive})})`);
+  }
+
+  section('Cross-tab: a key that is not ours does not discard a read in flight');
+  {
+    mockStorage['channelVolumes'] = { UCrev: { name: 'Rev Ch', gainVideo: 0.45 } };
+    ytcv._set('currentChannel', { id: 'UCrev', name: 'Rev Ch', url: '' });
+    ytcv._set('currentVideoType', 'video');
+    ytcv._set('currentLoudnessDb', null);
+    ytcv._set('currentAutoApplyLoudnessVideo', false);
+    ytcv._set('currentGain', 1.0);
+    ytcv._set('storageMigrated', true);
+    ytcv._set('storageSettled', true);
+    const realGet = chrome.storage.local.get;
+    let release;
+    const held = new Promise((resolve) => { release = resolve; });
+    chrome.storage.local.get = (key) => held.then(() => realGet(key));
+    const applying = ytcv.applyPreferredGain();
+    await tick();
+    // Something else in the profile moved while the read was out.
+    simulateStorageChange({ somebodyElsesKey: { newValue: 1 } });
+    release();
+    await applying;
+    chrome.storage.local.get = realGet;
+    assert(ytcv.state.currentGain === 0.45,
+      `the gain that was read is applied (${ytcv.state.currentGain})`);
+  }
+
+  section('Cross-tab: Auto going on with nothing saved returns to passthrough');
+  {
+    mockStorage['channelVolumes'] = {};
+    ytcv._set('currentChannel', { id: 'UConly', name: 'Only Ch', url: '' });
+    ytcv._set('currentVideoType', 'live');
+    ytcv._set('currentLoudnessDb', null);
+    ytcv._set('currentAutoApplyLoudnessVideo', false);
+    ytcv._set('currentAutoApplyLoudnessLive', false);
+    ytcv._set('currentGain', 0.55);
+    // The channel has a Video gain and nothing for Live, and Live is what is
+    // being watched: turning Auto on for it with no measurement to work from
+    // leaves nothing to apply, so the level returns to passthrough.
+    simulateStorageChange({
+      channelVolumes: {
+        oldValue: { UConly: { name: 'Only Ch', gainVideo: 0.55, autoApplyLoudnessLive: false } },
+        newValue: { UConly: { name: 'Only Ch', gainVideo: 0.55, autoApplyLoudnessLive: true } }
+      }
+    });
+    await tick();
+    assert(ytcv.state.currentGain === 1.0,
+      `the type being watched has nothing saved, so it plays at 1.0 (${ytcv.state.currentGain})`);
+  }
+
+  section('Cross-tab: the other type moving is still worth telling the popup');
+  {
+    mockStorage['channelVolumes'] = {};
+    ytcv._set('currentChannel', { id: 'UCtell', name: 'Tell Ch', url: '' });
+    ytcv._set('currentVideoType', 'live');
+    ytcv._set('currentLoudnessDb', null);
+    ytcv._set('currentAutoApplyLoudnessVideo', false);
+    ytcv._set('currentAutoApplyLoudnessLive', false);
+    ytcv._set('currentGain', 1.0);
+    ytcv.notifyPopup();
+    mockSentMessages.length = 0;
+    simulateStorageChange({
+      channelVolumes: {
+        oldValue: { UCtell: { name: 'Tell Ch', autoApplyLoudnessVideo: false } },
+        newValue: { UCtell: { name: 'Tell Ch', autoApplyLoudnessVideo: true } }
+      }
+    });
+    await tick();
+    assert(mockSentMessages.some(m => m?.type === 'stateChanged'),
+      `the popup is told the other type moved (${JSON.stringify(mockSentMessages.map(m => m?.type))})`);
+
+    // And where nothing moved at all, it is not told anything.
+    mockSentMessages.length = 0;
+    simulateStorageChange({
+      channelVolumes: {
+        oldValue: { UCtell: { name: 'Tell Ch', autoApplyLoudnessVideo: true } },
+        newValue: { UCtell: { name: 'Tell Ch', autoApplyLoudnessVideo: true } }
+      }
+    });
+    await tick();
+    assert(!mockSentMessages.some(m => m?.type === 'stateChanged'),
+      `a notification carrying no change says nothing (${JSON.stringify(mockSentMessages.map(m => m?.type))})`);
+  }
+
+  section('Cross-tab: which type was already on decides what moved');
+  {
+    mockStorage['channelVolumes'] = {};
+    ytcv._set('currentChannel', { id: 'UCboth', name: 'Both Ch', url: '' });
+    ytcv._set('currentVideoType', 'live');
+    ytcv._set('currentLoudnessDb', null);
+    ytcv._set('currentAutoApplyLoudnessVideo', true);
+    ytcv._set('currentAutoApplyLoudnessLive', false);
+    ytcv._set('currentGain', 0.65);
+    // Video was already on and Live was not. Live going on is a move for the
+    // type being watched, even though the other type's state did not change.
+    simulateStorageChange({
+      channelVolumes: {
+        oldValue: { UCboth: { name: 'Both Ch', gainVideo: 0.2, autoApplyLoudnessVideo: true, autoApplyLoudnessLive: false } },
+        newValue: { UCboth: { name: 'Both Ch', gainVideo: 0.2, autoApplyLoudnessVideo: true, autoApplyLoudnessLive: true } }
+      }
+    });
+    await tick();
+    assert(ytcv.state.currentGain === 1.0,
+      `the type being watched has nothing to apply, so it plays at 1.0 (${ytcv.state.currentGain})`);
+  }
+
+  section('Cross-tab: the live slot moving is told to the popup as well');
+  {
+    mockStorage['channelVolumes'] = {};
+    ytcv._set('currentChannel', { id: 'UClive', name: 'Live Ch', url: '' });
+    ytcv._set('currentVideoType', 'video');
+    ytcv._set('currentLoudnessDb', null);
+    ytcv._set('currentAutoApplyLoudnessVideo', false);
+    ytcv._set('currentAutoApplyLoudnessLive', false);
+    ytcv._set('currentGain', 1.0);
+    ytcv.notifyPopup();
+    mockSentMessages.length = 0;
+    simulateStorageChange({
+      channelVolumes: {
+        oldValue: { UClive: { name: 'Live Ch', autoApplyLoudnessLive: false } },
+        newValue: { UClive: { name: 'Live Ch', autoApplyLoudnessLive: true } }
+      }
+    });
+    await tick();
+    assert(mockSentMessages.some(m => m?.type === 'stateChanged'),
+      `a move in the Live slot reaches the popup while a Video is watched (${JSON.stringify(mockSentMessages.map(m => m?.type))})`);
+  }
+
+  section('Cross-tab: the gain this tab is already playing is not applied again');
+  {
+    mockStorage['channelVolumes'] = { UCsame: { name: 'Same Ch', gainVideo: 0.75 } };
+    ytcv._set('currentChannel', { id: 'UCsame', name: 'Same Ch', url: '' });
+    ytcv._set('currentVideoType', 'video');
+    ytcv._set('currentLoudnessDb', null);
+    ytcv._set('currentAutoApplyLoudnessVideo', false);
+    ytcv._set('currentGain', 0.75);
+    // A fresh element, so building the audio chain is something a case can see.
+    mockVideoEl = { id: 'cross-tab-video' };
+    mockAudioAsks.disconnects = 0;
+    simulateStorageChange({
+      channelVolumes: {
+        oldValue: { UCsame: { name: 'Same Ch', gainVideo: 0.75 } },
+        newValue: { UCsame: { name: 'Same Ch', gainVideo: 0.75 } }
+      }
+    });
+    await tick();
+    assert(mockAudioAsks.disconnects === 0,
+      `the player is not taken up again for a gain already playing (${mockAudioAsks.disconnects})`);
+    assert(ytcv.state.currentGain === 0.75, 'and the gain is where it was');
+  }
+
+  section('Cross-tab: a channel with nothing saved for this type');
+  {
+    ytcv._set('currentChannel', { id: 'UCnone', name: 'None Ch', url: '' });
+    ytcv._set('currentVideoType', 'video');
+    ytcv._set('currentLoudnessDb', null);
+    ytcv._set('currentAutoApplyLoudnessVideo', false);
+    ytcv._set('currentGain', 0.6);
+    simulateStorageChange({
+      channelVolumes: {
+        oldValue: { UCnone: { name: 'None Ch', gainLive: 0.6 } },
+        newValue: { UCnone: { name: 'None Ch', gainLive: 0.7 } }
+      }
+    });
+    await tick();
+    assert(ytcv.state.currentGain === 0.6,
+      `a move in the other type's gain leaves this one where it is (${ytcv.state.currentGain})`);
+  }
+
   // ── Summary ────────────────────────────────────────────────────────
 
   console.log(`\n${passed} passed, ${failed} failed`);
