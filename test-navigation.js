@@ -3126,6 +3126,22 @@ async function runTests() {
     assert(ended.last()?.isLiveContent === true,
       'while it stays live content, which is what the gain is kept under');
 
+    // The element is newer than the answer kept from load, and on a page that
+    // has not built a player yet it is the only one that can have moved.
+    const elementStarted = createBridge();
+    elementStarted.assign(playerResponse({ isLiveContent: true, isLive: false }));
+    elementStarted.setFlexy(playerResponse({ isLiveContent: true, isLive: true }));
+    await elementStarted.request();
+    assert(elementStarted.last()?.isLiveNow === true,
+      `the element is taken over the answer kept from load (${elementStarted.last()?.isLiveNow})`);
+
+    const elementEnded = createBridge();
+    elementEnded.assign(playerResponse({ isLiveContent: true, isLive: true }));
+    elementEnded.setFlexy(playerResponse({ isLiveContent: true, isLive: false }));
+    await elementEnded.request();
+    assert(elementEnded.last()?.isLiveNow === false,
+      `in that direction as well (${elementEnded.last()?.isLiveNow})`);
+
     // The other direction of the same check: a player showing another video
     // cannot take the badge down either.
     const endedElsewhere = createBridge();
