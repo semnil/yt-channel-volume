@@ -4577,6 +4577,165 @@ async function runTests() {
     mockDOMElements['volumeArea'] = areaBefore;
   }
 
+  // ── The rest of what a rule-driven sweep found standing ────────────
+
+  section('Settings: a profile with no settings saved yet');
+  {
+    delete mockStorage['autoLoudnessSettings'];
+    ytcv._set('targetLufs', -18);
+    const answer = await simulateRuntimeMessage({ type: 'setTargetLufs', value: -22 });
+    await tick();
+    assert(answer?.ok === true, `the popup is answered — got ${JSON.stringify(answer)}`);
+    assert(mockStorage['autoLoudnessSettings']?.targetLufs === -22,
+      `the first write makes the settings (${JSON.stringify(mockStorage['autoLoudnessSettings'])})`);
+  }
+
+  section('Storage: a write the worker turns down says why');
+  {
+    const realSend = chrome.runtime.sendMessage;
+    chrome.runtime.sendMessage = (msg) =>
+      (String(msg?.type).startsWith('store:')
+        ? Promise.resolve({ ok: false, reason: 'the worker said no' })
+        : realSend(msg));
+    let failure = null;
+    await ytcv.saveChannelGain('UCreason', 'Reason Ch', 0.5, 'video', '', false)
+      .catch((err) => { failure = err; });
+    chrome.runtime.sendMessage = realSend;
+    assert(failure instanceof Error, `the caller is told the write failed (${failure})`);
+    assert(String(failure?.message) === 'the worker said no',
+      `in the words the worker used (${failure?.message})`);
+
+    // A worker that answers nothing at all still fails, in words of our own.
+    chrome.runtime.sendMessage = (msg) =>
+      (String(msg?.type).startsWith('store:') ? Promise.resolve(undefined) : realSend(msg));
+    let silent = null;
+    await ytcv.saveChannelGain('UCsilent', 'Silent Ch', 0.5, 'video', '', false)
+      .catch((err) => { silent = err; });
+    chrome.runtime.sendMessage = realSend;
+    assert(String(silent?.message) === 'channel write failed',
+      `a worker that says nothing is a failure too (${silent?.message})`);
+  }
+
+  section('Auto LUFS: what stops Auto from answering a message');
+  {
+    setURL('/watch', 'autoStopVid');
+    mockStorage['channelVolumes'] = { UCstop: { name: 'Stop Ch', gainVideo: 0.4 } };
+    ytcv._set('currentChannel', { id: 'UCstop', name: 'Stop Ch', url: '' });
+    ytcv._set('currentVideoType', 'video');
+    ytcv._set('currentAutoApplyLoudnessVideo', true);
+    ytcv._set('currentLoudnessDb', -6);
+    ytcv._set('targetLufs', -18);
+    ytcv._set('currentGain', 1.0);
+    ytcv._set('storageMigrated', true);
+
+    // Before the fold has settled, Auto does not answer: the map is still in
+    // the old shape and reading it under the current rule would take a manual
+    // gain for one Auto is allowed to overwrite.
+    ytcv._set('storageSettled', false);
+    ytcv.notifyPopup();
+    mockSentMessages.length = 0;
+    simulateBridgeMessage({ loudnessDb: -6, isLiveContent: false, videoId: 'autoStopVid', channelId: 'UCstop' });
+    assert(ytcv.state.currentGain === 1.0,
+      `nothing is applied while the fold has not settled (${ytcv.state.currentGain})`);
+    await tick();
+    await tick();
+
+    // With the fold settled but no measurement, Auto has nothing to work from.
+    ytcv._set('storageSettled', true);
+    ytcv._set('currentLoudnessDb', null);
+    ytcv._set('currentLoudnessVideoId', '');
+    ytcv._set('currentGain', 1.0);
+    simulateBridgeMessage({ loudnessDb: null, isLiveContent: false, videoId: 'autoStopVid', channelId: 'UCstop' });
+    assert(ytcv.state.currentGain === 1.0,
+      `nor with no level to work from (${ytcv.state.currentGain})`);
+    await tick();
+    await tick();
+    assert(ytcv.state.currentGain === 0.4,
+      `the saved gain answers that one instead (${ytcv.state.currentGain})`);
+  }
+
+  section('Navigation: what each trigger asks for');
+  {
+    setURL('/watch', 'triggerVid');
+    mockStorage['channelVolumes'] = { UCtrigger: { name: 'Trigger Ch', gainVideo: 0.65 } };
+    mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCtrigger' };
+    mockVideoEl = { id: 'trigger-video' };
+    ytcv._set('storageMigrated', true);
+    ytcv._set('storageSettled', true);
+
+    // A tab brought to the front that has never taken a video up runs an apply.
+    ytcv._set('_lastProcessedVideo', null);
+    ytcv._set('_lastVideoId', '');
+    ytcv._set('_applyRunning', false);
+    ytcv._set('currentGain', 1.0);
+    fireVisibilityChange();
+    await tick();
+    assert(ytcv.state._lastProcessedVideo === mockVideoEl,
+      `coming back to a tab that never applied takes the video up (${ytcv.state._lastProcessedVideo})`);
+
+    // Brought to the front again, with the video already taken up, it does not.
+    ytcv._set('currentGain', 1.0);
+    ytcv._set('_applyRunning', false);
+    fireVisibilityChange();
+    await tick();
+    assert(ytcv.state.currentGain === 1.0,
+      `and coming back to one that has applies nothing (${ytcv.state.currentGain})`);
+
+    // An apply already running is not joined by another trigger.
+    ytcv._set('_applyRunning', true);
+    ytcv._set('_lastProcessedVideo', null);
+    ytcv._set('currentGain', 1.0);
+    fireNavigateFinish();
+    await tick();
+    assert(ytcv.state._lastProcessedVideo === null,
+      `a trigger arriving during an apply is turned away (${ytcv.state._lastProcessedVideo})`);
+    ytcv._set('_applyRunning', false);
+  }
+
+  section('Upgrade: the fold is asked for once, and only until it lands');
+  {
+    mockStorage = {
+      autoLoudnessSettings: { targetLufs: -18 },
+      channelVolumes: { UConce: { name: 'Once Ch', gainVideo: 0.3 } }
+    };
+    ytcv._set('storageMigrated', false);
+    ytcv._set('storageSettled', true);
+    mockSentMessages.length = 0;
+    // Two triggers in flight at once ask the worker for one fold.
+    await Promise.all([ytcv.foldLegacyGains(), ytcv.foldLegacyGains()]);
+    const asks = mockSentMessages.filter(m => m?.type === 'store:migrateLegacyGains').length;
+    assert(asks === 1, `two callers ask for one fold (${asks})`);
+    assert(ytcv.state.storageMigrated === true, 'and it lands');
+
+    // Once it has landed, nothing asks again.
+    mockSentMessages.length = 0;
+    await ytcv.foldLegacyGains();
+    assert(mockSentMessages.filter(m => m?.type === 'store:migrateLegacyGains').length === 0,
+      'a fold that has landed is not asked for again');
+  }
+
+  section('Audio: the context the page has not let start yet');
+  {
+    mockVideoEl = { id: 'gesture-video' };
+    ytcv._set('gainNode', null);
+    ytcv._set('sourceNode', null);
+    ytcv._set('connectedVideo', null);
+    ytcv._set('currentGain', 1.0);
+    ytcv.commitGain(1.5);
+    const ctx = ytcv.state.audioCtx;
+    ctx.state = 'suspended';
+    mockAudioAsks.resumes = 0;
+    for (const fn of mockEventListeners['click'] || []) fn({ type: 'click' });
+    assert(mockAudioAsks.resumes === 1,
+      `a click starts the context the page left suspended (${mockAudioAsks.resumes})`);
+    assert(ctx.state === 'running', 'and it is running afterwards');
+
+    mockAudioAsks.resumes = 0;
+    for (const fn of mockEventListeners['click'] || []) fn({ type: 'click' });
+    assert(mockAudioAsks.resumes === 0,
+      `a context already running is not asked again (${mockAudioAsks.resumes})`);
+  }
+
   // ── Summary ────────────────────────────────────────────────────────
 
   console.log(`\n${passed} passed, ${failed} failed`);

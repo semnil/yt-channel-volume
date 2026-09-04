@@ -146,11 +146,6 @@
     });
   }
 
-  function deleteChannelGain(channelId) {
-    if (!channelId) return Promise.resolve();
-    return requestChannelWrite('deleteChannel', { channelId });
-  }
-
   // ── Loudness from page-bridge.js (MAIN world) ─────────────────────
 
   let loudnessWaiters = [];
@@ -850,21 +845,6 @@
       return true;
     }
 
-    if (msg.type === 'clearChannel') {
-      const { channelId } = msg;
-      deleteChannelGain(channelId).then(() => {
-        currentAutoApplyLoudnessVideo = false;
-        currentAutoApplyLoudnessLive = false;
-        commitGain(1.0);
-        notifyPopup();
-        sendResponse({ ok: true });
-      }).catch(err => {
-        reportFailure('clearChannel failed', err);
-        sendResponse({ ok: false, reason: 'request failed' });
-      });
-      return true;
-    }
-
     if (msg.type === 'setAutoApplyLoudness') {
       if (!currentChannel.id || msg.appliesTo !== currentGestureState()) {
         sendResponse({ ok: false, reason: 'state moved' });
@@ -989,7 +969,7 @@
       saveChannelGain,
       saveManualChannelGain,
       saveChannelAutoApply,
-      deleteChannelGain,
+      foldLegacyGains,
       applyPreferredGain,
       notifyPopup,
       // Setters for test setup
