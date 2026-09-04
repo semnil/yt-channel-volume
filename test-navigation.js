@@ -4052,6 +4052,241 @@ async function runTests() {
       `and the gain is worked out from it (${ytcv.state.currentGain})`);
   }
 
+  // ── Waiting for what the next step needs ───────────────────────────
+  // Dropping an await leaves the suite green in six places, and one of those
+  // mutants reached a commit here: the level, the settings and the popup all
+  // end up right a tick later, so only the order within the step shows it.
+
+  section('Settings: a write keeps the settings it was not asked about');
+  {
+    mockStorage['autoLoudnessSettings'] = {
+      targetLufs: -20,
+      displayUnit: 'dB',
+      showGainOverlay: true,
+      autoApplyLoudnessVideoDefault: true
+    };
+    ytcv._set('targetLufs', -20);
+    const answer = await simulateRuntimeMessage({ type: 'setTargetLufs', value: -14 });
+    await tick();
+    const stored = mockStorage['autoLoudnessSettings'];
+    assert(answer?.ok === true, `the popup is answered — got ${JSON.stringify(answer)}`);
+    assert(stored?.targetLufs === -14, `the target it asked for is stored (${stored?.targetLufs})`);
+    assert(stored?.displayUnit === 'dB' && stored?.showGainOverlay === true,
+      `and what it did not ask about is still there (${JSON.stringify(stored)})`);
+    assert(stored?.autoApplyLoudnessVideoDefault === true,
+      'the all-channel default among it');
+  }
+
+  section('Settings: the popup is answered after the write has landed');
+  {
+    const realSet = chrome.storage.local.set;
+    let release;
+    const held = new Promise((resolve) => { release = resolve; });
+    chrome.storage.local.set = (obj) => held.then(() => realSet(obj));
+    let answered = false;
+    const asking = simulateRuntimeMessage({ type: 'setTargetLufs', value: -16 })
+      .then((r) => { answered = true; return r; });
+    await tick();
+    assert(answered === false,
+      'the popup is not told the target was set while the write is still out');
+    release();
+    const answer = await asking;
+    chrome.storage.local.set = realSet;
+    assert(answer?.ok === true, `and it is told once the write lands — got ${JSON.stringify(answer)}`);
+    assert(mockStorage['autoLoudnessSettings']?.targetLufs === -16, 'with the target stored');
+  }
+
+  section('Apply: the target is in hand before the gain is worked out');
+  {
+    // Writes an earlier case left in flight land on whatever map is there when
+    // they arrive, so this one lets them settle before laying down its own.
+    await tick();
+    await tick();
+    mockStorage['channelVolumes'] = { UCorder: { name: 'Order Ch', autoApplyLoudnessVideo: true } };
+    mockStorage['autoLoudnessSettings'] = { targetLufs: -24, displayUnit: '%' };
+    setURL('/watch', 'orderVid');
+    mockVideoEl = { id: 'order-video' };
+    mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCorder' };
+    ytcv._set('targetLufs', -18);
+    ytcv._set('_lastVideoId', 'orderVid');
+    ytcv._set('_lastProcessedVideo', null);
+    ytcv._set('_applyRunning', false);
+    ytcv._set('currentChannel', { id: 'UCorder', name: 'Order Ch', url: '' });
+    ytcv._set('currentChannelVideoId', 'orderVid');
+    ytcv._set('currentLoudnessVideoId', 'orderVid');
+    ytcv._set('currentLoudnessDb', -6);
+    ytcv._set('currentVideoType', 'video');
+    ytcv._set('currentAutoApplyLoudnessVideo', true);
+    ytcv._set('storageMigrated', true);
+    ytcv._set('storageSettled', true);
+    // The settings read is held, so the gain cannot be worked out from a target
+    // that happened to land in time.
+    const realGet = chrome.storage.local.get;
+    let releaseSettings;
+    const heldSettings = new Promise((resolve) => { releaseSettings = resolve; });
+    chrome.storage.local.get = (key) =>
+      (key === 'autoLoudnessSettings' ? heldSettings.then(() => realGet(key)) : realGet(key));
+    const applying = ytcv.applyVideoVolume();
+    await tick();
+    releaseSettings();
+    await applying;
+    chrome.storage.local.get = realGet;
+    assert(ytcv.state.targetLufs === -24,
+      `the target stored is the one in hand afterwards (${ytcv.state.targetLufs})`);
+    assert(Math.abs(ytcv.state.currentGain - ytcv.calcGainFromLoudness(-6)) < 0.001,
+      `and the gain is worked out from it (${ytcv.state.currentGain})`);
+  }
+
+  // ── Waiting for what the next step needs ───────────────────────────
+  // Dropping an await leaves the suite green in six places, and one of those
+  // mutants reached a commit here: the level, the settings and the popup all
+  // end up right a tick later, so only the order within the step shows it.
+
+  section('Settings: a write keeps the settings it was not asked about');
+  {
+    mockStorage['autoLoudnessSettings'] = {
+      targetLufs: -20,
+      displayUnit: 'dB',
+      showGainOverlay: true,
+      autoApplyLoudnessVideoDefault: true
+    };
+    ytcv._set('targetLufs', -20);
+    const answer = await simulateRuntimeMessage({ type: 'setTargetLufs', value: -14 });
+    await tick();
+    const stored = mockStorage['autoLoudnessSettings'];
+    assert(answer?.ok === true, `the popup is answered — got ${JSON.stringify(answer)}`);
+    assert(stored?.targetLufs === -14, `the target it asked for is stored (${stored?.targetLufs})`);
+    assert(stored?.displayUnit === 'dB' && stored?.showGainOverlay === true,
+      `and what it did not ask about is still there (${JSON.stringify(stored)})`);
+    assert(stored?.autoApplyLoudnessVideoDefault === true,
+      'the all-channel default among it');
+  }
+
+  section('Settings: the popup is answered after the write has landed');
+  {
+    const realSet = chrome.storage.local.set;
+    let release;
+    const held = new Promise((resolve) => { release = resolve; });
+    chrome.storage.local.set = (obj) => held.then(() => realSet(obj));
+    let answered = false;
+    const asking = simulateRuntimeMessage({ type: 'setTargetLufs', value: -16 })
+      .then((r) => { answered = true; return r; });
+    await tick();
+    assert(answered === false,
+      'the popup is not told the target was set while the write is still out');
+    release();
+    const answer = await asking;
+    chrome.storage.local.set = realSet;
+    assert(answer?.ok === true, `and it is told once the write lands — got ${JSON.stringify(answer)}`);
+    assert(mockStorage['autoLoudnessSettings']?.targetLufs === -16, 'with the target stored');
+  }
+
+  section('Apply: the target is in hand before the gain is worked out');
+  {
+    // Writes an earlier case left in flight land on whatever map is there when
+    // they arrive, so this one lets them settle before laying down its own.
+    await tick();
+    await tick();
+    mockStorage['channelVolumes'] = { UCorder: { name: 'Order Ch', autoApplyLoudnessVideo: true } };
+    mockStorage['autoLoudnessSettings'] = { targetLufs: -24, displayUnit: '%' };
+    setURL('/watch', 'orderVid');
+    mockVideoEl = { id: 'order-video' };
+    mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCorder' };
+    ytcv._set('targetLufs', -18);
+    ytcv._set('_lastVideoId', 'orderVid');
+    ytcv._set('_lastProcessedVideo', null);
+    ytcv._set('_applyRunning', false);
+    ytcv._set('currentChannel', { id: 'UCorder', name: 'Order Ch', url: '' });
+    ytcv._set('currentChannelVideoId', 'orderVid');
+    ytcv._set('currentLoudnessVideoId', 'orderVid');
+    ytcv._set('currentLoudnessDb', -6);
+    ytcv._set('currentVideoType', 'video');
+    ytcv._set('currentAutoApplyLoudnessVideo', true);
+    ytcv._set('storageMigrated', true);
+    ytcv._set('storageSettled', true);
+    // Read before the retry that follows can put it right: the gain the apply
+    // itself worked out is the one this asks about.
+    await ytcv.applyVideoVolume();
+    console.log('  DEBUG', JSON.stringify({
+      type: ytcv.state.currentVideoType, loud: ytcv.state.currentLoudnessDb,
+      auto: ytcv.state.currentAutoApplyLoudnessVideo, gain: ytcv.state.currentGain,
+      ch: ytcv.state.currentChannel.id, migrated: ytcv.state.storageMigrated,
+      keys: Object.keys(mockStorage['channelVolumes'] || {}).join(','),
+      storeKeys: Object.keys(mockStorage).join(',')
+    }));
+    assert(ytcv.state.targetLufs === -24,
+      `the stored target is in hand when the apply returns (${ytcv.state.targetLufs})`);
+    assert(Math.abs(ytcv.state.currentGain - ytcv.calcGainFromLoudness(-6)) < 0.001,
+      `and the gain it applied was worked out from it (${ytcv.state.currentGain})`);
+    await tick();
+  }
+
+  section('Apply: the popup is told after the gain has been applied');
+  {
+    mockStorage['channelVolumes'] = { UCtold: { name: 'Told Ch', gainVideo: 0.35 } };
+    mockStorage['autoLoudnessSettings'] = { targetLufs: -18, displayUnit: '%' };
+    setURL('/watch', 'toldVid');
+    mockVideoEl = { id: 'told-video' };
+    mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCtold' };
+    ytcv._set('_lastVideoId', 'toldVid');
+    ytcv._set('_lastProcessedVideo', null);
+    ytcv._set('_applyRunning', false);
+    ytcv._set('currentChannel', { id: 'UCtold', name: 'Told Ch', url: '' });
+    ytcv._set('currentChannelVideoId', 'toldVid');
+    ytcv._set('currentLoudnessVideoId', 'toldVid');
+    ytcv._set('currentLoudnessDb', null);
+    ytcv._set('currentVideoType', 'video');
+    ytcv._set('currentAutoApplyLoudnessVideo', false);
+    ytcv._set('currentGain', 1.0);
+    ytcv.notifyPopup();
+    mockSentMessages.length = 0;
+    await ytcv.applyVideoVolume();
+    const told = mockSentMessages.filter(m => m?.type === 'stateChanged');
+    assert(told.length > 0, `the popup is told (${told.length})`);
+    assert(told[0]?.gain === 0.35,
+      `and what it is told is the gain now playing (${JSON.stringify(told[0]?.gain)})`);
+    await tick();
+  }
+
+  section('Apply: the fold is waited for before the video is taken up');
+  {
+    mockStorage = {
+      autoLoudnessSettings: { targetLufs: -18 },
+      channelVolumes: { UCfoldwait: { name: 'Fold Wait Ch', gainVideo: 0.45 } }
+    };
+    setURL('/watch', 'foldWaitVid');
+    mockVideoEl = { id: 'fold-wait-video' };
+    mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCfoldwait' };
+    ytcv._set('storageMigrated', false);
+    ytcv._set('storageSettled', true);
+    ytcv._set('_lastVideoId', '');
+    ytcv._set('_lastProcessedVideo', null);
+    ytcv._set('_applyRunning', false);
+    ytcv._set('currentChannel', { id: 'UCfoldwait', name: 'Fold Wait Ch', url: '' });
+    ytcv._set('currentGain', 1.0);
+    // The fold is held, so the apply cannot take the video up on the strength
+    // of a fold that happened to land first.
+    const realSend = chrome.runtime.sendMessage;
+    let releaseFold;
+    const heldFold = new Promise((resolve) => { releaseFold = resolve; });
+    chrome.runtime.sendMessage = (msg) =>
+      (msg?.type === 'store:migrateLegacyGains'
+        ? heldFold.then(() => realSend(msg))
+        : realSend(msg));
+    const applying = ytcv.triggerApply();
+    await tick();
+    assert(ytcv.state._lastProcessedVideo === null,
+      `the video is not taken up while the fold is still out (${ytcv.state._lastProcessedVideo})`);
+    releaseFold();
+    await applying;
+    chrome.runtime.sendMessage = realSend;
+    assert(ytcv.state.storageMigrated === true,
+      `the fold has landed by the time the apply returns (${ytcv.state.storageMigrated})`);
+    assert(ytcv.state._lastProcessedVideo === mockVideoEl,
+      'and the video was taken up in the same run');
+    await tick();
+  }
+
   // ── Summary ────────────────────────────────────────────────────────
 
   console.log(`\n${passed} passed, ${failed} failed`);
