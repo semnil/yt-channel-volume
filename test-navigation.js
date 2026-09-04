@@ -4492,6 +4492,91 @@ async function runTests() {
       'and it is still that gain once everything has settled');
   }
 
+  // ── The audio chain, and the overlay's place in the player ─────────
+
+  section('Audio chain: with no player element there is nothing to build on');
+  {
+    const videoBefore = mockVideoEl;
+    mockVideoEl = null;
+    ytcv._set('gainNode', null);
+    ytcv._set('sourceNode', null);
+    ytcv._set('connectedVideo', null);
+    ytcv._set('currentGain', 1.0);
+    ytcv.commitGain(1.6);
+    assert(ytcv.state.currentGain === 1.6,
+      `the gain asked for is what the extension holds (${ytcv.state.currentGain})`);
+    assert(ytcv.state.gainNode === null,
+      `and nothing is built on an element that is not there (${ytcv.state.gainNode})`);
+    assert(ytcv.state.connectedVideo === null, 'with no element taken up');
+    mockVideoEl = videoBefore;
+  }
+
+  section('Audio chain: a gain of exactly 1.0 builds nothing');
+  {
+    // Passthrough is the state the extension leaves the page in, and taking the
+    // element for it is what makes Live Caption flicker.
+    mockVideoEl = { id: 'passthrough-video' };
+    ytcv._set('gainNode', null);
+    ytcv._set('sourceNode', null);
+    ytcv._set('connectedVideo', null);
+    ytcv._set('currentGain', 1.35);
+    ytcv.commitGain(1.0);
+    assert(ytcv.state.currentGain === 1.0, 'the gain is passthrough');
+    assert(ytcv.state.gainNode === null,
+      `and the element is left alone (${ytcv.state.gainNode})`);
+    assert(ytcv.state.connectedVideo === null, 'with no element taken up for it');
+
+    // Any other gain does take it up, and from then on passthrough goes through
+    // the chain that is already there.
+    ytcv.commitGain(1.2);
+    assert(ytcv.state.gainNode !== null && ytcv.state.connectedVideo === mockVideoEl,
+      'a gain that is not passthrough takes the element up');
+    ytcv.commitGain(1.0);
+    assert(ytcv.state.gainNode.gain.value === 1.0,
+      `and passthrough then runs through the chain that exists (${ytcv.state.gainNode.gain.value})`);
+  }
+
+  section('Overlay: the player has no volume area yet');
+  {
+    const areaBefore = mockDOMElements['volumeArea'];
+    const area = mockElement('div');
+    mockDOMElements['volumeArea'] = area;
+    simulateStorageChange({
+      autoLoudnessSettings: { newValue: { targetLufs: -18, displayUnit: '%', showGainOverlay: true } }
+    });
+    await tick();
+    ytcv.commitGain(1.8);
+    assert(area.children.length === 1, `the overlay is in the player (${area.children.length})`);
+
+    // The player's own controls sit beside the overlay, and a redraw leaves it
+    // where it is rather than moving it to the end of the row.
+    const ownControl = mockElement('button');
+    area.appendChild(ownControl);
+    ytcv.commitGain(1.85);
+    assert(area.children.length === 2,
+      `the row holds the overlay and the player's own control (${area.children.length})`);
+    assert(area.children[0].textContent === '185%',
+      `with the overlay still first and reading the gain (${area.children[0].textContent})`);
+    assert(area.children[1] === ownControl, 'and the control after it');
+    area.removeChild(ownControl);
+
+    // The player is torn down: nothing to put it in, and the overlay that was
+    // up is left where it was rather than being moved into nothing.
+    mockDOMElements['volumeArea'] = null;
+    ytcv.commitGain(1.9);
+    assert(area.children.length === 1,
+      `with no volume area the overlay stays where it was (${area.children.length})`);
+    assert(area.children[0].textContent === '185%',
+      `with the reading it had when the player was there (${area.children[0].textContent})`);
+
+    simulateStorageChange({
+      autoLoudnessSettings: { newValue: { targetLufs: -18, displayUnit: '%', showGainOverlay: false } }
+    });
+    await tick();
+    ytcv.commitGain(1.0);
+    mockDOMElements['volumeArea'] = areaBefore;
+  }
+
   // ── Summary ────────────────────────────────────────────────────────
 
   console.log(`\n${passed} passed, ${failed} failed`);

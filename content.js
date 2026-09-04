@@ -1013,6 +1013,12 @@
           case 'storageSettled': storageSettled = val; break;
           case 'storageMigrated': storageMigrated = val; break;
           case 'currentLoudnessVideoId': currentLoudnessVideoId = val; break;
+          // The audio chain is built once per element and never taken down in
+          // production; a case that means to ask what building it does starts
+          // from nothing.
+          case 'gainNode': gainNode = val; break;
+          case 'sourceNode': sourceNode = val; break;
+          case 'connectedVideo': connectedVideo = val; break;
         }
       }
     };
