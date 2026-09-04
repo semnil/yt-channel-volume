@@ -552,7 +552,10 @@
   // the state that replaced it. Derived from the state itself, so there is no
   // counter to advance and none to forget.
   function currentGestureState() {
-    return currentChannel.id + '|' + currentVideoType;
+    // The video is part of it: a navigation within one channel changes what the
+    // popup is showing — the measurement above all — while the channel and the
+    // type stay as they were.
+    return currentChannel.id + '|' + currentVideoType + '|' + getUrlVideoId();
   }
 
   function getState() {
@@ -578,7 +581,10 @@
   function notifyPopup() {
     if (!isContextValid()) return;
     const state = getState();
-    const key = state.loudnessDb + '|' + state.gain + '|' + state.channel.id + '|' + state.channel.name + '|' + state.videoType + '|' + state.isLiveNow + '|' + state.autoApplyLoudnessVideo + '|' + state.autoApplyLoudnessLive;
+    // The state a gesture would be made against is part of the key: a video
+    // changing under the popup moves nothing else it shows, and the popup has
+    // to be given the state that replaced it or its next gesture is refused.
+    const key = state.appliesTo + '|' + state.loudnessDb + '|' + state.gain + '|' + state.channel.id + '|' + state.channel.name + '|' + state.videoType + '|' + state.isLiveNow + '|' + state.autoApplyLoudnessVideo + '|' + state.autoApplyLoudnessLive;
     if (key === _lastNotifiedState) return;
     _lastNotifiedState = key;
     chrome.runtime.sendMessage({ type: 'stateChanged', ...state }).catch(() => {});
@@ -779,6 +785,10 @@
     }
 
     if (msg.type === 'applyLoudness') {
+      if (msg.appliesTo !== currentGestureState()) {
+        sendResponse({ ok: false, reason: 'state moved' });
+        return true;
+      }
       if (isCurrentAutoApplyEnabled()) {
         sendResponse({ ok: false, reason: 'auto apply enabled' });
         return true;

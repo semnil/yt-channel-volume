@@ -1045,14 +1045,14 @@ async function runTests() {
   // Auto is doing the applying; the button must not write over it.
   ytcv._set('currentAutoApplyLoudnessVideo', true);
   ytcv._set('currentLoudnessDb', -6);
-  const whileAuto = await simulateRuntimeMessage({ type: 'applyLoudness' });
+  const whileAuto = await popupGesture({ type: 'applyLoudness' });
   assert(whileAuto?.ok === false && whileAuto?.reason === 'auto apply enabled',
     `with Auto on it is declined — got ${JSON.stringify(whileAuto)}`);
 
   // Auto off, but nothing measured to apply.
   ytcv._set('currentAutoApplyLoudnessVideo', false);
   ytcv._set('currentLoudnessDb', null);
-  const withoutLoudness = await simulateRuntimeMessage({ type: 'applyLoudness' });
+  const withoutLoudness = await popupGesture({ type: 'applyLoudness' });
   assert(withoutLoudness?.ok === false && withoutLoudness?.reason === 'no loudness data',
     `with nothing measured it is declined — got ${JSON.stringify(withoutLoudness)}`);
 
@@ -1061,7 +1061,7 @@ async function runTests() {
   ytcv._set('currentLoudnessDb', -6);
   ytcv._set('currentChannel', { id: '', name: '', url: '' });
   const gainBeforeIdless = ytcv.state.currentGain;
-  const withoutChannel = await simulateRuntimeMessage({ type: 'applyLoudness' });
+  const withoutChannel = await popupGesture({ type: 'applyLoudness' });
   await tick();
   assert(withoutChannel?.ok === false && withoutChannel?.reason === 'no loudness data',
     `with no channel known it is declined — got ${JSON.stringify(withoutChannel)}`);
@@ -1073,7 +1073,7 @@ async function runTests() {
   // And with none of the three in the way it goes through. Without this the
   // refusals above would hold for a handler that declined everything.
   ytcv._set('currentChannel', { id: 'UCapply', name: 'Apply Ch', url: 'https://y/UCapply' });
-  const applied = await simulateRuntimeMessage({ type: 'applyLoudness' });
+  const applied = await popupGesture({ type: 'applyLoudness' });
   await tick();
   assert(applied?.ok === true, `otherwise it applies — got ${JSON.stringify(applied)}`);
   assert(Math.abs(applied.gain - ytcv.calcGainFromLoudness(-6)) < 0.001,
@@ -1723,11 +1723,14 @@ async function runTests() {
   mockVideoEl = { id: 'owned-by-another-extension' };
   for (const message of [
     { type: 'applyLoudness' },
-    { type: 'setGain', channelId: 'UCthrows', gain: 0.3 },
+    { type: 'setGain', gain: 0.3 },
     { type: 'setGainLive', gain: 0.3 }
   ]) {
-    const reply = await simulateRuntimeMessage(message);
-    assert(reply?.ok === false, `${message.type} answers when the apply throws`);
+    // Made against the state in hand, so what refuses them is the throw and
+    // not a state that has moved.
+    const reply = await popupGesture(message);
+    assert(reply?.ok === false && reply?.reason !== 'state moved',
+      `${message.type} answers when the apply throws — got ${JSON.stringify(reply)}`);
   }
   throwingCtx.createMediaElementSource = realCreateForThrows;
   mockVideoEl = videoBeforeThrows;
@@ -2057,7 +2060,7 @@ async function runTests() {
   ytcv._set('currentLoudnessDb', -6);
   ytcv._set('targetLufs', -18);
   ytcv._set('currentAutoApplyLoudnessVideo', false);
-  const failedApply = await simulateRuntimeMessage({ type: 'applyLoudness' });
+  const failedApply = await popupGesture({ type: 'applyLoudness' });
   assert(failedApply?.ok === false,
     'a rejected "apply to channel" answers the popup instead of hanging');
   ytcv._set('currentLoudnessDb', null);
@@ -3895,7 +3898,7 @@ async function runTests() {
     throwingCtx.createMediaElementSource = () => { throw new Error('InvalidStateError'); };
     const videoBefore = mockVideoEl;
     mockVideoEl = { id: 'owned-elsewhere' };
-    const answer = await simulateRuntimeMessage({ type: 'applyLoudness' });
+    const answer = await popupGesture({ type: 'applyLoudness' });
     await tick();
     throwingCtx.createMediaElementSource = realCreate;
     mockVideoEl = videoBefore;
@@ -4938,6 +4941,83 @@ async function runTests() {
       `the element that replaced it is taken up (${ytcv.state._lastProcessedVideo?.id})`);
     assert(ytcv.state.currentGain === 0.55,
       `and the channel's gain is applied to it (${ytcv.state.currentGain})`);
+  }
+
+  section('Popup: Apply is a gesture made against a state as well');
+  {
+    mockStorage['channelVolumes'] = {
+      UCold: { name: 'Old Ch', gainVideo: 0.5, url: '' },
+      UCnew: { name: 'New Ch', gainVideo: 0.6, url: '' }
+    };
+    setURL('/watch', 'applyVidA');
+    ytcv._set('currentChannel', { id: 'UCold', name: 'Old Ch', url: '' });
+    ytcv._set('currentVideoType', 'video');
+    ytcv._set('currentLoudnessDb', -6);
+    ytcv._set('currentLoudnessVideoId', 'applyVidA');
+    ytcv._set('currentAutoApplyLoudnessVideo', false);
+    ytcv._set('currentGain', 0.5);
+    ytcv._set('targetLufs', -18);
+    ytcv._set('storageMigrated', true);
+    const drawnFrom = (await simulateRuntimeMessage({ type: 'getState' })).appliesTo;
+
+    // The tab moves to another channel before the click is delivered.
+    setURL('/watch', 'applyVidB');
+    ytcv._set('currentChannel', { id: 'UCnew', name: 'New Ch', url: '' });
+    ytcv._set('currentLoudnessDb', -4);
+    ytcv._set('currentLoudnessVideoId', 'applyVidB');
+    ytcv._set('currentGain', 0.6);
+    const stale = await simulateRuntimeMessage({ type: 'applyLoudness', appliesTo: drawnFrom });
+    await tick();
+    assert(stale?.ok === false && stale?.reason === 'state moved',
+      `an Apply made against the state before is refused — got ${JSON.stringify(stale)}`);
+    assert(mockStorage['channelVolumes']['UCnew'].gainVideo === 0.6,
+      `the channel now being watched is not written (${mockStorage['channelVolumes']['UCnew'].gainVideo})`);
+    assert(mockStorage['channelVolumes']['UCold'].gainVideo === 0.5,
+      'and neither is the one the popup was drawn from');
+    assert(ytcv.state.currentGain === 0.6,
+      `with the level left where it was (${ytcv.state.currentGain})`);
+
+    // The same channel and type, a different video: the measurement on screen
+    // belongs to the video that was playing, not to this one.
+    const drawnOnB = (await simulateRuntimeMessage({ type: 'getState' })).appliesTo;
+    setURL('/watch', 'applyVidC');
+    ytcv._set('currentLoudnessDb', -2);
+    ytcv._set('currentLoudnessVideoId', 'applyVidC');
+    const otherVideo = await simulateRuntimeMessage({ type: 'applyLoudness', appliesTo: drawnOnB });
+    await tick();
+    assert(otherVideo?.ok === false && otherVideo?.reason === 'state moved',
+      `an Apply for another video of the same channel is refused — got ${JSON.stringify(otherVideo)}`);
+    assert(mockStorage['channelVolumes']['UCnew'].gainVideo === 0.6,
+      `with nothing written for it (${mockStorage['channelVolumes']['UCnew'].gainVideo})`);
+
+    // Made against the state in hand, it applies.
+    const now = await popupGesture({ type: 'applyLoudness' });
+    await tick();
+    assert(now?.ok === true, `the Apply made against this state goes through — got ${JSON.stringify(now)}`);
+    assert(Math.abs(mockStorage['channelVolumes']['UCnew'].gainVideo - ytcv.calcGainFromLoudness(-2)) < 0.001,
+      `and saves the gain the measurement asks for (${mockStorage['channelVolumes']['UCnew'].gainVideo})`);
+  }
+
+  section('Popup: a video changing on its own is a new state to be told about');
+  {
+    setURL('/watch', 'tokenVidA');
+    mockStorage['channelVolumes'] = { UCtoken: { name: 'Token Ch', gainVideo: 0.5 } };
+    ytcv._set('currentChannel', { id: 'UCtoken', name: 'Token Ch', url: '' });
+    ytcv._set('currentVideoType', 'video');
+    ytcv._set('currentLoudnessDb', -6);
+    ytcv._set('currentLoudnessVideoId', 'tokenVidA');
+    ytcv._set('currentGain', 0.5);
+    ytcv.notifyPopup();
+    mockSentMessages.length = 0;
+    // Everything the popup shows is the same; only the video is another one.
+    setURL('/watch', 'tokenVidB');
+    ytcv._set('currentLoudnessVideoId', 'tokenVidB');
+    ytcv.notifyPopup();
+    const told = mockSentMessages.filter(m => m?.type === 'stateChanged');
+    assert(told.length === 1,
+      `the popup is told the state moved (${told.length})`);
+    assert(told[0]?.appliesTo !== undefined && told[0]?.appliesTo.includes('tokenVidB'),
+      `and what it is told names the video now playing (${told[0]?.appliesTo})`);
   }
 
   // ── Summary ────────────────────────────────────────────────────────

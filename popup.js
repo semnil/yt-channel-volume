@@ -193,12 +193,12 @@
   });
 
   applyBtn.addEventListener('click', () => {
-    sendMsg({ type: 'applyLoudness' }).then(resp => {
-      if (resp?.ok) {
-        sendMsg({ type: 'getState' }).then(state => {
-          if (state) updateUI(state);
-        }).catch(() => {});
-      }
+    sendMsg({ type: 'applyLoudness', appliesTo: currentAppliesTo }).then(() => {
+      // Whether it went through or was refused for a state that has moved, what
+      // is on screen came from before the gesture and is read again.
+      sendMsg({ type: 'getState' }).then(state => {
+        if (state) updateUI(state);
+      }).catch(() => {});
     }).catch(() => {});
   });
 
