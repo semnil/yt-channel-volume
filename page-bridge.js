@@ -108,35 +108,27 @@
   // ── Method 3: Extract from ytplayer config (SPA navigation) ────────
   // YouTube stores player data in DOM element's data property on SPA nav.
 
-  function extractFromYtPlayer() {
+  // The page holds a player response in two places, and they can disagree: the
+  // element keeps the one the page was built with, the player the one it is
+  // running now. They are returned in that order — oldest first — and only for
+  // the video the URL names.
+  function currentPlayerResponses() {
+    const found = [];
     try {
       const flexy = document.querySelector('ytd-watch-flexy');
-      if (flexy) {
-        const pr = flexy.__data?.playerResponse || flexy.playerResponse;
-        if (pr && isCurrentVideo(pr)) {
-          return extractFromPlayerResponse(pr);
-        }
-      }
+      const pr = flexy?.__data?.playerResponse || flexy?.playerResponse;
+      if (pr) found.push(pr);
     } catch (_) {}
 
     try {
       const player = document.getElementById('movie_player');
       if (player && typeof player.getPlayerResponse === 'function') {
         const pr = player.getPlayerResponse();
-        if (pr && isCurrentVideo(pr)) {
-          return extractFromPlayerResponse(pr);
-        }
+        if (pr) found.push(pr);
       }
     } catch (_) {}
 
-    return {
-      db: null,
-      isLiveContent: false,
-      isLiveNow: false,
-      videoId: currentVideoId(),
-      channelId: '',
-      author: ''
-    };
+    return found.filter(isCurrentVideo);
   }
 
   // ── On-demand extraction (content script can request) ──────────────
@@ -154,6 +146,8 @@
       author: ''
     };
 
+    const onPage = currentPlayerResponses();
+
     const resp = _capturedResp || window.ytInitialPlayerResponse;
     if (resp && isCurrentVideo(resp)) {
       result = extractFromPlayerResponse(resp);
@@ -161,16 +155,18 @@
 
     // Only fall back if no useful data was extracted at all
     if (result.db === null && !result.channelId) {
-      result = extractFromYtPlayer();
-    } else {
-      // _capturedResp reflects page-load state; isLiveNow may have changed
-      // since then (e.g. waiting → live). movie_player holds the current
-      // state, so prefer its isLiveNow when available.
-      const live = extractFromYtPlayer();
-      if (live.isLiveNow && !result.isLiveNow) {
-        result.isLiveNow = true;
-      }
+      if (onPage.length) result = extractFromPlayerResponse(onPage[0]);
     }
+
+    // Whichever answer the level came from, whether a stream is on air right
+    // now is taken from the most current answer that names this video: the
+    // player over the element, the element over the one kept from load. Taking
+    // it from any of them that says yes would leave the badge up after the
+    // stream has ended, since only the player knows that it has.
+    const newest = onPage.length
+      ? onPage[onPage.length - 1]
+      : (resp && isCurrentVideo(resp) ? resp : null);
+    result.isLiveNow = !!newest?.videoDetails?.isLive;
 
     postResult(result, 'request');
   });
