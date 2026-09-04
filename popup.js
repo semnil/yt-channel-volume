@@ -30,6 +30,10 @@
   const reloadNeededEl = document.getElementById('reloadNeeded');
 
   let currentChannel = { id: '', name: '' };
+  // What the state on screen was when it was drawn. It goes back with every
+  // gesture, so a gesture made against a state the tab has left is refused
+  // rather than applied to the one that replaced it.
+  let currentAppliesTo = '';
   let activeTabId = null;
   let hasLoudness = false;
   let currentLoudnessDb = null;
@@ -100,10 +104,12 @@
   function updateUI(state) {
     if (state.channel?.id) {
       currentChannel = state.channel;
+      currentAppliesTo = state.appliesTo || '';
       channelNameEl.textContent = state.channel.name;
       channelNameEl.classList.remove('empty');
     } else {
       currentChannel = { id: '', name: '' };
+      currentAppliesTo = '';
       channelNameEl.textContent = msg('channelNotDetected');
       channelNameEl.classList.add('empty');
     }
@@ -220,8 +226,7 @@
     toggle.disabled = true;
     sendMsg({
       type: 'setAutoApplyLoudness',
-      channelId: currentChannel.id,
-      videoType,
+      appliesTo: currentAppliesTo,
       enabled
     }).then(resp => {
       if (resp?.ok) {
@@ -255,6 +260,7 @@
     if (currentChannel.id) {
       sendManualGain({
         type: 'setGainLive',
+        appliesTo: currentAppliesTo,
         gain
       });
     }
@@ -265,7 +271,7 @@
     if (currentChannel.id) {
       sendManualGain({
         type: 'setGain',
-        channelId: currentChannel.id,
+        appliesTo: currentAppliesTo,
         gain: lastGain
       });
     }
@@ -283,7 +289,7 @@
       if (currentChannel.id) {
         sendManualGain({
           type: 'setGain',
-          channelId: currentChannel.id,
+          appliesTo: currentAppliesTo,
           gain
         });
       }

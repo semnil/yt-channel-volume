@@ -464,6 +464,13 @@ const playerResponse = (over = {}) => ({
   }
 });
 
+// A gesture as the popup makes one: it carries the state the popup was drawn
+// from, which content.js hands out with every answer.
+async function popupGesture(msg) {
+  const state = await simulateRuntimeMessage({ type: 'getState' });
+  return simulateRuntimeMessage({ appliesTo: state?.appliesTo, ...msg });
+}
+
 // ── Tests ────────────────────────────────────────────────────────────
 
 async function runTests() {
@@ -1204,7 +1211,7 @@ async function runTests() {
     'same-channel live without LUFS loads the stored channel gain');
 
   section('Auto LUFS: switching Auto off keeps the level Auto was playing');
-  const autoOffResponse = await simulateRuntimeMessage({
+  const autoOffResponse = await popupGesture({
     type: 'setAutoApplyLoudness',
     channelId: 'UCsharedLive',
     videoType: 'live',
@@ -1340,7 +1347,7 @@ async function runTests() {
   ytcv._set('currentVideoType', 'live');
   ytcv._set('currentLoudnessDb', null);
   ytcv._set('currentAutoApplyLoudnessLive', true);
-  const manualGainResponse = await simulateRuntimeMessage({
+  const manualGainResponse = await popupGesture({
     type: 'setGain',
     channelId: 'UCsharedLive',
     gain: 0.6
@@ -1379,7 +1386,7 @@ async function runTests() {
   const storedDetectedManualBefore = JSON.stringify(
     mockStorage['channelVolumes'][detectedManualChannelId]
   );
-  const liveManualResponse = await simulateRuntimeMessage({
+  const liveManualResponse = await popupGesture({
     type: 'setGainLive',
     gain: 3.0
   });
@@ -1387,7 +1394,7 @@ async function runTests() {
     'real-time manual gain is rejected while detected loudness controls Auto');
   assert(ytcv.state.currentGain === detectedAutoGain,
     'rejected real-time gain does not replace the calculated Auto gain');
-  const savedManualResponse = await simulateRuntimeMessage({
+  const savedManualResponse = await popupGesture({
     type: 'setGain',
     channelId: detectedManualChannelId,
     gain: 3.0
@@ -1631,7 +1638,7 @@ async function runTests() {
   ytcv._set('defaultAutoApplyLoudnessLive', false);
   ytcv._set('currentAutoApplyLoudnessVideo', false);
   ytcv._set('currentAutoApplyLoudnessLive', false);
-  await simulateRuntimeMessage({
+  await popupGesture({
     type: 'setGain',
     channelId: 'UCdefaultAuto',
     gain: 0.45
@@ -1766,9 +1773,9 @@ async function runTests() {
   chrome.storage.local.set = () => Promise.reject(new Error('storage write failed'));
   // The slider previews the new level through setGainLive before the change
   // event stores it, so "the level before this save" is already the preview.
-  await simulateRuntimeMessage({ type: 'setGainLive', gain: 0.3 });
+  await popupGesture({ type: 'setGainLive', gain: 0.3 });
   assert(ytcv.state.currentGain === 0.3, 'the preview is playing');
-  const rejectedSave = await simulateRuntimeMessage({
+  const rejectedSave = await popupGesture({
     type: 'setGain', channelId: 'UCagree', gain: 0.3
   });
   chrome.storage.local.set = realSetForAgree;
@@ -1948,7 +1955,7 @@ async function runTests() {
 
   // A manual save from this tab must not pin a channel that is on Auto.
   ytcv._set('currentLoudnessDb', null);
-  await simulateRuntimeMessage({ type: 'setGain', channelId: 'UCshared', gain: 0.7 });
+  await popupGesture({ type: 'setGain', channelId: 'UCshared', gain: 0.7 });
   assert(mockStorage['channelVolumes']['UCshared'].autoApplyLoudnessVideo === true,
     'a save made after adopting the mark records Auto as on, not off');
 
@@ -2039,11 +2046,11 @@ async function runTests() {
   ytcv._set('currentAutoApplyLoudnessVideo', false);
   const storageSetBeforeFailure = chrome.storage.local.set;
   chrome.storage.local.set = () => Promise.reject(new Error('storage write failed'));
-  const failedGain = await simulateRuntimeMessage({
+  const failedGain = await popupGesture({
     type: 'setGain', channelId: 'UCwritefail', gain: 0.3
   });
   assert(failedGain?.ok === false, 'a rejected manual save answers the popup instead of hanging');
-  const failedToggle = await simulateRuntimeMessage({
+  const failedToggle = await popupGesture({
     type: 'setAutoApplyLoudness', channelId: 'UCwritefail', videoType: 'video', enabled: true
   });
   assert(failedToggle?.ok === false, 'a rejected Auto toggle answers the popup instead of hanging');
@@ -2085,7 +2092,7 @@ async function runTests() {
   const videoBeforeThrow = mockVideoEl;
   mockVideoEl = { id: 'contested-video' };
   ytcv._set('currentLoudnessDb', -6);
-  const failedApplyToggle = await simulateRuntimeMessage({
+  const failedApplyToggle = await popupGesture({
     type: 'setAutoApplyLoudness', channelId: 'UCwritefail', videoType: 'video', enabled: true
   });
   assert(failedApplyToggle?.ok === false,
@@ -2093,12 +2100,12 @@ async function runTests() {
   contestedCtx.createMediaElementSource = realCreateSource;
   mockVideoEl = videoBeforeThrow;
   ytcv._set('currentLoudnessDb', null);
-  await simulateRuntimeMessage({
+  await popupGesture({
     type: 'setAutoApplyLoudness', channelId: 'UCwritefail', videoType: 'video', enabled: false
   });
 
   // One rejection must not poison the queue every later save runs through.
-  const recovered = await simulateRuntimeMessage({
+  const recovered = await popupGesture({
     type: 'setGain', channelId: 'UCwritefail', gain: 0.44
   });
   assert(recovered?.ok === true, 'the next save succeeds after a rejected write');
@@ -2115,7 +2122,7 @@ async function runTests() {
   assert(ytcv.state.currentAutoApplyLoudnessLive === true, 'the channel inherits Auto ON');
   // Auto is on but this live stream has no LUFS, so the slider is live and the
   // user adjusts the level Auto falls back to.
-  await simulateRuntimeMessage({ type: 'setGain', channelId: 'UCinherit', gain: 0.55 });
+  await popupGesture({ type: 'setGain', channelId: 'UCinherit', gain: 0.55 });
   assert(mockStorage['channelVolumes']['UCinherit'].autoApplyLoudnessLive === true,
     'adjusting the fallback level records the Auto state it was made under');
   ytcv._set('defaultAutoApplyLoudnessLive', false);
@@ -2372,7 +2379,7 @@ async function runTests() {
   ytcv._set('currentVideoType', 'video');
   ytcv._set('currentLoudnessDb', null);
   mockDOMElements['channelName'] = { textContent: 'Stale Channel A' };
-  const toggleResponse = await simulateRuntimeMessage({
+  const toggleResponse = await popupGesture({
     type: 'setAutoApplyLoudness',
     channelId: 'UCchannelB',
     enabled: true,
@@ -2390,7 +2397,7 @@ async function runTests() {
     url: 'https://www.youtube.com/channel/UCchannelC'
   });
   mockDOMElements['channelName'] = { textContent: 'Channel C' };
-  const stubToggleResponse = await simulateRuntimeMessage({
+  const stubToggleResponse = await popupGesture({
     type: 'setAutoApplyLoudness',
     channelId: 'UCchannelC',
     enabled: false,
@@ -3673,33 +3680,164 @@ async function runTests() {
       `a message of another kind is declined rather than answered (${JSON.stringify(answer)})`);
   }
 
-  section('Popup: a gesture meant for another channel');
+  section('Popup: a gesture made against a state the tab has left');
   {
-    mockStorage['channelVolumes'] = { UChere: { name: 'Here Ch', gainVideo: 0.5 } };
+    mockStorage['channelVolumes'] = {
+      UChere: { name: 'Here Ch', gainVideo: 0.5, url: 'https://y/UChere' },
+      UCgone: { name: 'Gone Ch', gainVideo: 0.9, url: 'https://y/UCgone' }
+    };
     setURL('/watch', 'mismatchVid');
-    ytcv._set('currentChannel', { id: 'UChere', name: 'Here Ch', url: '' });
+    ytcv._set('currentChannel', { id: 'UChere', name: 'Here Ch', url: 'https://y/UChere' });
     ytcv._set('currentVideoType', 'video');
     ytcv._set('currentGain', 0.5);
+    ytcv._set('currentAutoApplyLoudnessVideo', false);
+    ytcv._set('currentLoudnessDb', null);
     ytcv._set('storageMigrated', true);
-    const answer = await simulateRuntimeMessage({
-      type: 'setAutoApplyLoudness', channelId: 'UCgone', enabled: true, videoType: 'video'
-    });
-    await tick();
-    assert(answer?.ok === false && answer?.reason === 'channel mismatch',
-      `an Auto toggle for another channel is refused — got ${JSON.stringify(answer)}`);
-    assert(!('UCgone' in mockStorage['channelVolumes']),
-      'and nothing is written for the channel the popup named');
+    // What the popup was drawn from before the tab moved on.
+    const stale = 'UCgone|video';
 
-    // The same toggle with no channel detected at all.
-    ytcv._set('currentChannel', { id: '', name: '', url: '' });
-    const nameless = await simulateRuntimeMessage({
-      type: 'setAutoApplyLoudness', channelId: '', enabled: true, videoType: 'video'
+    const live = await simulateRuntimeMessage({ type: 'setGainLive', appliesTo: stale, gain: 0.2 });
+    assert(live?.ok === false && live?.reason === 'state moved',
+      `the preview is refused — got ${JSON.stringify(live)}`);
+    assert(ytcv.state.currentGain === 0.5,
+      `so the level never moves for it (${ytcv.state.currentGain})`);
+
+    const saved = await simulateRuntimeMessage({ type: 'setGain', appliesTo: stale, gain: 0.2 });
+    await tick();
+    assert(saved?.ok === false && saved?.reason === 'state moved',
+      `and the save with it — got ${JSON.stringify(saved)}`);
+    assert(mockStorage['channelVolumes']['UCgone'].gainVideo === 0.9,
+      `the channel the popup was drawn from is untouched (${mockStorage['channelVolumes']['UCgone'].gainVideo})`);
+    assert(mockStorage['channelVolumes']['UChere'].gainVideo === 0.5,
+      'and so is the one being watched');
+    assert(ytcv.state.currentGain === 0.5,
+      `with the level left where storage has it (${ytcv.state.currentGain})`);
+
+    const toggled = await simulateRuntimeMessage({
+      type: 'setAutoApplyLoudness', appliesTo: stale, enabled: true
     });
     await tick();
-    assert(nameless?.ok === false && nameless?.reason === 'channel mismatch',
-      `with no channel to save under it is refused as well — got ${JSON.stringify(nameless)}`);
-    assert(ytcv.state.currentGain === 0.5,
-      `and the gain that is playing is untouched throughout (${ytcv.state.currentGain})`);
+    assert(toggled?.ok === false && toggled?.reason === 'state moved',
+      `an Auto toggle from that state is refused too — got ${JSON.stringify(toggled)}`);
+    assert(!('autoApplyLoudnessVideo' in mockStorage['channelVolumes']['UCgone']),
+      'and no Auto state is pinned on the channel it named');
+
+    // A gesture carrying no state at all — a popup that never read one.
+    const nameless = await simulateRuntimeMessage({ type: 'setGain', gain: 0.2 });
+    await tick();
+    assert(nameless?.ok === false && nameless?.reason === 'state moved',
+      `a gesture carrying no state is refused — got ${JSON.stringify(nameless)}`);
+
+    // The same gesture, carrying the state the tab is actually in.
+    const now = await popupGesture({ type: 'setGain', gain: 0.2 });
+    await tick();
+    assert(now?.ok === true, `the gesture made against this state goes through — got ${JSON.stringify(now)}`);
+    assert(mockStorage['channelVolumes']['UChere'].gainVideo === 0.2,
+      `and it saves under the channel being watched (${mockStorage['channelVolumes']['UChere'].gainVideo})`);
+    assert(mockStorage['channelVolumes']['UChere'].name === 'Here Ch',
+      'keeping its own name');
+    assert(mockStorage['channelVolumes']['UCgone'].name === 'Gone Ch',
+      'and leaving the other one its own');
+  }
+
+  section('Popup: a state captured before the tab moved, replayed after');
+  {
+    mockStorage['channelVolumes'] = {
+      UCwas: { name: 'Was Ch', gainVideo: 0.4, url: '' },
+      UCnow: { name: 'Now Ch', gainVideo: 0.7, url: '' }
+    };
+    setURL('/watch', 'replayVid');
+    ytcv._set('currentChannel', { id: 'UCwas', name: 'Was Ch', url: '' });
+    ytcv._set('currentVideoType', 'video');
+    ytcv._set('currentGain', 0.4);
+    ytcv._set('currentAutoApplyLoudnessVideo', false);
+    ytcv._set('currentLoudnessDb', null);
+    ytcv._set('storageMigrated', true);
+    // The popup is drawn, and the slider is dragged while that state holds.
+    const drawnFrom = (await simulateRuntimeMessage({ type: 'getState' })).appliesTo;
+    const preview = await simulateRuntimeMessage({ type: 'setGainLive', appliesTo: drawnFrom, gain: 0.15 });
+    assert(preview?.ok === true, `the preview goes through while the state holds — got ${JSON.stringify(preview)}`);
+    assert(ytcv.state.currentGain === 0.15, 'and the level follows the slider');
+
+    // The tab moves to another channel before the slider is released.
+    ytcv._set('currentChannel', { id: 'UCnow', name: 'Now Ch', url: '' });
+    const released = await simulateRuntimeMessage({ type: 'setGain', appliesTo: drawnFrom, gain: 0.15 });
+    await tick();
+    assert(released?.ok === false && released?.reason === 'state moved',
+      `the release is refused — got ${JSON.stringify(released)}`);
+    assert(ytcv.state.currentGain === 0.7,
+      `and the level goes back to what storage has for the channel now playing (${ytcv.state.currentGain})`);
+    assert(mockStorage['channelVolumes']['UCwas'].gainVideo === 0.4,
+      'with nothing written for the channel the popup was drawn from');
+    assert(mockStorage['channelVolumes']['UCnow'].gainVideo === 0.7,
+      'and nothing for the one being watched');
+  }
+
+  section('Popup: the same channel under the other type is another state');
+  {
+    mockStorage['channelVolumes'] = { UCswap: { name: 'Swap Ch', gainVideo: 0.5, gainLive: 0.9 } };
+    setURL('/watch', 'swapVid');
+    ytcv._set('currentChannel', { id: 'UCswap', name: 'Swap Ch', url: '' });
+    ytcv._set('currentVideoType', 'video');
+    ytcv._set('currentGain', 0.5);
+    ytcv._set('currentAutoApplyLoudnessVideo', false);
+    ytcv._set('currentAutoApplyLoudnessLive', false);
+    ytcv._set('currentLoudnessDb', null);
+    const drawnOnVideo = (await simulateRuntimeMessage({ type: 'getState' })).appliesTo;
+    // The bridge says this is a stream after all, and the popup's gesture
+    // arrives afterwards.
+    ytcv._set('currentVideoType', 'live');
+    const late = await simulateRuntimeMessage({ type: 'setGain', appliesTo: drawnOnVideo, gain: 0.25 });
+    await tick();
+    assert(late?.ok === false && late?.reason === 'state moved',
+      `a gesture made under the other type is refused — got ${JSON.stringify(late)}`);
+    assert(mockStorage['channelVolumes']['UCswap'].gainVideo === 0.5
+      && mockStorage['channelVolumes']['UCswap'].gainLive === 0.9,
+      'and neither slot is written');
+  }
+
+  section('Popup: another channel under the same type is another state');
+  {
+    mockStorage['channelVolumes'] = {
+      UCleft: { name: 'Left Ch', gainVideo: 0.4 },
+      UCstay: { name: 'Stay Ch', gainVideo: 0.6 }
+    };
+    setURL('/watch', 'sameTypeVid');
+    ytcv._set('currentChannel', { id: 'UCleft', name: 'Left Ch', url: '' });
+    ytcv._set('currentVideoType', 'video');
+    ytcv._set('currentGain', 0.4);
+    ytcv._set('currentAutoApplyLoudnessVideo', false);
+    const drawnOnLeft = (await simulateRuntimeMessage({ type: 'getState' })).appliesTo;
+    ytcv._set('currentChannel', { id: 'UCstay', name: 'Stay Ch', url: '' });
+    const late = await simulateRuntimeMessage({ type: 'setGain', appliesTo: drawnOnLeft, gain: 0.25 });
+    await tick();
+    assert(late?.ok === false && late?.reason === 'state moved',
+      `a gesture made on another channel of the same type is refused — got ${JSON.stringify(late)}`);
+    assert(mockStorage['channelVolumes']['UCleft'].gainVideo === 0.4
+      && mockStorage['channelVolumes']['UCstay'].gainVideo === 0.6,
+      'and neither channel is written');
+  }
+
+  section('Popup: the state a gesture is made against names the type as well');
+  {
+    mockStorage['channelVolumes'] = { UCtypes: { name: 'Types Ch', gainVideo: 0.5, gainLive: 0.9 } };
+    setURL('/watch', 'typeVid');
+    ytcv._set('currentChannel', { id: 'UCtypes', name: 'Types Ch', url: '' });
+    ytcv._set('currentVideoType', 'live');
+    ytcv._set('currentGain', 0.9);
+    ytcv._set('currentAutoApplyLoudnessLive', false);
+    ytcv._set('currentLoudnessDb', null);
+    // The popup was drawn while the same channel was playing a video.
+    const asVideo = await simulateRuntimeMessage({
+      type: 'setGain', appliesTo: 'UCtypes|video', gain: 0.25
+    });
+    await tick();
+    assert(asVideo?.ok === false && asVideo?.reason === 'state moved',
+      `a gesture for the other type is refused — got ${JSON.stringify(asVideo)}`);
+    assert(mockStorage['channelVolumes']['UCtypes'].gainVideo === 0.5,
+      `the type it was made for keeps its gain (${mockStorage['channelVolumes']['UCtypes'].gainVideo})`);
+    assert(mockStorage['channelVolumes']['UCtypes'].gainLive === 0.9,
+      'and the type being watched keeps its own');
   }
 
   section('Popup on open: what counts as a video it has not applied yet');

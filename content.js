@@ -552,11 +552,20 @@
     });
   }
 
+  // What a gesture from the popup was made against. The popup echoes it back
+  // with the gesture, and a gesture whose state has moved on is not applied to
+  // the state that replaced it. Derived from the state itself, so there is no
+  // counter to advance and none to forget.
+  function currentGestureState() {
+    return currentChannel.id + '|' + currentVideoType;
+  }
+
   function getState() {
     const contentLufs = currentLoudnessDb !== null
       ? YT_REFERENCE_LUFS + currentLoudnessDb
       : null;
     return {
+      appliesTo: currentGestureState(),
       channel: currentChannel,
       gain: currentGain,
       loudnessDb: currentLoudnessDb,
@@ -802,6 +811,10 @@
     }
 
     if (msg.type === 'setGainLive') {
+      if (msg.appliesTo !== currentGestureState()) {
+        sendResponse({ ok: false, reason: 'state moved' });
+        return true;
+      }
       if (isCurrentManualGainLocked()) {
         sendResponse({ ok: false, reason: 'auto apply controls current gain' });
         return true;
@@ -812,14 +825,21 @@
     }
 
     if (msg.type === 'setGain') {
+      if (msg.appliesTo !== currentGestureState()) {
+        // The preview may have moved the level while the state still held, so
+        // the level goes back to what storage has for the state now in hand.
+        restoreGainAfterFailedSave().then(() =>
+          sendResponse({ ok: false, reason: 'state moved' }));
+        return true;
+      }
       if (isCurrentManualGainLocked()) {
         sendResponse({ ok: false, reason: 'auto apply controls current gain' });
         return true;
       }
-      const { channelId, gain } = msg;
+      const { gain } = msg;
       fillCurrentChannelNameFromDomFallback();
       commitGain(gain);
-      saveManualChannelGain(channelId, currentChannel.name, gain, currentVideoType, currentChannel.url).then(() => {
+      saveManualChannelGain(currentChannel.id, currentChannel.name, gain, currentVideoType, currentChannel.url).then(() => {
         notifyPopup();
         sendResponse({ ok: true });
       }).catch(err => {
@@ -846,11 +866,11 @@
     }
 
     if (msg.type === 'setAutoApplyLoudness') {
-      if (!currentChannel.id || msg.channelId !== currentChannel.id) {
-        sendResponse({ ok: false, reason: 'channel mismatch' });
+      if (!currentChannel.id || msg.appliesTo !== currentGestureState()) {
+        sendResponse({ ok: false, reason: 'state moved' });
         return true;
       }
-      const videoType = msg.videoType === 'live' ? 'live' : 'video';
+      const videoType = currentVideoType;
       fillCurrentChannelNameFromDomFallback();
       saveChannelAutoApply(
         currentChannel.id,
