@@ -907,9 +907,6 @@ async function runTests() {
   await tick();
   assert(Math.abs(ytcv.state.currentGain - 1.0) < 0.001, 'new target applied immediately');
 
-  // setTargetLufs answers from a .then, so it is one of the handlers that has
-  // to keep the port open. No test drove it at all — the whole handler, its
-  // save and its answer, was reached by nothing.
   // The gain overlay: five branches of updateGainOverlay that no case reached,
   // because the DOM mock could not hand it a volume area to draw into. Driven
   // through commitGain, which is the production path that redraws it — the
@@ -1097,21 +1094,6 @@ async function runTests() {
   ytcv._set('currentLoudnessDb', applyLoudnessBefore);
   ytcv._set('currentChannel', applyChannelBefore);
 
-  section('Auto LUFS: the popup sets Target LUFS');
-  ytcv._set('currentLoudnessDb', -6);
-  const settingsBefore = mockStorage['autoLoudnessSettings'];
-  const targetAnswer = await simulateRuntimeMessage({ type: 'setTargetLufs', value: -14 });
-  await tick();
-  assert(targetAnswer?.ok === true,
-    `the popup is answered — got ${JSON.stringify(targetAnswer)}`);
-  assert(mockStorage['autoLoudnessSettings']?.targetLufs === -14,
-    'and the target it asked for is the one stored');
-  assert(ytcv.state.targetLufs === -14, 'and the one the page is working from');
-  // Without this the answer above could come from a handler that stored
-  // nothing, since the value it was given is the value it was already at.
-  assert(settingsBefore?.targetLufs !== -14,
-    'the value asked for is not the one it already held');
-  ytcv._set('currentLoudnessDb', null);
 
   section('Auto LUFS: disabling restores saved channel gain');
   const manualEntry = { name: 'Auto Ch', gainVideo: 0.4 };
@@ -3317,9 +3299,9 @@ async function runTests() {
     assert(ytcv.state.targetLufs === -18, 'the target the page is working from is left as it was');
   }
 
-  // The settings are read on every apply and written when the popup moves the
-  // target; after a reload neither may touch storage.
-  section('Extension reload: the settings are neither read nor written');
+  // The settings are read on every apply; after a reload the apply may touch
+  // storage in neither direction, and the popup is still owed an answer.
+  section('Extension reload: an apply reads nothing and the popup is answered');
   {
     setURL('/watch', 'quietVid');
     mockVideoEl = { id: 'quiet-video' };
@@ -3334,14 +3316,15 @@ async function runTests() {
     chrome.storage.local.set = (obj) => { writes += 1; return realSet(obj); };
     chrome.runtime.id = undefined;
     await ytcv.applyVideoVolume();
-    const answer = await simulateRuntimeMessage({ type: 'setTargetLufs', value: -14 });
+    const answer = await simulateRuntimeMessage({ type: 'getState' });
     await tick();
     chrome.storage.local.get = realGet;
     chrome.storage.local.set = realSet;
     chrome.runtime.id = idBefore;
     assert(reads === 0, `an apply after a reload reads nothing (${reads})`);
-    assert(writes === 0, `and the target the popup asked for is not written (${writes})`);
-    assert(answer?.ok === true, `while the popup is still answered (${JSON.stringify(answer)})`);
+    assert(writes === 0, `and writes nothing either (${writes})`);
+    assert(answer?.appliesTo !== undefined,
+      `while the popup is still answered (${JSON.stringify(answer)})`);
     assert(ytcv.state.targetLufs === -18,
       `and the target in hand is left as it was (${ytcv.state.targetLufs})`);
   }
@@ -4057,48 +4040,6 @@ async function runTests() {
 
   // ── Waiting for what the next step needs ───────────────────────────
   // Dropping an await leaves the suite green in six places, and one of those
-  // mutants reached a commit here: the level, the settings and the popup all
-  // end up right a tick later, so only the order within the step shows it.
-
-  section('Settings: a write keeps the settings it was not asked about');
-  {
-    mockStorage['autoLoudnessSettings'] = {
-      targetLufs: -20,
-      displayUnit: 'dB',
-      showGainOverlay: true,
-      autoApplyLoudnessVideoDefault: true
-    };
-    ytcv._set('targetLufs', -20);
-    const answer = await simulateRuntimeMessage({ type: 'setTargetLufs', value: -14 });
-    await tick();
-    const stored = mockStorage['autoLoudnessSettings'];
-    assert(answer?.ok === true, `the popup is answered — got ${JSON.stringify(answer)}`);
-    assert(stored?.targetLufs === -14, `the target it asked for is stored (${stored?.targetLufs})`);
-    assert(stored?.displayUnit === 'dB' && stored?.showGainOverlay === true,
-      `and what it did not ask about is still there (${JSON.stringify(stored)})`);
-    assert(stored?.autoApplyLoudnessVideoDefault === true,
-      'the all-channel default among it');
-  }
-
-  section('Settings: the popup is answered after the write has landed');
-  {
-    const realSet = chrome.storage.local.set;
-    let release;
-    const held = new Promise((resolve) => { release = resolve; });
-    chrome.storage.local.set = (obj) => held.then(() => realSet(obj));
-    let answered = false;
-    const asking = simulateRuntimeMessage({ type: 'setTargetLufs', value: -16 })
-      .then((r) => { answered = true; return r; });
-    await tick();
-    assert(answered === false,
-      'the popup is not told the target was set while the write is still out');
-    release();
-    const answer = await asking;
-    chrome.storage.local.set = realSet;
-    assert(answer?.ok === true, `and it is told once the write lands — got ${JSON.stringify(answer)}`);
-    assert(mockStorage['autoLoudnessSettings']?.targetLufs === -16, 'with the target stored');
-  }
-
   section('Apply: the target is in hand before the gain is worked out');
   {
     // Writes an earlier case left in flight land on whatever map is there when
@@ -4142,48 +4083,6 @@ async function runTests() {
 
   // ── Waiting for what the next step needs ───────────────────────────
   // Dropping an await leaves the suite green in six places, and one of those
-  // mutants reached a commit here: the level, the settings and the popup all
-  // end up right a tick later, so only the order within the step shows it.
-
-  section('Settings: a write keeps the settings it was not asked about');
-  {
-    mockStorage['autoLoudnessSettings'] = {
-      targetLufs: -20,
-      displayUnit: 'dB',
-      showGainOverlay: true,
-      autoApplyLoudnessVideoDefault: true
-    };
-    ytcv._set('targetLufs', -20);
-    const answer = await simulateRuntimeMessage({ type: 'setTargetLufs', value: -14 });
-    await tick();
-    const stored = mockStorage['autoLoudnessSettings'];
-    assert(answer?.ok === true, `the popup is answered — got ${JSON.stringify(answer)}`);
-    assert(stored?.targetLufs === -14, `the target it asked for is stored (${stored?.targetLufs})`);
-    assert(stored?.displayUnit === 'dB' && stored?.showGainOverlay === true,
-      `and what it did not ask about is still there (${JSON.stringify(stored)})`);
-    assert(stored?.autoApplyLoudnessVideoDefault === true,
-      'the all-channel default among it');
-  }
-
-  section('Settings: the popup is answered after the write has landed');
-  {
-    const realSet = chrome.storage.local.set;
-    let release;
-    const held = new Promise((resolve) => { release = resolve; });
-    chrome.storage.local.set = (obj) => held.then(() => realSet(obj));
-    let answered = false;
-    const asking = simulateRuntimeMessage({ type: 'setTargetLufs', value: -16 })
-      .then((r) => { answered = true; return r; });
-    await tick();
-    assert(answered === false,
-      'the popup is not told the target was set while the write is still out');
-    release();
-    const answer = await asking;
-    chrome.storage.local.set = realSet;
-    assert(answer?.ok === true, `and it is told once the write lands — got ${JSON.stringify(answer)}`);
-    assert(mockStorage['autoLoudnessSettings']?.targetLufs === -16, 'with the target stored');
-  }
-
   section('Apply: the target is in hand before the gain is worked out');
   {
     // Writes an earlier case left in flight land on whatever map is there when
@@ -4581,17 +4480,6 @@ async function runTests() {
   }
 
   // ── The rest of what a rule-driven sweep found standing ────────────
-
-  section('Settings: a profile with no settings saved yet');
-  {
-    delete mockStorage['autoLoudnessSettings'];
-    ytcv._set('targetLufs', -18);
-    const answer = await simulateRuntimeMessage({ type: 'setTargetLufs', value: -22 });
-    await tick();
-    assert(answer?.ok === true, `the popup is answered — got ${JSON.stringify(answer)}`);
-    assert(mockStorage['autoLoudnessSettings']?.targetLufs === -22,
-      `the first write makes the settings (${JSON.stringify(mockStorage['autoLoudnessSettings'])})`);
-  }
 
   section('Storage: a write the worker turns down says why');
   {
