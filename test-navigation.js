@@ -464,6 +464,108 @@ const playerResponse = (over = {}) => ({
   }
 });
 
+// The popup, run for real against the content script above. Nothing ran
+// popup.js in this repository before — it was read as text and matched against
+// regular expressions — so every branch of it, and every message it builds,
+// was reached by nobody.
+function makePopup() {
+  const nodes = new Map();
+  const popupTimers = [];
+  const asked = [];
+  const broadcastListeners = [];
+  const node = (id) => {
+    if (!nodes.has(id)) {
+      const classes = new Set();
+      nodes.set(id, {
+        id, listeners: {}, dataset: {}, style: {}, children: [], offsetWidth: 0,
+        textContent: '', innerHTML: '', value: '', disabled: false, checked: false,
+        classList: {
+          add: (...names) => names.forEach((c) => classes.add(c)),
+          remove: (...names) => names.forEach((c) => classes.delete(c)),
+          contains: (c) => classes.has(c)
+        },
+        get className() { return [...classes].join(' '); },
+        set className(v) { classes.clear(); String(v).split(/\s+/).filter(Boolean).forEach((c) => classes.add(c)); },
+        appendChild(child) { this.children.push(child); return child; },
+        addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); }
+      });
+    }
+    return nodes.get(id);
+  };
+  const presets = [50, 100, 200, 400].map((percent) => {
+    const button = node(`preset-${percent}`);
+    button.dataset.vol = String(percent);
+    return button;
+  });
+  const popupSandbox = {
+    console: { log() {}, warn() {}, error() {} },
+    Promise, Math, JSON, Date, Object, Array, Number, String, Boolean, isNaN, parseFloat, parseInt,
+    setTimeout: (fn) => { popupTimers.push(fn); return popupTimers.length; },
+    clearTimeout() {},
+    requestAnimationFrame: (fn) => fn(),
+    document: {
+      body: node('body'),
+      getElementById: node,
+      createElement: () => node(`made-${nodes.size}`),
+      querySelectorAll: (selector) => (selector === '.presets button' ? presets : [])
+    },
+    chrome: {
+      i18n: { getMessage: (key) => key },
+      tabs: {
+        query: async () => [{ id: 9, url: 'https://www.youtube.com/watch?v=abc' }],
+        sendMessage: async (_tabId, message) => {
+          asked.push(JSON.parse(JSON.stringify(message)));
+          return simulateRuntimeMessage(message);
+        }
+      },
+      runtime: {
+        openOptionsPage() {},
+        onMessage: { addListener: (fn) => broadcastListeners.push(fn) }
+      },
+      storage: { local: { get: async () => ({ [SETTINGS_KEY]: { displayUnit: '%' } }) } }
+    }
+  };
+  popupSandbox.globalThis = popupSandbox;
+  vm.createContext(popupSandbox);
+  vm.runInContext(fs.readFileSync('./utils.js', 'utf8'), popupSandbox, { filename: 'utils.js' });
+  vm.runInContext(fs.readFileSync('./popup.js', 'utf8'), popupSandbox, { filename: 'popup.js' });
+  return {
+    node, presets, asked,
+    // The popup's own start-up is a storage read, a tab lookup and a
+    // forceDetect, and forceDetect is answered from a .then. Waiting a fixed
+    // number of turns says nothing about whether it has drawn; the channel on
+    // screen does.
+    async ready() {
+      for (let turn = 0; turn < 40; turn++) {
+        const shown = node('channelName').textContent;
+        if (shown && shown !== 'channelNotDetected') return;
+        await tick();
+      }
+      throw new Error('the popup never drew a channel');
+    },
+    // The broadcast content.js sends whenever its state moves.
+    async broadcast() {
+      const state = await simulateRuntimeMessage({ type: 'getState' });
+      for (const fn of broadcastListeners) fn({ type: 'stateChanged', ...state }, { tab: { id: 9 } });
+      await tick();
+    },
+    async fire(id, type) {
+      for (const fn of node(id).listeners[type] || []) await fn({ target: node(id) });
+      await tick();
+    },
+    async firePreset(index, type) {
+      const button = presets[index];
+      for (const fn of button.listeners[type] || []) await fn({ target: button });
+      await tick();
+    },
+    async runTimers() {
+      const due = popupTimers.splice(0);
+      for (const fn of due) await fn();
+      await tick();
+    }
+  };
+}
+
 // A gesture as the popup makes one: it carries the state the popup was drawn
 // from, which content.js hands out with every answer.
 async function popupGesture(msg) {
@@ -4909,6 +5011,97 @@ async function runTests() {
   }
 
   // ── Summary ────────────────────────────────────────────────────────
+
+  // ── The popup and the content script, joined up ──
+
+  section('Popup: a slider released after the video changed saves against the one it was moved on');
+  {
+    mockStorage['channelVolumes'] = {};
+    mockStorage['autoLoudnessSettings'] = { targetLufs: -18, displayUnit: '%' };
+    setURL('/watch', 'popVidA');
+    mockVideoEl = { id: 'popup-video-a' };
+    mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCpopup' };
+    ytcv._set('currentChannel', { id: 'UCpopup', name: 'Popup Ch', url: '' });
+    ytcv._set('currentVideoType', 'video');
+    ytcv._set('_lastVideoId', 'popVidA');
+    ytcv._set('currentGain', 1.0);
+    ytcv._set('currentLoudnessDb', -6);
+
+    const popup = makePopup();
+    await popup.ready();
+    const drawnOn = (await simulateRuntimeMessage({ type: 'getState' })).appliesTo;
+
+    // The viewer takes hold of the slider on popVidA.
+    popup.node('volumeSlider').value = '25';
+    await popup.fire('volumeSlider', 'input');
+
+    // The tab moves to another video of the same channel, and content.js tells
+    // the popup about it.
+    setURL('/watch', 'popVidB');
+    ytcv._set('_lastVideoId', 'popVidB');
+    await popup.broadcast();
+    assert((await simulateRuntimeMessage({ type: 'getState' })).appliesTo !== drawnOn,
+      'two videos of one channel are two states, not one');
+
+    await popup.fire('volumeSlider', 'change');
+    const saves = popup.asked.filter((m) => m.type === 'setGain');
+    assert(saves.length === 1, `one save is sent (${saves.length})`);
+    assert(saves[0].appliesTo === drawnOn,
+      `carrying the state it was made on (${saves[0].appliesTo})`);
+    assert(mockStorage['channelVolumes']['UCpopup'] === undefined,
+      `and nothing is saved for the video moved to (${JSON.stringify(mockStorage['channelVolumes'])})`);
+  }
+
+  section('Popup: a slider released with the tab where it was saves the gain');
+  {
+    mockStorage['channelVolumes'] = {};
+    setURL('/watch', 'popVidC');
+    mockVideoEl = { id: 'popup-video-c' };
+    mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCkept' };
+    ytcv._set('currentChannel', { id: 'UCkept', name: 'Kept Ch', url: '' });
+    ytcv._set('currentVideoType', 'video');
+    ytcv._set('_lastVideoId', 'popVidC');
+    ytcv._set('currentGain', 1.0);
+
+    const popup = makePopup();
+    await popup.ready();
+    popup.node('volumeSlider').value = '25';
+    await popup.fire('volumeSlider', 'input');
+    await popup.broadcast();
+    await popup.fire('volumeSlider', 'change');
+    await tick();
+    assert(Math.abs(mockStorage['channelVolumes']['UCkept']?.gainVideo - 0.25) < 1e-9,
+      `an ordinary release saves the gain (${JSON.stringify(mockStorage['channelVolumes']['UCkept'])})`);
+  }
+
+  section('Popup: the preview during a drag belongs to the video the drag began on');
+  {
+    mockStorage['channelVolumes'] = {};
+    setURL('/watch', 'popVidD');
+    mockVideoEl = { id: 'popup-video-d' };
+    mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCpreview' };
+    ytcv._set('currentChannel', { id: 'UCpreview', name: 'Preview Ch', url: '' });
+    ytcv._set('currentVideoType', 'video');
+    ytcv._set('_lastVideoId', 'popVidD');
+    ytcv._set('currentGain', 1.0);
+
+    const popup = makePopup();
+    await popup.ready();
+    popup.node('volumeSlider').value = '40';
+    await popup.fire('volumeSlider', 'input');
+    assert(Math.abs(ytcv.state.currentGain - 0.4) < 1e-9,
+      `the preview moves the level of the video being watched (${ytcv.state.currentGain})`);
+
+    setURL('/watch', 'popVidE');
+    ytcv._set('_lastVideoId', 'popVidE');
+    ytcv._set('currentGain', 1.0);
+    await popup.broadcast();
+
+    popup.node('volumeSlider').value = '60';
+    await popup.fire('volumeSlider', 'input');
+    assert(ytcv.state.currentGain === 1.0,
+      `the drag does not move the level of the video moved to (${ytcv.state.currentGain})`);
+  }
 
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed > 0 ? 1 : 0);

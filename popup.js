@@ -34,6 +34,14 @@
   // gesture, so a gesture made against a state the tab has left is refused
   // rather than applied to the one that replaced it.
   let currentAppliesTo = '';
+  // The display is redrawn whenever content.js says its state moved, and a
+  // gesture takes longer than that: the viewer takes hold of the slider, the
+  // video changes, the viewer lets go. A gesture is made against the state
+  // that was on screen when it began, so it takes a copy then and carries that
+  // one to every message it sends — the previews during the drag as well as
+  // the save at the end. Read at send time instead, the drag would move the
+  // level of the video it moved to and save its gain under it.
+  let sliderAppliesTo = null;
   let activeTabId = null;
   let hasLoudness = false;
   let currentLoudnessDb = null;
@@ -251,6 +259,8 @@
 
   // input: real-time gain change (no storage write)
   volumeSlider.addEventListener('input', () => {
+    // The first movement is where the gesture begins.
+    if (sliderAppliesTo === null) sliderAppliesTo = currentAppliesTo;
     const pct = Number(volumeSlider.value);
     const gain = percentToGain(pct);
     lastGain = gain;
@@ -260,7 +270,7 @@
     if (currentChannel.id) {
       sendManualGain({
         type: 'setGainLive',
-        appliesTo: currentAppliesTo,
+        appliesTo: sliderAppliesTo,
         gain
       });
     }
@@ -268,10 +278,12 @@
 
   // change: save to storage on slider release
   volumeSlider.addEventListener('change', () => {
+    const appliesTo = sliderAppliesTo ?? currentAppliesTo;
+    sliderAppliesTo = null;
     if (currentChannel.id) {
       sendManualGain({
         type: 'setGain',
-        appliesTo: currentAppliesTo,
+        appliesTo,
         gain: lastGain
       });
     }
