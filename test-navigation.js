@@ -5067,6 +5067,12 @@ async function runTests() {
       && popup.node('autoLiveControl').style.display === 'none',
       'and the Auto control on screen is the one for videos');
     assert(popup.node('applyBtn').disabled === false, 'the apply button can be pressed');
+    assert(popup.node('applyBtn').textContent.includes('typeVideo'),
+      `and names the type it would save under (${popup.node('applyBtn').textContent})`);
+    assert(popup.node('autoApplyLiveToggle').disabled === true,
+      'the Auto toggle for live is not available while a video is being watched');
+    assert(popup.node('autoApplyVideoToggle').disabled === false,
+      'and the one for videos is');
   }
 
   section('Popup: a premiere is not a live stream');
@@ -5101,6 +5107,11 @@ async function runTests() {
     assert(live.node('autoLiveControl').style.display === ''
       && live.node('autoVideoControl').style.display === 'none',
       'and the Auto control on screen is the one for live');
+    assert(live.node('applyBtn').textContent.includes('typeLive'),
+      `the apply button names live as what it would save under (${live.node('applyBtn').textContent})`);
+    assert(live.node('autoApplyVideoToggle').disabled === true
+      && live.node('autoApplyLiveToggle').disabled === false,
+      'and the toggles swap with it');
   }
 
   section('Popup: what it says when it does not know');
@@ -5116,6 +5127,8 @@ async function runTests() {
     await noLevel.ready();
     assert(noLevel.node('contentLufs').textContent === '---',
       `the level is unknown (${noLevel.node('contentLufs').textContent})`);
+    assert(noLevel.node('suggestedVol').textContent === '---',
+      `so is the gain it would suggest (${noLevel.node('suggestedVol').textContent})`);
     assert(noLevel.node('suggestedVol').className.split(' ').includes('suggested'),
       `an unknown suggestion is still the suggestion card (${noLevel.node('suggestedVol').className})`);
     assert(noLevel.node('applyBtn').disabled === true, 'the apply button cannot be pressed');
@@ -5433,6 +5446,8 @@ async function runTests() {
       targetLufs: -12, videoType: 'video'
     });
     const withTarget = popup.node('suggestedVol').textContent;
+    assert(withTarget === String(gainToPercent(calcGain(-9, -12))),
+      `the suggestion follows the target it was given (${withTarget})`);
     await popup.deliver({
       type: 'stateChanged',
       channel: { id: 'UCunit', name: 'Unit Ch', url: '' },
@@ -5441,6 +5456,89 @@ async function runTests() {
     });
     assert(popup.node('suggestedVol').textContent === withTarget,
       `a state naming no target leaves it where it was (${popup.node('suggestedVol').textContent})`);
+  }
+
+  section('Popup: a toggle the page cannot answer for goes back from memory');
+  {
+    const watching = {
+      isWatchPage: true,
+      channel: { id: 'UCback', name: 'Back Ch', url: '' },
+      appliesTo: 'UCback|video|backVid',
+      loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0,
+      targetLufs: -18, videoType: 'video',
+      autoApplyLoudnessVideo: false, autoApplyLoudnessLive: false
+    };
+    // The toggle is refused and the page then answers nothing: there is no
+    // state to draw, so the toggle goes back to what this popup last knew.
+    let drawn = 0;
+    const silent = makePopup({
+      answer: async (message) => {
+        if (message.type === 'setAutoApplyLoudness') return { ok: false, reason: 'state moved' };
+        drawn += 1;
+        return drawn === 1 ? watching : undefined;
+      }
+    });
+    await silent.ready();
+    silent.node('autoApplyVideoToggle').checked = true;
+    await silent.fire('autoApplyVideoToggle', 'change');
+    assert(silent.node('autoApplyVideoToggle').checked === false,
+      `the toggle goes back to what the popup last knew (${silent.node('autoApplyVideoToggle').checked})`);
+    assert(silent.node('autoApplyVideoToggle').disabled === false,
+      'and is left available, the video being the one on screen');
+    assert(silent.node('autoApplyLiveToggle').disabled === true,
+      'while the one for the other type stays unavailable');
+
+    // The same when the page cannot be reached at all.
+    let reached = 0;
+    const unreachable = makePopup({
+      answer: async (message) => {
+        if (message.type === 'setAutoApplyLoudness') return { ok: false, reason: 'state moved' };
+        reached += 1;
+        if (reached === 1) return watching;
+        throw new Error('Receiving end does not exist');
+      }
+    });
+    await unreachable.ready();
+    unreachable.node('autoApplyVideoToggle').checked = true;
+    await unreachable.fire('autoApplyVideoToggle', 'change');
+    assert(unreachable.node('autoApplyVideoToggle').checked === false,
+      `a page that cannot be reached leaves the toggle where the popup had it (${unreachable.node('autoApplyVideoToggle').checked})`);
+    assert(unreachable.node('autoApplyVideoToggle').disabled === false,
+      'and available again rather than stuck');
+  }
+
+  section('Popup: a preset saves, and an answer of nothing draws nothing');
+  {
+    const popup = makePopup({
+      answer: async (message) => (message.type === 'setGain'
+        ? { ok: true }
+        : {
+          isWatchPage: true,
+          channel: { id: 'UCpreset', name: 'Preset Ch', url: '' },
+          appliesTo: 'UCpreset|video|presetVid',
+          loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0,
+          targetLufs: -18, videoType: 'video'
+        })
+    });
+    await popup.ready();
+    popup.asked.length = 0;
+    await popup.firePreset(2, 'click');
+    const saves = popup.asked.filter((m) => m.type === 'setGain');
+    assert(saves.length === 1 && saves[0].gain === 2,
+      `a preset saves the gain it names (${JSON.stringify(saves)})`);
+    assert(saves[0].appliesTo === 'UCpreset|video|presetVid',
+      `against the state on screen (${saves[0].appliesTo})`);
+
+    // A forceDetect answered with nothing draws nothing, and is not mistaken
+    // for a page that cannot answer.
+    const silent = makePopup({ answer: async () => undefined });
+    await silent.settled();
+    assert(silent.node('channelName').textContent === '',
+      `an answer of nothing draws nothing (${silent.node('channelName').textContent})`);
+    assert(silent.node('reloadNeeded').style.display === undefined
+      && silent.node('notWatch').style.display === undefined
+      && silent.node('main').style.display === undefined,
+      'and sends the popup to no other screen');
   }
 
   // ── The popup and the content script, joined up ──
