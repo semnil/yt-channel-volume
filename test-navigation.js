@@ -5630,6 +5630,52 @@ async function runTests() {
       `and stands at the saved choice for videos (${popup.node('autoApplyVideoToggle').checked})`);
   }
 
+  // The same, with the page unreachable rather than answering nothing: the
+  // toggle is put back from the saved choice for its own type, and left
+  // unavailable because that type is not the one on screen.
+  {
+    let release;
+    const waiting = new Promise((resolve) => { release = resolve; });
+    let reads = 0;
+    const popup = makePopup({
+      answer: async (message) => {
+        if (message.type === 'setAutoApplyLoudness') {
+          await waiting;
+          return { ok: false, reason: 'state moved' };
+        }
+        reads += 1;
+        if (reads > 1) throw new Error('Receiving end does not exist');
+        return {
+          isWatchPage: true,
+          channel: { id: 'UCgone', name: 'Gone Ch', url: '' },
+          appliesTo: 'UCgone|video|goneVid',
+          loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0,
+          targetLufs: -18, videoType: 'video',
+          autoApplyLoudnessVideo: false, autoApplyLoudnessLive: true
+        };
+      }
+    });
+    await popup.ready();
+    popup.node('autoApplyVideoToggle').checked = true;
+    const gesture = popup.fire('autoApplyVideoToggle', 'change');
+    await tick();
+    await popup.deliver({
+      type: 'stateChanged',
+      channel: { id: 'UCgone', name: 'Gone Ch', url: '' },
+      appliesTo: 'UCgone|live|goneLive',
+      loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0,
+      targetLufs: -18, videoType: 'live', isLiveNow: true,
+      autoApplyLoudnessVideo: false, autoApplyLoudnessLive: true
+    });
+    release();
+    await gesture;
+    await tick();
+    assert(popup.node('autoApplyVideoToggle').checked === false,
+      `a page that cannot be reached puts the toggle back from its own type's choice (${popup.node('autoApplyVideoToggle').checked})`);
+    assert(popup.node('autoApplyVideoToggle').disabled === true,
+      `and leaves it unavailable, the video not being on screen (${popup.node('autoApplyVideoToggle').disabled})`);
+  }
+
   // ── The popup and the content script, joined up ──
 
   section('Popup: a slider released after the video changed saves against the one it was moved on');
