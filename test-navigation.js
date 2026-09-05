@@ -5541,6 +5541,95 @@ async function runTests() {
       'and sends the popup to no other screen');
   }
 
+  section('Popup: a refused toggle draws what the page holds, not what the popup had');
+  {
+    // The re-read answers a state that differs from the one on screen. Drawing
+    // it is the whole point of asking; putting the toggle back from memory
+    // would leave the rest of the screen at the state before the gesture.
+    let reads = 0;
+    const moved = makePopup({
+      answer: async (message) => {
+        if (message.type === 'setAutoApplyLoudness') return { ok: false, reason: 'state moved' };
+        reads += 1;
+        return reads === 1
+          ? {
+            isWatchPage: true,
+            channel: { id: 'UCfirst', name: 'First Ch', url: '' },
+            appliesTo: 'UCfirst|video|firstVid',
+            loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0,
+            targetLufs: -18, videoType: 'video', autoApplyLoudnessVideo: false
+          }
+          : {
+            isWatchPage: true,
+            channel: { id: 'UCsecond', name: 'Second Ch', url: '' },
+            appliesTo: 'UCsecond|video|secondVid',
+            loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.75,
+            targetLufs: -18, videoType: 'video', autoApplyLoudnessVideo: true
+          };
+      }
+    });
+    await moved.ready();
+    moved.node('autoApplyVideoToggle').checked = true;
+    await moved.fire('autoApplyVideoToggle', 'change');
+    assert(moved.node('channelName').textContent === 'Second Ch',
+      `the screen follows what the page answered (${moved.node('channelName').textContent})`);
+    assert(Number(moved.node('volumeSlider').value) === 175,
+      `the gain with it (${moved.node('volumeSlider').value})`);
+    assert(moved.node('autoApplyVideoToggle').checked === true,
+      `and the toggle stands where the page has it, not where the popup had it (${moved.node('autoApplyVideoToggle').checked})`);
+  }
+
+  section('Popup: a toggle put back for a type no longer on screen is not left available');
+  {
+    // The gesture is made on a video. While the answer is out the tab moves to
+    // a live stream, and the re-read answers nothing, so the toggle is put back
+    // from memory — for a type that is no longer the one being watched.
+    let held;
+    const holding = new Promise((resolve) => { held = resolve; });
+    let reads = 0;
+    const popup = makePopup({
+      answer: async (message) => {
+        if (message.type === 'setAutoApplyLoudness') {
+          await holding;
+          return { ok: false, reason: 'state moved' };
+        }
+        reads += 1;
+        return reads === 1
+          ? {
+            isWatchPage: true,
+            channel: { id: 'UCswap', name: 'Swap Ch', url: '' },
+            appliesTo: 'UCswap|video|swapVid',
+            loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0,
+            targetLufs: -18, videoType: 'video',
+            autoApplyLoudnessVideo: false, autoApplyLoudnessLive: true
+          }
+          : undefined;
+      }
+    });
+    await popup.ready();
+    popup.node('autoApplyVideoToggle').checked = true;
+    const gesture = popup.fire('autoApplyVideoToggle', 'change');
+    await tick();
+
+    // The tab moves to a live stream while the answer is out.
+    await popup.deliver({
+      type: 'stateChanged',
+      channel: { id: 'UCswap', name: 'Swap Ch', url: '' },
+      appliesTo: 'UCswap|live|liveVid',
+      loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0,
+      targetLufs: -18, videoType: 'live', isLiveNow: true,
+      autoApplyLoudnessVideo: false, autoApplyLoudnessLive: true
+    });
+    held();
+    await gesture;
+    await tick();
+
+    assert(popup.node('autoApplyVideoToggle').disabled === true,
+      `the toggle for videos is not left available on a live stream (${popup.node('autoApplyVideoToggle').disabled})`);
+    assert(popup.node('autoApplyVideoToggle').checked === false,
+      `and stands at the saved choice for videos (${popup.node('autoApplyVideoToggle').checked})`);
+  }
+
   // ── The popup and the content script, joined up ──
 
   section('Popup: a slider released after the video changed saves against the one it was moved on');
