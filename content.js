@@ -66,18 +66,6 @@
     return { targetLufs, defaultAutoApplyLoudnessVideo, defaultAutoApplyLoudnessLive };
   }
 
-  async function saveSettings(settings) {
-    if (!isContextValid()) return;
-    const data = await chrome.storage.local.get(SETTINGS_KEY);
-    const merged = { ...data[SETTINGS_KEY] || {}, ...settings };
-    targetLufs = merged.targetLufs ?? targetLufs;
-    defaultAutoApplyLoudnessVideo =
-      merged.autoApplyLoudnessVideoDefault ?? defaultAutoApplyLoudnessVideo;
-    defaultAutoApplyLoudnessLive =
-      merged.autoApplyLoudnessLiveDefault ?? defaultAutoApplyLoudnessLive;
-    await chrome.storage.local.set({ [SETTINGS_KEY]: merged });
-  }
-
   function resolveAutoApplyForType(entry, videoType) {
     const defaultValue = videoType === 'live'
       ? defaultAutoApplyLoudnessLive
@@ -874,19 +862,6 @@
         sendResponse({ ok: true, ...getState() });
       }).catch(err => {
         reportFailure('setAutoApplyLoudness failed', err);
-        sendResponse({ ok: false, reason: 'request failed' });
-      });
-      return true;
-    }
-
-    if (msg.type === 'setTargetLufs') {
-      const { value } = msg;
-      saveSettings({ targetLufs: value }).then(() => {
-        applyAutomaticLoudnessGain();
-        notifyPopup();
-        sendResponse({ ok: true });
-      }).catch(err => {
-        reportFailure('setTargetLufs failed', err);
         sendResponse({ ok: false, reason: 'request failed' });
       });
       return true;
