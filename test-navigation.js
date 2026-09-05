@@ -5873,6 +5873,7 @@ async function runTests() {
     settings = {},
     channels = {},
     failStorageGet = false,
+    failStorageSet = false,
     failMutation = '',
     deferStorageGet = false
   } = {}) {
@@ -5886,7 +5887,7 @@ async function runTests() {
     const confirms = [];
     let confirmAnswer = true;
     const storageListeners = [];
-    let releaseStorageGet = null;
+    const pendingReads = [];
     const nodes = new Map();
     const made = [];
     const deleteButtons = new Map();
@@ -6000,7 +6001,7 @@ async function runTests() {
           local: {
             get: async (keys) => {
               if (deferStorageGet) {
-                await new Promise((resolve) => { releaseStorageGet = resolve; });
+                await new Promise((resolve) => { pendingReads.push(resolve); });
               }
               if (failStorageGet) throw new Error('storage unavailable');
               const wanted = Array.isArray(keys) ? keys : [keys];
@@ -6013,6 +6014,7 @@ async function runTests() {
             // A write lands after the turn that asked for it, not during it.
             set: async (patch) => {
               await Promise.resolve();
+              if (failStorageSet) throw new Error('storage full');
               Object.assign(stored, JSON.parse(JSON.stringify(patch)));
             }
           },
@@ -6045,9 +6047,8 @@ async function runTests() {
       },
       async settle() { await settle(); },
       async releaseStorage() {
-        assert(!!releaseStorageGet, 'the settings read is pending');
-        if (releaseStorageGet) releaseStorageGet();
-        releaseStorageGet = null;
+        assert(pendingReads.length > 0, 'a read is being held');
+        for (const resolve of pendingReads.splice(0)) resolve();
         await settle();
       },
       async fire(id, type) {
@@ -6371,6 +6372,133 @@ async function runTests() {
     const settled = options.listMarkup();
     await options.fireStorage({ [UNIFIED_GAINS_KEY]: { newValue: true } });
     assert(options.listMarkup() === settled, 'and the same mark again changes nothing');
+  }
+
+  {
+    // The markup ships the controls disabled and the handler refuses as well.
+    // A gesture already on its way when the page loaded takes the second one.
+    const options = makeOptions({ settings: { targetLufs: -18 }, deferStorageGet: true });
+    await options.settle();
+
+    options.node('targetSlider').value = '-24';
+    await options.fire('targetSlider', 'change');
+    await options.releaseStorage();
+
+    assert(options.stored[SETTINGS_KEY].targetLufs === -18,
+      'a page that has not read the settings does not write one back');
+  }
+
+  {
+    const options = makeOptions({ failStorageGet: true });
+    await options.settle();
+
+    options.node('defaultAutoVideoToggle').checked = true;
+    await options.fire('defaultAutoVideoToggle', 'change');
+
+    // Holding no list, the table draws none rather than reading one of its own.
+    assert(options.listMarkup() === '', 'a page holding no list draws none');
+    assert(options.node('defaultAutoVideoToggle').checked === true,
+      'and drawing none is not a failure that puts the toggle back');
+  }
+
+  {
+    // A notification can arrive while the page's own read is still out. The
+    // table it draws then is one the page cannot yet delete from.
+    const options = makeOptions({ deferStorageGet: true });
+    await options.settle();
+    await options.fireStorage({
+      [CHANNEL_VOLUMES_KEY]: { newValue: { UC1: { name: 'Alpha', gainVideo: 2 } } }
+    });
+    assert(options.listMarkup().includes('Alpha'), 'the list the notification carried is drawn');
+    assert(options.deleteButton('UC1')?.disabled === true, 'with its deletion refused');
+    options.sent.length = 0;
+
+    await options.clickDelete('UC1');
+
+    assert(options.sent.filter((m) => m.type === 'store:deleteChannel').length === 0,
+      'and a click that arrives anyway deletes nothing');
+  }
+
+  {
+    // This page's own fold was refused, so it reads the map under the old rule
+    // until the mark itself says otherwise.
+    const options = makeOptions({
+      failMutation: 'store:migrateLegacyGains',
+      settings: { autoApplyLoudnessVideoDefault: true },
+      channels: { UC1: { name: 'Alpha', gain: 2 } }
+    });
+    await options.settle();
+    assert(options.listMarkup().includes('200%'), 'the legacy gain reads as manual to begin with');
+
+    await options.fireStorage({ [SETTINGS_KEY]: { newValue: { autoApplyLoudnessVideoDefault: true } } });
+
+    assert(options.listMarkup().includes('200%') && !options.listMarkup().includes('labelAuto'),
+      'a change that is not the mark does not move the table onto the new rule');
+  }
+
+  {
+    const options = makeOptions({
+      failMutation: 'store:deleteChannel',
+      channels: { UC1: { name: 'Alpha', gainVideo: 2 } }
+    });
+    await options.settle();
+
+    await options.clickDelete('UC1');
+
+    const named = options.errors.filter((args) => String(args[0]).includes('channel not deleted'));
+    assert(named.length === 1, `a refused delete is named (${options.errors.length} logged)`);
+    assert(String(named[0]?.[1]?.message) === 'store refused',
+      `carrying the reason the store gave (${named[0]?.[1]?.message})`);
+  }
+
+  {
+    const options = makeOptions({
+      failMutation: 'store:clearChannels',
+      channels: { UC1: { name: 'Alpha', gainVideo: 2 } }
+    });
+    await options.settle();
+
+    await options.fire('clearAllBtn', 'click');
+
+    assert(options.errors.some((args) => String(args[0]).includes('channels not cleared')),
+      'a refused clear is named');
+  }
+
+  {
+    // The two defaults are read per column, so a channel with no flag of its
+    // own follows the default for the type of that column and not the other.
+    const options = makeOptions({
+      settings: { autoApplyLoudnessVideoDefault: true, autoApplyLoudnessLiveDefault: false },
+      channels: { UC1: { name: 'Alpha', gainVideo: 2, gainLive: 3 } }
+    });
+    await options.settle();
+    const cells = options.listMarkup().match(/<td class="ch-vol[^"]*">[^<]*</g) || [];
+
+    assert(cells.length === 2, `the row has a cell for each type (${cells.length})`);
+    assert(cells[0].includes('ch-vol auto') && cells[0].includes('labelAuto'),
+      `the video column follows the video default (${cells[0]})`);
+    assert(!cells[1].includes('auto') && cells[1].includes('300%'),
+      `and the live column follows the live one (${cells[1]})`);
+  }
+
+  {
+    // The gain the page shows is the one it saved. A save that did not happen
+    // leaves the toggle where the stored value stands, not where the click did.
+    const options = makeOptions({ failStorageSet: true });
+    await options.settle();
+
+    options.node('defaultAutoVideoToggle').checked = true;
+    await options.fire('defaultAutoVideoToggle', 'change');
+    assert(options.node('defaultAutoVideoToggle').checked === false,
+      'a video default that could not be saved goes back');
+    assert(options.node('defaultAutoVideoToggle').disabled === false,
+      'and the toggle is handed back either way');
+
+    options.node('defaultAutoLiveToggle').checked = true;
+    await options.fire('defaultAutoLiveToggle', 'change');
+    assert(options.node('defaultAutoLiveToggle').checked === false,
+      'and so does a live default');
+    assert(options.node('defaultAutoLiveToggle').disabled === false, 'with its toggle handed back');
   }
 
   console.log(`\n${passed} passed, ${failed} failed`);
