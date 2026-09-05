@@ -34,6 +34,14 @@
   // gesture, so a gesture made against a state the tab has left is refused
   // rather than applied to the one that replaced it.
   let currentAppliesTo = '';
+  // The display is redrawn whenever content.js says its state moved, and a
+  // gesture takes longer than that: the viewer takes hold of the slider, the
+  // video changes, the viewer lets go. A gesture is made against the state
+  // that was on screen when it began, so it takes a copy then and carries that
+  // one to every message it sends — the previews during the drag as well as
+  // the save at the end. Read at send time instead, the drag would move the
+  // level of the video it moved to and save its gain under it.
+  let sliderAppliesTo = null;
   let activeTabId = null;
   let hasLoudness = false;
   let currentLoudnessDb = null;
@@ -250,7 +258,18 @@
   });
 
   // input: real-time gain change (no storage write)
+  // A drag begins where the pointer goes down or a key is pressed on the
+  // slider. Chrome fires no change when the value ends where it began, so a
+  // release can pass unseen: the start of the next gesture is what says the
+  // one before it is over. Taking the copy here rather than on every movement
+  // keeps a drag on the state it began on.
+  const beginSliderGesture = () => { sliderAppliesTo = currentAppliesTo; };
+  volumeSlider.addEventListener('pointerdown', beginSliderGesture);
+  volumeSlider.addEventListener('keydown', beginSliderGesture);
+
   volumeSlider.addEventListener('input', () => {
+    // An input that arrived without either of those begins one too.
+    if (sliderAppliesTo === null) sliderAppliesTo = currentAppliesTo;
     const pct = Number(volumeSlider.value);
     const gain = percentToGain(pct);
     lastGain = gain;
@@ -260,7 +279,7 @@
     if (currentChannel.id) {
       sendManualGain({
         type: 'setGainLive',
-        appliesTo: currentAppliesTo,
+        appliesTo: sliderAppliesTo,
         gain
       });
     }
@@ -268,10 +287,12 @@
 
   // change: save to storage on slider release
   volumeSlider.addEventListener('change', () => {
+    const appliesTo = sliderAppliesTo ?? currentAppliesTo;
+    sliderAppliesTo = null;
     if (currentChannel.id) {
       sendManualGain({
         type: 'setGain',
-        appliesTo: currentAppliesTo,
+        appliesTo,
         gain: lastGain
       });
     }

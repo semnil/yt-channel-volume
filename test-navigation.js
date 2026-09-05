@@ -464,6 +464,131 @@ const playerResponse = (over = {}) => ({
   }
 });
 
+// The popup, run for real against the content script above. Nothing ran
+// popup.js in this repository before — it was read as text and matched against
+// regular expressions — so every branch of it, and every message it builds,
+// was reached by nobody.
+function makePopup({ tabUrl = 'https://www.youtube.com/watch?v=abc', answer = null, displayUnit = '%' } = {}) {
+  const nodes = new Map();
+  const popupTimers = [];
+  const asked = [];
+  const broadcastListeners = [];
+  const node = (id) => {
+    if (!nodes.has(id)) {
+      const classes = new Set();
+      nodes.set(id, {
+        id, listeners: {}, dataset: {}, style: {}, children: [], offsetWidth: 0,
+        value: '', disabled: false, checked: false,
+        // Writing textContent replaces every child with one piece of text,
+        // and writing innerHTML replaces what the element holds. The popup
+        // empties a card both ways before drawing into it again.
+        _textContent: '',
+        get textContent() { return this._textContent; },
+        set textContent(text) { this._textContent = text; this.children.length = 0; },
+        // Writing innerHTML replaces what the element holds; the popup empties
+        // a card that way before drawing into it again.
+        _innerHTML: '',
+        get innerHTML() { return this._innerHTML; },
+        set innerHTML(markup) { this._innerHTML = markup; if (!markup) this.children.length = 0; },
+        classList: {
+          add: (...names) => names.forEach((c) => classes.add(c)),
+          remove: (...names) => names.forEach((c) => classes.delete(c)),
+          contains: (c) => classes.has(c)
+        },
+        get className() { return [...classes].join(' '); },
+        set className(v) { classes.clear(); String(v).split(/\s+/).filter(Boolean).forEach((c) => classes.add(c)); },
+        appendChild(child) { this.children.push(child); return child; },
+        addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); }
+      });
+    }
+    return nodes.get(id);
+  };
+  const presets = [50, 100, 200, 400].map((percent) => {
+    const button = node(`preset-${percent}`);
+    button.dataset.vol = String(percent);
+    return button;
+  });
+  const popupSandbox = {
+    console: { log() {}, warn() {}, error() {} },
+    Promise, Math, JSON, Date, Object, Array, Number, String, Boolean, isNaN, parseFloat, parseInt,
+    setTimeout: (fn) => { popupTimers.push(fn); return popupTimers.length; },
+    clearTimeout() {},
+    requestAnimationFrame: (fn) => fn(),
+    document: {
+      body: node('body'),
+      getElementById: node,
+      createElement: () => node(`made-${nodes.size}`),
+      querySelectorAll: (selector) => (selector === '.presets button' ? presets : [])
+    },
+    chrome: {
+      i18n: { getMessage: (key) => key },
+      tabs: {
+        query: async () => (tabUrl === null ? [] : [{ id: 9, url: tabUrl }]),
+        sendMessage: async (_tabId, message) => {
+          asked.push(JSON.parse(JSON.stringify(message)));
+          if (answer) return answer(message);
+          return simulateRuntimeMessage(message);
+        }
+      },
+      runtime: {
+        openOptionsPage() {},
+        onMessage: { addListener: (fn) => broadcastListeners.push(fn) }
+      },
+      storage: { local: { get: async () => ({ [SETTINGS_KEY]: { displayUnit } }) } }
+    }
+  };
+  popupSandbox.globalThis = popupSandbox;
+  vm.createContext(popupSandbox);
+  vm.runInContext(fs.readFileSync('./utils.js', 'utf8'), popupSandbox, { filename: 'utils.js' });
+  vm.runInContext(fs.readFileSync('./popup.js', 'utf8'), popupSandbox, { filename: 'popup.js' });
+  return {
+    node, presets, asked,
+    // The popup's own start-up is a storage read, a tab lookup and a
+    // forceDetect, and forceDetect is answered from a .then. Waiting a fixed
+    // number of turns says nothing about whether it has drawn; the channel on
+    // screen does.
+    async ready() {
+      for (let turn = 0; turn < 40; turn++) {
+        const shown = node('channelName').textContent;
+        if (shown && shown !== 'channelNotDetected') return;
+        await tick();
+      }
+      throw new Error('the popup never drew a channel');
+    },
+    // For a case whose popup is not meant to draw a channel at all.
+    async settled() { for (let turn = 0; turn < 6; turn++) await tick(); },
+    // The broadcast content.js sends whenever its state moves.
+    async broadcast() {
+      const state = await simulateRuntimeMessage({ type: 'getState' });
+      for (const fn of broadcastListeners) fn({ type: 'stateChanged', ...state }, { tab: { id: 9 } });
+      await tick();
+    },
+    // A disabled control receives no event: the browser does not dispatch one,
+    // so what protects a gesture is the disabling, not a guard in the handler.
+    async fire(id, type) {
+      if (node(id).disabled) { await tick(); return; }
+      for (const fn of node(id).listeners[type] || []) await fn({ target: node(id) });
+      await tick();
+    },
+    async firePreset(index, type) {
+      const button = presets[index];
+      if (button.disabled) { await tick(); return; }
+      for (const fn of button.listeners[type] || []) await fn({ target: button });
+      await tick();
+    },
+    // A message as it arrives at the popup, from a tab of the case's choosing.
+    async deliver(message, tabId = 9) {
+      for (const fn of broadcastListeners) fn(message, { tab: { id: tabId } });
+      await tick();
+    },
+    async runTimers() {
+      const due = popupTimers.splice(0);
+      for (const fn of due) await fn();
+      await tick();
+    }
+  };
+}
+
 // A gesture as the popup makes one: it carries the state the popup was drawn
 // from, which content.js hands out with every answer.
 async function popupGesture(msg) {
@@ -4909,6 +5034,833 @@ async function runTests() {
   }
 
   // ── Summary ────────────────────────────────────────────────────────
+
+  // ── What the popup draws, and what it sends ──
+
+  section('Popup: the channel, the level and the gain it is given');
+  {
+    const popup = makePopup({
+      answer: async () => ({
+        isWatchPage: true,
+        channel: { id: 'UCdraw', name: 'Draw Ch', url: '' },
+        appliesTo: 'UCdraw|video|drawVid',
+        loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.5,
+        targetLufs: -18, videoType: 'video', isLiveNow: false,
+        autoApplyLoudnessVideo: false, autoApplyLoudnessLive: false
+      })
+    });
+    await popup.ready();
+    const drawn = (el) => popup.node(el).textContent
+      + (popup.node(el).children[0] ? popup.node(el).children[0].textContent : '');
+    assert(popup.node('channelName').textContent === 'Draw Ch',
+      `the channel is named (${popup.node('channelName').textContent})`);
+    assert(drawn('contentLufs') === (YT_REFERENCE_LUFS - 6).toFixed(1) + ' LUFS',
+      `the level is drawn with its unit (${drawn('contentLufs')})`);
+    assert(drawn('suggestedVol') === String(gainToPercent(calcGain(-6, -18))) + '%',
+      `the suggested gain comes from the level and the target (${drawn('suggestedVol')})`);
+    assert(drawn('currentVol') === '150%', `the gain in force is drawn (${drawn('currentVol')})`);
+    assert(Number(popup.node('volumeSlider').value) === 150,
+      `and the slider stands at it (${popup.node('volumeSlider').value})`);
+    assert(popup.node('videoTypeBadge').style.display === 'none',
+      'a video that is not live carries no LIVE badge');
+    assert(popup.node('autoVideoControl').style.display === ''
+      && popup.node('autoLiveControl').style.display === 'none',
+      'and the Auto control on screen is the one for videos');
+    assert(popup.node('applyBtn').disabled === false, 'the apply button can be pressed');
+    assert(popup.node('applyBtn').textContent.includes('typeVideo'),
+      `and names the type it would save under (${popup.node('applyBtn').textContent})`);
+    assert(popup.node('autoApplyLiveToggle').disabled === true,
+      'the Auto toggle for live is not available while a video is being watched');
+    assert(popup.node('autoApplyVideoToggle').disabled === false,
+      'and the one for videos is');
+  }
+
+  section('Popup: a premiere is not a live stream');
+  {
+    // isLiveNow is true for a premiere as well, so the badge takes both.
+    const premiere = makePopup({
+      answer: async () => ({
+        isWatchPage: true,
+        channel: { id: 'UCpre', name: 'Premiere Ch', url: '' },
+        appliesTo: 'UCpre|video|preVid',
+        loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0,
+        targetLufs: -18, videoType: 'video', isLiveNow: true
+      })
+    });
+    await premiere.ready();
+    assert(premiere.node('videoTypeBadge').style.display === 'none',
+      'a premiere carries no LIVE badge');
+
+    const live = makePopup({
+      answer: async () => ({
+        isWatchPage: true,
+        channel: { id: 'UClive', name: 'Live Ch', url: '' },
+        appliesTo: 'UClive|live|liveVid',
+        loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0,
+        targetLufs: -18, videoType: 'live', isLiveNow: true
+      })
+    });
+    await live.ready();
+    assert(live.node('videoTypeBadge').style.display === ''
+      && live.node('videoTypeBadge').textContent === 'typeLive',
+      `a live stream carries it (${live.node('videoTypeBadge').textContent})`);
+    assert(live.node('autoLiveControl').style.display === ''
+      && live.node('autoVideoControl').style.display === 'none',
+      'and the Auto control on screen is the one for live');
+    assert(live.node('applyBtn').textContent.includes('typeLive'),
+      `the apply button names live as what it would save under (${live.node('applyBtn').textContent})`);
+    assert(live.node('autoApplyVideoToggle').disabled === true
+      && live.node('autoApplyLiveToggle').disabled === false,
+      'and the toggles swap with it');
+  }
+
+  section('Popup: what it says when it does not know');
+  {
+    const noLevel = makePopup({
+      answer: async () => ({
+        isWatchPage: true,
+        channel: { id: 'UCnone', name: 'None Ch', url: '' },
+        appliesTo: 'UCnone|video|noneVid',
+        loudnessDb: null, contentLufs: null, gain: 1.0, targetLufs: -18, videoType: 'video'
+      })
+    });
+    await noLevel.ready();
+    assert(noLevel.node('contentLufs').textContent === '---',
+      `the level is unknown (${noLevel.node('contentLufs').textContent})`);
+    assert(noLevel.node('suggestedVol').textContent === '---',
+      `so is the gain it would suggest (${noLevel.node('suggestedVol').textContent})`);
+    assert(noLevel.node('suggestedVol').className.split(' ').includes('suggested'),
+      `an unknown suggestion is still the suggestion card (${noLevel.node('suggestedVol').className})`);
+    assert(noLevel.node('applyBtn').disabled === true, 'the apply button cannot be pressed');
+
+    const noChannel = makePopup({
+      answer: async () => ({
+        isWatchPage: true,
+        channel: { id: '', name: '' },
+        loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0, targetLufs: -18
+      })
+    });
+    await noChannel.settled();
+    assert(noChannel.node('channelName').textContent === 'channelNotDetected',
+      `a page with no channel says so (${noChannel.node('channelName').textContent})`);
+    assert(noChannel.node('applyHint').textContent === 'hintNoChannel',
+      `and the hint says why (${noChannel.node('applyHint').textContent})`);
+    assert(noChannel.node('autoApplyVideoToggle').disabled === true
+      && noChannel.node('autoApplyLiveToggle').disabled === true,
+      'with neither Auto toggle available');
+  }
+
+  section('Popup: Auto takes the manual controls, and says it has');
+  {
+    const auto = makePopup({
+      answer: async () => ({
+        isWatchPage: true,
+        channel: { id: 'UCauto', name: 'Auto Ch', url: '' },
+        appliesTo: 'UCauto|video|autoVid',
+        loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.2,
+        targetLufs: -18, videoType: 'video', autoApplyLoudnessVideo: true
+      })
+    });
+    await auto.ready();
+    assert(auto.node('applyBtn').disabled === true,
+      'with Auto on there is nothing to apply by hand');
+    assert(auto.node('applyHint').textContent === 'hintAutoApplyEnabled',
+      `and the hint says so (${auto.node('applyHint').textContent})`);
+    assert(auto.node('fallbackBadge').style.display === 'none',
+      'a level in hand needs no fallback badge');
+
+    // Auto on with no level to follow: the badge says the gain is a fallback.
+    const fallback = makePopup({
+      answer: async () => ({
+        isWatchPage: true,
+        channel: { id: 'UCfall', name: 'Fallback Ch', url: '' },
+        appliesTo: 'UCfall|video|fallVid',
+        loudnessDb: null, contentLufs: null, gain: 1.2,
+        targetLufs: -18, videoType: 'video', autoApplyLoudnessVideo: true
+      })
+    });
+    await fallback.ready();
+    assert(fallback.node('fallbackBadge').style.display === '',
+      `Auto with no level to follow says the gain is a fallback (${fallback.node('fallbackBadge').style.display})`);
+    // With no level to follow, the gain that stands is the viewer's own, so
+    // the manual controls stay theirs to move.
+    assert(fallback.node('volumeSlider').disabled === false,
+      'and the slider is still theirs to move');
+    assert(auto.node('volumeSlider').disabled === true,
+      'while Auto with a level to follow takes it');
+  }
+
+  section('Popup: which screen it opens on');
+  {
+    const elsewhere = makePopup({ tabUrl: 'https://example.com/' });
+    await elsewhere.settled();
+    assert(elsewhere.node('main').style.display === 'none'
+      && elsewhere.node('notYt').style.display === '',
+      `a tab that is not YouTube gets its own screen (${elsewhere.node('notYt').style.display})`);
+    assert(elsewhere.asked.length === 0,
+      `and nothing is asked of it (${JSON.stringify(elsewhere.asked)})`);
+
+    const noTab = makePopup({ tabUrl: null });
+    await noTab.settled();
+    assert(noTab.node('notYt').style.display === '',
+      'so does a window with no active tab');
+
+    const notWatch = makePopup({ answer: async () => ({ isWatchPage: false }) });
+    await notWatch.settled();
+    assert(notWatch.node('main').style.display === 'none'
+      && notWatch.node('notWatch').style.display === '',
+      `a page that is not a watch page gets its own (${notWatch.node('notWatch').style.display})`);
+
+    const gone = makePopup({ answer: async () => { throw new Error('Receiving end does not exist'); } });
+    await gone.settled();
+    assert(gone.node('main').style.display === 'none'
+      && gone.node('reloadNeeded').style.display === '',
+      `a page that cannot answer is asked to be reloaded (${gone.node('reloadNeeded').style.display})`);
+  }
+
+  section('Popup: a broadcast from its own tab only');
+  {
+    const popup = makePopup();
+    await popup.ready();
+    const drawn = popup.node('channelName').textContent;
+    await popup.deliver({
+      type: 'stateChanged',
+      channel: { id: 'UCother', name: 'Another Tab', url: '' },
+      appliesTo: 'UCother|video|otherVid', gain: 1.0, targetLufs: -18
+    }, 10);
+    assert(popup.node('channelName').textContent === drawn,
+      `another tab's state is not drawn (${popup.node('channelName').textContent})`);
+    await popup.deliver({
+      type: 'somethingElse',
+      channel: { id: 'UCkind', name: 'Another Kind', url: '' },
+      appliesTo: 'UCkind|video|kindVid', gain: 1.0, targetLufs: -18
+    });
+    assert(popup.node('channelName').textContent === drawn,
+      `nor is a message of another kind (${popup.node('channelName').textContent})`);
+  }
+
+  section('Popup: the unit the settings name');
+  {
+    const asDb = makePopup({
+      displayUnit: 'dB',
+      answer: async () => ({
+        isWatchPage: true,
+        channel: { id: 'UCdb', name: 'dB Ch', url: '' },
+        appliesTo: 'UCdb|video|dbVid',
+        loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 2.0,
+        targetLufs: -18, videoType: 'video'
+      })
+    });
+    await asDb.ready();
+    const inDb = formatGain(2.0, 'dB');
+    assert(asDb.node('volumeValue').textContent === inDb.text + inDb.unit,
+      `the figure beside the slider is in dB (${asDb.node('volumeValue').textContent})`);
+    assert(Number(asDb.node('volumeSlider').value) === 200,
+      `while the slider itself still stands in percent (${asDb.node('volumeSlider').value})`);
+  }
+
+  section('Popup: the Auto toggle it sends, and what it does with the answer');
+  {
+    const watching = (over = {}) => ({
+      isWatchPage: true,
+      channel: { id: 'UCtoggle', name: 'Toggle Ch', url: '' },
+      appliesTo: 'UCtoggle|video|toggleVid',
+      loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0,
+      targetLufs: -18, videoType: 'video',
+      autoApplyLoudnessVideo: false, autoApplyLoudnessLive: false,
+      ...over
+    });
+
+    // The answer to the toggle is drawn from directly.
+    const accepted = makePopup({
+      answer: async (message) => (message.type === 'setAutoApplyLoudness'
+        ? { ok: true, ...watching({ autoApplyLoudnessVideo: true, gain: 1.4 }) }
+        : watching())
+    });
+    await accepted.ready();
+    accepted.asked.length = 0;
+    accepted.node('autoApplyVideoToggle').checked = true;
+    await accepted.fire('autoApplyVideoToggle', 'change');
+    const sent = accepted.asked.filter((m) => m.type === 'setAutoApplyLoudness');
+    assert(sent.length === 1 && sent[0].enabled === true,
+      `the toggle sends what it was moved to (${JSON.stringify(sent)})`);
+    assert(sent[0].appliesTo === 'UCtoggle|video|toggleVid',
+      `against the state on screen (${sent[0].appliesTo})`);
+    assert(accepted.asked.filter((m) => m.type === 'getState').length === 0,
+      `an accepted answer is drawn from without asking again (${JSON.stringify(accepted.asked)})`);
+    assert(accepted.node('applyHint').textContent === 'hintAutoApplyEnabled',
+      `and the screen follows it (${accepted.node('applyHint').textContent})`);
+
+    // A refused one is not: the write may have landed, so the page is asked.
+    const refused = makePopup({
+      answer: async (message) => (message.type === 'setAutoApplyLoudness'
+        ? { ok: false, reason: 'state moved' }
+        : watching())
+    });
+    await refused.ready();
+    refused.asked.length = 0;
+    refused.node('autoApplyVideoToggle').checked = true;
+    await refused.fire('autoApplyVideoToggle', 'change');
+    assert(refused.asked.filter((m) => m.type === 'getState').length === 1,
+      `a refused answer sends the popup back to the page (${JSON.stringify(refused.asked)})`);
+    assert(refused.node('autoApplyVideoToggle').checked === false,
+      `and the toggle goes back to what the page holds (${refused.node('autoApplyVideoToggle').checked})`);
+
+    // A toggle for the type not being watched is not sent at all.
+    const wrongType = makePopup({ answer: async () => watching() });
+    await wrongType.ready();
+    wrongType.asked.length = 0;
+    wrongType.node('autoApplyLiveToggle').disabled = false;
+    wrongType.node('autoApplyLiveToggle').checked = true;
+    await wrongType.fire('autoApplyLiveToggle', 'change');
+    assert(wrongType.asked.length === 0,
+      `the toggle for the other type sends nothing (${JSON.stringify(wrongType.asked)})`);
+  }
+
+  section('Popup: a page with no channel sends nothing');
+  {
+    const noChannel = makePopup({
+      answer: async () => ({
+        isWatchPage: true,
+        channel: { id: '', name: '' },
+        loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0,
+        targetLufs: -18, videoType: 'video'
+      })
+    });
+    await noChannel.settled();
+    noChannel.asked.length = 0;
+    noChannel.node('volumeSlider').value = '30';
+    await noChannel.fire('volumeSlider', 'input');
+    await noChannel.fire('volumeSlider', 'change');
+    await noChannel.firePreset(0, 'click');
+    await noChannel.fire('applyBtn', 'click');
+    assert(noChannel.asked.length === 0,
+      `nothing is sent with no channel to save under (${JSON.stringify(noChannel.asked)})`);
+  }
+
+  section('Popup: a gain the page turns down sends it back to the page');
+  {
+    const turnedDown = makePopup({
+      answer: async (message) => (message.type === 'setGain'
+        ? { ok: false, reason: 'state moved' }
+        : {
+          isWatchPage: true,
+          channel: { id: 'UCturn', name: 'Turn Ch', url: '' },
+          appliesTo: 'UCturn|video|turnVid',
+          loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0,
+          targetLufs: -18, videoType: 'video'
+        })
+    });
+    await turnedDown.ready();
+    turnedDown.asked.length = 0;
+    turnedDown.node('volumeSlider').value = '30';
+    await turnedDown.fire('volumeSlider', 'input');
+    await turnedDown.fire('volumeSlider', 'change');
+    assert(turnedDown.asked.filter((m) => m.type === 'getState').length > 0,
+      `a refused gain is followed by a re-read (${JSON.stringify(turnedDown.asked)})`);
+    assert(Number(turnedDown.node('volumeSlider').value) === 100,
+      `and the slider goes back to what the page holds (${turnedDown.node('volumeSlider').value})`);
+
+    // One the page takes is not re-read.
+    const taken = makePopup({
+      answer: async () => ({
+        isWatchPage: true,
+        channel: { id: 'UCtaken', name: 'Taken Ch', url: '' },
+        appliesTo: 'UCtaken|video|takenVid',
+        loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0,
+        targetLufs: -18, videoType: 'video', ok: true
+      })
+    });
+    await taken.ready();
+    taken.asked.length = 0;
+    taken.node('volumeSlider').value = '30';
+    await taken.fire('volumeSlider', 'input');
+    await taken.fire('volumeSlider', 'change');
+    assert(taken.asked.filter((m) => m.type === 'getState').length === 0,
+      `a gain the page takes is not read back (${JSON.stringify(taken.asked)})`);
+  }
+
+  section('Popup: how long it goes on asking for a level');
+  {
+    const withLevel = (level) => ({
+      isWatchPage: true,
+      channel: { id: 'UCask', name: 'Ask Ch', url: '' },
+      appliesTo: 'UCask|video|askVid',
+      loudnessDb: level, contentLufs: level === null ? null : YT_REFERENCE_LUFS + level,
+      gain: 1.0, targetLufs: -18, videoType: 'video'
+    });
+
+    let asks = 0;
+    const never = makePopup({ answer: async () => { asks += 1; return withLevel(null); } });
+    await never.ready();
+    for (let round = 0; round < 12; round++) await never.runTimers();
+    assert(asks === 9, `the forceDetect and eight retries, and no more (${asks})`);
+
+    let known = 0;
+    const atOnce = makePopup({ answer: async () => { known += 1; return withLevel(-6); } });
+    await atOnce.ready();
+    await atOnce.runTimers();
+    assert(known === 1, `a level answered at once is not asked for again (${known})`);
+
+    let quiet = 0;
+    const unanswered = makePopup({
+      answer: async (message) => {
+        quiet += 1;
+        return message.type === 'getState' ? undefined : withLevel(null);
+      }
+    });
+    await unanswered.ready();
+    for (let round = 0; round < 5; round++) await unanswered.runTimers();
+    assert(quiet === 2, `an ask that goes unanswered ends the waiting (${quiet})`);
+
+    let arrived = 0;
+    const byBroadcast = makePopup({ answer: async () => { arrived += 1; return withLevel(null); } });
+    await byBroadcast.ready();
+    await byBroadcast.deliver({ type: 'stateChanged', ...withLevel(-6) });
+    const before = arrived;
+    for (let round = 0; round < 3; round++) await byBroadcast.runTimers();
+    assert(arrived === before,
+      `a level that arrived another way is not asked for again (${arrived - before})`);
+  }
+
+  section('Popup: a card with no unit, and a target it was not told');
+  {
+    const popup = makePopup();
+    await popup.ready();
+    await popup.deliver({
+      type: 'stateChanged',
+      channel: { id: 'UCunit', name: 'Unit Ch', url: '' },
+      appliesTo: 'UCunit|video|unitVid',
+      loudnessDb: null, contentLufs: null, gain: 1.0, targetLufs: -18, videoType: 'video'
+    });
+    assert(popup.node('contentLufs').children.length === 0,
+      `an unknown level carries no unit beside it (${popup.node('contentLufs').children.length})`);
+    assert(popup.node('contentLufs').className.split(' ').includes('unknown'),
+      `and says it is unknown (${popup.node('contentLufs').className})`);
+
+    await popup.deliver({
+      type: 'stateChanged',
+      channel: { id: 'UCunit', name: 'Unit Ch', url: '' },
+      appliesTo: 'UCunit|video|unitVid',
+      loudnessDb: -9, contentLufs: YT_REFERENCE_LUFS - 9, gain: 1.0,
+      targetLufs: -12, videoType: 'video'
+    });
+    const withTarget = popup.node('suggestedVol').textContent;
+    assert(withTarget === String(gainToPercent(calcGain(-9, -12))),
+      `the suggestion follows the target it was given (${withTarget})`);
+    await popup.deliver({
+      type: 'stateChanged',
+      channel: { id: 'UCunit', name: 'Unit Ch', url: '' },
+      appliesTo: 'UCunit|video|unitVid',
+      loudnessDb: -9, contentLufs: YT_REFERENCE_LUFS - 9, gain: 1.0, videoType: 'video'
+    });
+    assert(popup.node('suggestedVol').textContent === withTarget,
+      `a state naming no target leaves it where it was (${popup.node('suggestedVol').textContent})`);
+  }
+
+  section('Popup: a toggle the page cannot answer for goes back from memory');
+  {
+    const watching = {
+      isWatchPage: true,
+      channel: { id: 'UCback', name: 'Back Ch', url: '' },
+      appliesTo: 'UCback|video|backVid',
+      loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0,
+      targetLufs: -18, videoType: 'video',
+      autoApplyLoudnessVideo: false, autoApplyLoudnessLive: false
+    };
+    // The toggle is refused and the page then answers nothing: there is no
+    // state to draw, so the toggle goes back to what this popup last knew.
+    let drawn = 0;
+    const silent = makePopup({
+      answer: async (message) => {
+        if (message.type === 'setAutoApplyLoudness') return { ok: false, reason: 'state moved' };
+        drawn += 1;
+        return drawn === 1 ? watching : undefined;
+      }
+    });
+    await silent.ready();
+    silent.node('autoApplyVideoToggle').checked = true;
+    await silent.fire('autoApplyVideoToggle', 'change');
+    assert(silent.node('autoApplyVideoToggle').checked === false,
+      `the toggle goes back to what the popup last knew (${silent.node('autoApplyVideoToggle').checked})`);
+    assert(silent.node('autoApplyVideoToggle').disabled === false,
+      'and is left available, the video being the one on screen');
+    assert(silent.node('autoApplyLiveToggle').disabled === true,
+      'while the one for the other type stays unavailable');
+
+    // The same when the page cannot be reached at all.
+    let reached = 0;
+    const unreachable = makePopup({
+      answer: async (message) => {
+        if (message.type === 'setAutoApplyLoudness') return { ok: false, reason: 'state moved' };
+        reached += 1;
+        if (reached === 1) return watching;
+        throw new Error('Receiving end does not exist');
+      }
+    });
+    await unreachable.ready();
+    unreachable.node('autoApplyVideoToggle').checked = true;
+    await unreachable.fire('autoApplyVideoToggle', 'change');
+    assert(unreachable.node('autoApplyVideoToggle').checked === false,
+      `a page that cannot be reached leaves the toggle where the popup had it (${unreachable.node('autoApplyVideoToggle').checked})`);
+    assert(unreachable.node('autoApplyVideoToggle').disabled === false,
+      'and available again rather than stuck');
+  }
+
+  section('Popup: a preset saves, and an answer of nothing draws nothing');
+  {
+    const popup = makePopup({
+      answer: async (message) => (message.type === 'setGain'
+        ? { ok: true }
+        : {
+          isWatchPage: true,
+          channel: { id: 'UCpreset', name: 'Preset Ch', url: '' },
+          appliesTo: 'UCpreset|video|presetVid',
+          loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0,
+          targetLufs: -18, videoType: 'video'
+        })
+    });
+    await popup.ready();
+    popup.asked.length = 0;
+    await popup.firePreset(2, 'click');
+    const saves = popup.asked.filter((m) => m.type === 'setGain');
+    assert(saves.length === 1 && saves[0].gain === 2,
+      `a preset saves the gain it names (${JSON.stringify(saves)})`);
+    assert(saves[0].appliesTo === 'UCpreset|video|presetVid',
+      `against the state on screen (${saves[0].appliesTo})`);
+
+    // A forceDetect answered with nothing draws nothing, and is not mistaken
+    // for a page that cannot answer.
+    const silent = makePopup({ answer: async () => undefined });
+    await silent.settled();
+    assert(silent.node('channelName').textContent === '',
+      `an answer of nothing draws nothing (${silent.node('channelName').textContent})`);
+    assert(silent.node('reloadNeeded').style.display === undefined
+      && silent.node('notWatch').style.display === undefined
+      && silent.node('main').style.display === undefined,
+      'and sends the popup to no other screen');
+  }
+
+  section('Popup: a refused toggle draws what the page holds, not what the popup had');
+  {
+    // The re-read answers a state that differs from the one on screen. Drawing
+    // it is the whole point of asking; putting the toggle back from memory
+    // would leave the rest of the screen at the state before the gesture.
+    let reads = 0;
+    const moved = makePopup({
+      answer: async (message) => {
+        if (message.type === 'setAutoApplyLoudness') return { ok: false, reason: 'state moved' };
+        reads += 1;
+        return reads === 1
+          ? {
+            isWatchPage: true,
+            channel: { id: 'UCfirst', name: 'First Ch', url: '' },
+            appliesTo: 'UCfirst|video|firstVid',
+            loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0,
+            targetLufs: -18, videoType: 'video', autoApplyLoudnessVideo: false
+          }
+          : {
+            isWatchPage: true,
+            channel: { id: 'UCsecond', name: 'Second Ch', url: '' },
+            appliesTo: 'UCsecond|video|secondVid',
+            loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.75,
+            targetLufs: -18, videoType: 'video', autoApplyLoudnessVideo: true
+          };
+      }
+    });
+    await moved.ready();
+    moved.node('autoApplyVideoToggle').checked = true;
+    await moved.fire('autoApplyVideoToggle', 'change');
+    assert(moved.node('channelName').textContent === 'Second Ch',
+      `the screen follows what the page answered (${moved.node('channelName').textContent})`);
+    assert(Number(moved.node('volumeSlider').value) === 175,
+      `the gain with it (${moved.node('volumeSlider').value})`);
+    assert(moved.node('autoApplyVideoToggle').checked === true,
+      `and the toggle stands where the page has it, not where the popup had it (${moved.node('autoApplyVideoToggle').checked})`);
+  }
+
+  section('Popup: a toggle put back for a type no longer on screen is not left available');
+  {
+    // The gesture is made on a video. While the answer is out the tab moves to
+    // a live stream, and the re-read answers nothing, so the toggle is put back
+    // from memory — for a type that is no longer the one being watched.
+    let held;
+    const holding = new Promise((resolve) => { held = resolve; });
+    let reads = 0;
+    const popup = makePopup({
+      answer: async (message) => {
+        if (message.type === 'setAutoApplyLoudness') {
+          await holding;
+          return { ok: false, reason: 'state moved' };
+        }
+        reads += 1;
+        return reads === 1
+          ? {
+            isWatchPage: true,
+            channel: { id: 'UCswap', name: 'Swap Ch', url: '' },
+            appliesTo: 'UCswap|video|swapVid',
+            loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0,
+            targetLufs: -18, videoType: 'video',
+            autoApplyLoudnessVideo: false, autoApplyLoudnessLive: true
+          }
+          : undefined;
+      }
+    });
+    await popup.ready();
+    popup.node('autoApplyVideoToggle').checked = true;
+    const gesture = popup.fire('autoApplyVideoToggle', 'change');
+    await tick();
+
+    // The tab moves to a live stream while the answer is out.
+    await popup.deliver({
+      type: 'stateChanged',
+      channel: { id: 'UCswap', name: 'Swap Ch', url: '' },
+      appliesTo: 'UCswap|live|liveVid',
+      loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0,
+      targetLufs: -18, videoType: 'live', isLiveNow: true,
+      autoApplyLoudnessVideo: false, autoApplyLoudnessLive: true
+    });
+    held();
+    await gesture;
+    await tick();
+
+    assert(popup.node('autoApplyVideoToggle').disabled === true,
+      `the toggle for videos is not left available on a live stream (${popup.node('autoApplyVideoToggle').disabled})`);
+    assert(popup.node('autoApplyVideoToggle').checked === false,
+      `and stands at the saved choice for videos (${popup.node('autoApplyVideoToggle').checked})`);
+  }
+
+  // The same, with the page unreachable rather than answering nothing: the
+  // toggle is put back from the saved choice for its own type, and left
+  // unavailable because that type is not the one on screen.
+  {
+    let release;
+    const waiting = new Promise((resolve) => { release = resolve; });
+    let reads = 0;
+    const popup = makePopup({
+      answer: async (message) => {
+        if (message.type === 'setAutoApplyLoudness') {
+          await waiting;
+          return { ok: false, reason: 'state moved' };
+        }
+        reads += 1;
+        if (reads > 1) throw new Error('Receiving end does not exist');
+        return {
+          isWatchPage: true,
+          channel: { id: 'UCgone', name: 'Gone Ch', url: '' },
+          appliesTo: 'UCgone|video|goneVid',
+          loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0,
+          targetLufs: -18, videoType: 'video',
+          autoApplyLoudnessVideo: false, autoApplyLoudnessLive: true
+        };
+      }
+    });
+    await popup.ready();
+    popup.node('autoApplyVideoToggle').checked = true;
+    const gesture = popup.fire('autoApplyVideoToggle', 'change');
+    await tick();
+    await popup.deliver({
+      type: 'stateChanged',
+      channel: { id: 'UCgone', name: 'Gone Ch', url: '' },
+      appliesTo: 'UCgone|live|goneLive',
+      loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0,
+      targetLufs: -18, videoType: 'live', isLiveNow: true,
+      autoApplyLoudnessVideo: false, autoApplyLoudnessLive: true
+    });
+    release();
+    await gesture;
+    await tick();
+    assert(popup.node('autoApplyVideoToggle').checked === false,
+      `a page that cannot be reached puts the toggle back from its own type's choice (${popup.node('autoApplyVideoToggle').checked})`);
+    assert(popup.node('autoApplyVideoToggle').disabled === true,
+      `and leaves it unavailable, the video not being on screen (${popup.node('autoApplyVideoToggle').disabled})`);
+  }
+
+  section('Popup: a drag that ended without a change does not hold the next one');
+  {
+    // Chrome fires change only when the value differs from where the gesture
+    // began. A redraw that puts the slider back where it started makes the
+    // release fire nothing at all, so nothing tells the popup the drag is over.
+    const popup = makePopup({
+      answer: async (message) => (message.type === 'setGainLive' || message.type === 'setGain'
+        ? { ok: true }
+        : {
+          isWatchPage: true,
+          channel: { id: 'UCfirst', name: 'First Ch', url: '' },
+          appliesTo: 'UCfirst|video|first',
+          loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0,
+          targetLufs: -18, videoType: 'video'
+        })
+    });
+    await popup.ready();
+
+    // A drag on the first video, interrupted by the tab moving on.
+    popup.node('volumeSlider').value = '140';
+    await popup.fire('volumeSlider', 'pointerdown');
+    await popup.fire('volumeSlider', 'input');
+    await popup.deliver({
+      type: 'stateChanged',
+      channel: { id: 'UCsecond', name: 'Second Ch', url: '' },
+      appliesTo: 'UCsecond|video|second',
+      loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0,
+      targetLufs: -18, videoType: 'video'
+    });
+    // The release fires nothing: the redraw put the slider back where it began.
+    await popup.fire('volumeSlider', 'pointerup');
+
+    // A new drag, on the video now playing.
+    popup.asked.length = 0;
+    popup.node('volumeSlider').value = '300';
+    await popup.fire('volumeSlider', 'pointerdown');
+    await popup.fire('volumeSlider', 'input');
+    await popup.fire('volumeSlider', 'change');
+
+    const previews = popup.asked.filter((m) => m.type === 'setGainLive');
+    const saves = popup.asked.filter((m) => m.type === 'setGain');
+    assert(previews.length === 1 && previews[0].appliesTo === 'UCsecond|video|second',
+      `the new drag previews against the video it began on (${JSON.stringify(previews)})`);
+    assert(saves.length === 1 && saves[0].appliesTo === 'UCsecond|video|second',
+      `and saves against it (${JSON.stringify(saves)})`);
+
+    // The keyboard begins one the same way.
+    popup.asked.length = 0;
+    popup.node('volumeSlider').value = '250';
+    await popup.fire('volumeSlider', 'keydown');
+    await popup.fire('volumeSlider', 'input');
+    await popup.fire('volumeSlider', 'change');
+    const byKey = popup.asked.filter((m) => m.type === 'setGain');
+    assert(byKey.length === 1 && byKey[0].appliesTo === 'UCsecond|video|second',
+      `a key on the slider saves against the video on screen (${JSON.stringify(byKey)})`);
+  }
+
+  section('Popup: a drag in progress keeps the state it began on');
+  {
+    const popup = makePopup({
+      answer: async (message) => (message.type === 'setGainLive' || message.type === 'setGain'
+        ? { ok: true }
+        : {
+          isWatchPage: true,
+          channel: { id: 'UCheld', name: 'Held Ch', url: '' },
+          appliesTo: 'UCheld|video|heldA',
+          loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0,
+          targetLufs: -18, videoType: 'video'
+        })
+    });
+    await popup.ready();
+
+    popup.asked.length = 0;
+    popup.node('volumeSlider').value = '140';
+    await popup.fire('volumeSlider', 'pointerdown');
+    await popup.fire('volumeSlider', 'input');
+
+    // The tab moves on, and the drag goes on. Every message it sends still
+    // belongs to the video it began on, so the one now playing is untouched.
+    await popup.deliver({
+      type: 'stateChanged',
+      channel: { id: 'UCheld', name: 'Held Ch', url: '' },
+      appliesTo: 'UCheld|video|heldB',
+      loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0,
+      targetLufs: -18, videoType: 'video'
+    });
+    popup.node('volumeSlider').value = '180';
+    await popup.fire('volumeSlider', 'input');
+    await popup.fire('volumeSlider', 'change');
+    assert(popup.asked.filter((m) => m.appliesTo === 'UCheld|video|heldB').length === 0,
+      `nothing the drag sends belongs to the video it moved to (${JSON.stringify(popup.asked)})`);
+    assert(popup.asked.filter((m) => m.appliesTo === 'UCheld|video|heldA').length === 3,
+      `and all of it to the one it began on (${JSON.stringify(popup.asked)})`);
+  }
+
+  // ── The popup and the content script, joined up ──
+
+  section('Popup: a slider released after the video changed saves against the one it was moved on');
+  {
+    mockStorage['channelVolumes'] = {};
+    mockStorage['autoLoudnessSettings'] = { targetLufs: -18, displayUnit: '%' };
+    setURL('/watch', 'popVidA');
+    mockVideoEl = { id: 'popup-video-a' };
+    mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCpopup' };
+    ytcv._set('currentChannel', { id: 'UCpopup', name: 'Popup Ch', url: '' });
+    ytcv._set('currentVideoType', 'video');
+    ytcv._set('_lastVideoId', 'popVidA');
+    ytcv._set('currentGain', 1.0);
+    ytcv._set('currentLoudnessDb', -6);
+
+    const popup = makePopup();
+    await popup.ready();
+    const drawnOn = (await simulateRuntimeMessage({ type: 'getState' })).appliesTo;
+
+    // The viewer takes hold of the slider on popVidA.
+    popup.node('volumeSlider').value = '25';
+    await popup.fire('volumeSlider', 'input');
+
+    // The tab moves to another video of the same channel, and content.js tells
+    // the popup about it.
+    setURL('/watch', 'popVidB');
+    ytcv._set('_lastVideoId', 'popVidB');
+    await popup.broadcast();
+    assert((await simulateRuntimeMessage({ type: 'getState' })).appliesTo !== drawnOn,
+      'two videos of one channel are two states, not one');
+
+    await popup.fire('volumeSlider', 'change');
+    const saves = popup.asked.filter((m) => m.type === 'setGain');
+    assert(saves.length === 1, `one save is sent (${saves.length})`);
+    assert(saves[0].appliesTo === drawnOn,
+      `carrying the state it was made on (${saves[0].appliesTo})`);
+    assert(mockStorage['channelVolumes']['UCpopup'] === undefined,
+      `and nothing is saved for the video moved to (${JSON.stringify(mockStorage['channelVolumes'])})`);
+  }
+
+  section('Popup: a slider released with the tab where it was saves the gain');
+  {
+    mockStorage['channelVolumes'] = {};
+    setURL('/watch', 'popVidC');
+    mockVideoEl = { id: 'popup-video-c' };
+    mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCkept' };
+    ytcv._set('currentChannel', { id: 'UCkept', name: 'Kept Ch', url: '' });
+    ytcv._set('currentVideoType', 'video');
+    ytcv._set('_lastVideoId', 'popVidC');
+    ytcv._set('currentGain', 1.0);
+
+    const popup = makePopup();
+    await popup.ready();
+    popup.node('volumeSlider').value = '25';
+    await popup.fire('volumeSlider', 'input');
+    await popup.broadcast();
+    await popup.fire('volumeSlider', 'change');
+    await tick();
+    assert(Math.abs(mockStorage['channelVolumes']['UCkept']?.gainVideo - 0.25) < 1e-9,
+      `an ordinary release saves the gain (${JSON.stringify(mockStorage['channelVolumes']['UCkept'])})`);
+  }
+
+  section('Popup: the preview during a drag belongs to the video the drag began on');
+  {
+    mockStorage['channelVolumes'] = {};
+    setURL('/watch', 'popVidD');
+    mockVideoEl = { id: 'popup-video-d' };
+    mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCpreview' };
+    ytcv._set('currentChannel', { id: 'UCpreview', name: 'Preview Ch', url: '' });
+    ytcv._set('currentVideoType', 'video');
+    ytcv._set('_lastVideoId', 'popVidD');
+    ytcv._set('currentGain', 1.0);
+
+    const popup = makePopup();
+    await popup.ready();
+    popup.node('volumeSlider').value = '40';
+    await popup.fire('volumeSlider', 'input');
+    assert(Math.abs(ytcv.state.currentGain - 0.4) < 1e-9,
+      `the preview moves the level of the video being watched (${ytcv.state.currentGain})`);
+
+    setURL('/watch', 'popVidE');
+    ytcv._set('_lastVideoId', 'popVidE');
+    ytcv._set('currentGain', 1.0);
+    await popup.broadcast();
+
+    popup.node('volumeSlider').value = '60';
+    await popup.fire('volumeSlider', 'input');
+    assert(ytcv.state.currentGain === 1.0,
+      `the drag does not move the level of the video moved to (${ytcv.state.currentGain})`);
+  }
 
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed > 0 ? 1 : 0);
