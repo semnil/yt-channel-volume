@@ -5676,6 +5676,101 @@ async function runTests() {
       `and leaves it unavailable, the video not being on screen (${popup.node('autoApplyVideoToggle').disabled})`);
   }
 
+  section('Popup: a drag that ended without a change does not hold the next one');
+  {
+    // Chrome fires change only when the value differs from where the gesture
+    // began. A redraw that puts the slider back where it started makes the
+    // release fire nothing at all, so nothing tells the popup the drag is over.
+    const popup = makePopup({
+      answer: async (message) => (message.type === 'setGainLive' || message.type === 'setGain'
+        ? { ok: true }
+        : {
+          isWatchPage: true,
+          channel: { id: 'UCfirst', name: 'First Ch', url: '' },
+          appliesTo: 'UCfirst|video|first',
+          loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0,
+          targetLufs: -18, videoType: 'video'
+        })
+    });
+    await popup.ready();
+
+    // A drag on the first video, interrupted by the tab moving on.
+    popup.node('volumeSlider').value = '140';
+    await popup.fire('volumeSlider', 'pointerdown');
+    await popup.fire('volumeSlider', 'input');
+    await popup.deliver({
+      type: 'stateChanged',
+      channel: { id: 'UCsecond', name: 'Second Ch', url: '' },
+      appliesTo: 'UCsecond|video|second',
+      loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0,
+      targetLufs: -18, videoType: 'video'
+    });
+    // The release fires nothing: the redraw put the slider back where it began.
+    await popup.fire('volumeSlider', 'pointerup');
+
+    // A new drag, on the video now playing.
+    popup.asked.length = 0;
+    popup.node('volumeSlider').value = '300';
+    await popup.fire('volumeSlider', 'pointerdown');
+    await popup.fire('volumeSlider', 'input');
+    await popup.fire('volumeSlider', 'change');
+
+    const previews = popup.asked.filter((m) => m.type === 'setGainLive');
+    const saves = popup.asked.filter((m) => m.type === 'setGain');
+    assert(previews.length === 1 && previews[0].appliesTo === 'UCsecond|video|second',
+      `the new drag previews against the video it began on (${JSON.stringify(previews)})`);
+    assert(saves.length === 1 && saves[0].appliesTo === 'UCsecond|video|second',
+      `and saves against it (${JSON.stringify(saves)})`);
+
+    // The keyboard begins one the same way.
+    popup.asked.length = 0;
+    popup.node('volumeSlider').value = '250';
+    await popup.fire('volumeSlider', 'keydown');
+    await popup.fire('volumeSlider', 'input');
+    await popup.fire('volumeSlider', 'change');
+    const byKey = popup.asked.filter((m) => m.type === 'setGain');
+    assert(byKey.length === 1 && byKey[0].appliesTo === 'UCsecond|video|second',
+      `a key on the slider saves against the video on screen (${JSON.stringify(byKey)})`);
+  }
+
+  section('Popup: a drag in progress keeps the state it began on');
+  {
+    const popup = makePopup({
+      answer: async (message) => (message.type === 'setGainLive' || message.type === 'setGain'
+        ? { ok: true }
+        : {
+          isWatchPage: true,
+          channel: { id: 'UCheld', name: 'Held Ch', url: '' },
+          appliesTo: 'UCheld|video|heldA',
+          loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0,
+          targetLufs: -18, videoType: 'video'
+        })
+    });
+    await popup.ready();
+
+    popup.asked.length = 0;
+    popup.node('volumeSlider').value = '140';
+    await popup.fire('volumeSlider', 'pointerdown');
+    await popup.fire('volumeSlider', 'input');
+
+    // The tab moves on, and the drag goes on. Every message it sends still
+    // belongs to the video it began on, so the one now playing is untouched.
+    await popup.deliver({
+      type: 'stateChanged',
+      channel: { id: 'UCheld', name: 'Held Ch', url: '' },
+      appliesTo: 'UCheld|video|heldB',
+      loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0,
+      targetLufs: -18, videoType: 'video'
+    });
+    popup.node('volumeSlider').value = '180';
+    await popup.fire('volumeSlider', 'input');
+    await popup.fire('volumeSlider', 'change');
+    assert(popup.asked.filter((m) => m.appliesTo === 'UCheld|video|heldB').length === 0,
+      `nothing the drag sends belongs to the video it moved to (${JSON.stringify(popup.asked)})`);
+    assert(popup.asked.filter((m) => m.appliesTo === 'UCheld|video|heldA').length === 3,
+      `and all of it to the one it began on (${JSON.stringify(popup.asked)})`);
+  }
+
   // ── The popup and the content script, joined up ──
 
   section('Popup: a slider released after the video changed saves against the one it was moved on');

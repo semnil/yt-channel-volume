@@ -258,8 +258,17 @@
   });
 
   // input: real-time gain change (no storage write)
+  // A drag begins where the pointer goes down or a key is pressed on the
+  // slider. Chrome fires no change when the value ends where it began, so a
+  // release can pass unseen: the start of the next gesture is what says the
+  // one before it is over. Taking the copy here rather than on every movement
+  // keeps a drag on the state it began on.
+  const beginSliderGesture = () => { sliderAppliesTo = currentAppliesTo; };
+  volumeSlider.addEventListener('pointerdown', beginSliderGesture);
+  volumeSlider.addEventListener('keydown', beginSliderGesture);
+
   volumeSlider.addEventListener('input', () => {
-    // The first movement is where the gesture begins.
+    // An input that arrived without either of those begins one too.
     if (sliderAppliesTo === null) sliderAppliesTo = currentAppliesTo;
     const pct = Number(volumeSlider.value);
     const gain = percentToGain(pct);
