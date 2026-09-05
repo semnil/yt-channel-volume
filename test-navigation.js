@@ -478,7 +478,13 @@ function makePopup({ tabUrl = 'https://www.youtube.com/watch?v=abc', answer = nu
       const classes = new Set();
       nodes.set(id, {
         id, listeners: {}, dataset: {}, style: {}, children: [], offsetWidth: 0,
-        textContent: '', value: '', disabled: false, checked: false,
+        value: '', disabled: false, checked: false,
+        // Writing textContent replaces every child with one piece of text,
+        // and writing innerHTML replaces what the element holds. The popup
+        // empties a card both ways before drawing into it again.
+        _textContent: '',
+        get textContent() { return this._textContent; },
+        set textContent(text) { this._textContent = text; this.children.length = 0; },
         // Writing innerHTML replaces what the element holds; the popup empties
         // a card that way before drawing into it again.
         _innerHTML: '',
@@ -5238,6 +5244,203 @@ async function runTests() {
       `the figure beside the slider is in dB (${asDb.node('volumeValue').textContent})`);
     assert(Number(asDb.node('volumeSlider').value) === 200,
       `while the slider itself still stands in percent (${asDb.node('volumeSlider').value})`);
+  }
+
+  section('Popup: the Auto toggle it sends, and what it does with the answer');
+  {
+    const watching = (over = {}) => ({
+      isWatchPage: true,
+      channel: { id: 'UCtoggle', name: 'Toggle Ch', url: '' },
+      appliesTo: 'UCtoggle|video|toggleVid',
+      loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0,
+      targetLufs: -18, videoType: 'video',
+      autoApplyLoudnessVideo: false, autoApplyLoudnessLive: false,
+      ...over
+    });
+
+    // The answer to the toggle is drawn from directly.
+    const accepted = makePopup({
+      answer: async (message) => (message.type === 'setAutoApplyLoudness'
+        ? { ok: true, ...watching({ autoApplyLoudnessVideo: true, gain: 1.4 }) }
+        : watching())
+    });
+    await accepted.ready();
+    accepted.asked.length = 0;
+    accepted.node('autoApplyVideoToggle').checked = true;
+    await accepted.fire('autoApplyVideoToggle', 'change');
+    const sent = accepted.asked.filter((m) => m.type === 'setAutoApplyLoudness');
+    assert(sent.length === 1 && sent[0].enabled === true,
+      `the toggle sends what it was moved to (${JSON.stringify(sent)})`);
+    assert(sent[0].appliesTo === 'UCtoggle|video|toggleVid',
+      `against the state on screen (${sent[0].appliesTo})`);
+    assert(accepted.asked.filter((m) => m.type === 'getState').length === 0,
+      `an accepted answer is drawn from without asking again (${JSON.stringify(accepted.asked)})`);
+    assert(accepted.node('applyHint').textContent === 'hintAutoApplyEnabled',
+      `and the screen follows it (${accepted.node('applyHint').textContent})`);
+
+    // A refused one is not: the write may have landed, so the page is asked.
+    const refused = makePopup({
+      answer: async (message) => (message.type === 'setAutoApplyLoudness'
+        ? { ok: false, reason: 'state moved' }
+        : watching())
+    });
+    await refused.ready();
+    refused.asked.length = 0;
+    refused.node('autoApplyVideoToggle').checked = true;
+    await refused.fire('autoApplyVideoToggle', 'change');
+    assert(refused.asked.filter((m) => m.type === 'getState').length === 1,
+      `a refused answer sends the popup back to the page (${JSON.stringify(refused.asked)})`);
+    assert(refused.node('autoApplyVideoToggle').checked === false,
+      `and the toggle goes back to what the page holds (${refused.node('autoApplyVideoToggle').checked})`);
+
+    // A toggle for the type not being watched is not sent at all.
+    const wrongType = makePopup({ answer: async () => watching() });
+    await wrongType.ready();
+    wrongType.asked.length = 0;
+    wrongType.node('autoApplyLiveToggle').disabled = false;
+    wrongType.node('autoApplyLiveToggle').checked = true;
+    await wrongType.fire('autoApplyLiveToggle', 'change');
+    assert(wrongType.asked.length === 0,
+      `the toggle for the other type sends nothing (${JSON.stringify(wrongType.asked)})`);
+  }
+
+  section('Popup: a page with no channel sends nothing');
+  {
+    const noChannel = makePopup({
+      answer: async () => ({
+        isWatchPage: true,
+        channel: { id: '', name: '' },
+        loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0,
+        targetLufs: -18, videoType: 'video'
+      })
+    });
+    await noChannel.settled();
+    noChannel.asked.length = 0;
+    noChannel.node('volumeSlider').value = '30';
+    await noChannel.fire('volumeSlider', 'input');
+    await noChannel.fire('volumeSlider', 'change');
+    await noChannel.firePreset(0, 'click');
+    await noChannel.fire('applyBtn', 'click');
+    assert(noChannel.asked.length === 0,
+      `nothing is sent with no channel to save under (${JSON.stringify(noChannel.asked)})`);
+  }
+
+  section('Popup: a gain the page turns down sends it back to the page');
+  {
+    const turnedDown = makePopup({
+      answer: async (message) => (message.type === 'setGain'
+        ? { ok: false, reason: 'state moved' }
+        : {
+          isWatchPage: true,
+          channel: { id: 'UCturn', name: 'Turn Ch', url: '' },
+          appliesTo: 'UCturn|video|turnVid',
+          loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0,
+          targetLufs: -18, videoType: 'video'
+        })
+    });
+    await turnedDown.ready();
+    turnedDown.asked.length = 0;
+    turnedDown.node('volumeSlider').value = '30';
+    await turnedDown.fire('volumeSlider', 'input');
+    await turnedDown.fire('volumeSlider', 'change');
+    assert(turnedDown.asked.filter((m) => m.type === 'getState').length > 0,
+      `a refused gain is followed by a re-read (${JSON.stringify(turnedDown.asked)})`);
+    assert(Number(turnedDown.node('volumeSlider').value) === 100,
+      `and the slider goes back to what the page holds (${turnedDown.node('volumeSlider').value})`);
+
+    // One the page takes is not re-read.
+    const taken = makePopup({
+      answer: async () => ({
+        isWatchPage: true,
+        channel: { id: 'UCtaken', name: 'Taken Ch', url: '' },
+        appliesTo: 'UCtaken|video|takenVid',
+        loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0,
+        targetLufs: -18, videoType: 'video', ok: true
+      })
+    });
+    await taken.ready();
+    taken.asked.length = 0;
+    taken.node('volumeSlider').value = '30';
+    await taken.fire('volumeSlider', 'input');
+    await taken.fire('volumeSlider', 'change');
+    assert(taken.asked.filter((m) => m.type === 'getState').length === 0,
+      `a gain the page takes is not read back (${JSON.stringify(taken.asked)})`);
+  }
+
+  section('Popup: how long it goes on asking for a level');
+  {
+    const withLevel = (level) => ({
+      isWatchPage: true,
+      channel: { id: 'UCask', name: 'Ask Ch', url: '' },
+      appliesTo: 'UCask|video|askVid',
+      loudnessDb: level, contentLufs: level === null ? null : YT_REFERENCE_LUFS + level,
+      gain: 1.0, targetLufs: -18, videoType: 'video'
+    });
+
+    let asks = 0;
+    const never = makePopup({ answer: async () => { asks += 1; return withLevel(null); } });
+    await never.ready();
+    for (let round = 0; round < 12; round++) await never.runTimers();
+    assert(asks === 9, `the forceDetect and eight retries, and no more (${asks})`);
+
+    let known = 0;
+    const atOnce = makePopup({ answer: async () => { known += 1; return withLevel(-6); } });
+    await atOnce.ready();
+    await atOnce.runTimers();
+    assert(known === 1, `a level answered at once is not asked for again (${known})`);
+
+    let quiet = 0;
+    const unanswered = makePopup({
+      answer: async (message) => {
+        quiet += 1;
+        return message.type === 'getState' ? undefined : withLevel(null);
+      }
+    });
+    await unanswered.ready();
+    for (let round = 0; round < 5; round++) await unanswered.runTimers();
+    assert(quiet === 2, `an ask that goes unanswered ends the waiting (${quiet})`);
+
+    let arrived = 0;
+    const byBroadcast = makePopup({ answer: async () => { arrived += 1; return withLevel(null); } });
+    await byBroadcast.ready();
+    await byBroadcast.deliver({ type: 'stateChanged', ...withLevel(-6) });
+    const before = arrived;
+    for (let round = 0; round < 3; round++) await byBroadcast.runTimers();
+    assert(arrived === before,
+      `a level that arrived another way is not asked for again (${arrived - before})`);
+  }
+
+  section('Popup: a card with no unit, and a target it was not told');
+  {
+    const popup = makePopup();
+    await popup.ready();
+    await popup.deliver({
+      type: 'stateChanged',
+      channel: { id: 'UCunit', name: 'Unit Ch', url: '' },
+      appliesTo: 'UCunit|video|unitVid',
+      loudnessDb: null, contentLufs: null, gain: 1.0, targetLufs: -18, videoType: 'video'
+    });
+    assert(popup.node('contentLufs').children.length === 0,
+      `an unknown level carries no unit beside it (${popup.node('contentLufs').children.length})`);
+    assert(popup.node('contentLufs').className.split(' ').includes('unknown'),
+      `and says it is unknown (${popup.node('contentLufs').className})`);
+
+    await popup.deliver({
+      type: 'stateChanged',
+      channel: { id: 'UCunit', name: 'Unit Ch', url: '' },
+      appliesTo: 'UCunit|video|unitVid',
+      loudnessDb: -9, contentLufs: YT_REFERENCE_LUFS - 9, gain: 1.0,
+      targetLufs: -12, videoType: 'video'
+    });
+    const withTarget = popup.node('suggestedVol').textContent;
+    await popup.deliver({
+      type: 'stateChanged',
+      channel: { id: 'UCunit', name: 'Unit Ch', url: '' },
+      appliesTo: 'UCunit|video|unitVid',
+      loudnessDb: -9, contentLufs: YT_REFERENCE_LUFS - 9, gain: 1.0, videoType: 'video'
+    });
+    assert(popup.node('suggestedVol').textContent === withTarget,
+      `a state naming no target leaves it where it was (${popup.node('suggestedVol').textContent})`);
   }
 
   // ── The popup and the content script, joined up ──
