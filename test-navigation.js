@@ -5862,6 +5862,517 @@ async function runTests() {
       `the drag does not move the level of the video moved to (${ytcv.state.currentGain})`);
   }
 
+  // ── options.js ────────────────────────────────────────────────────
+  section('options page');
+
+  // The settings page, run for real. It builds its table as markup and puts it
+  // in with innerHTML, so the stub keeps what an element holds as either text
+  // or markup and serialises text the way a browser does -- which is the whole
+  // of what utils' esc() does with the element it writes into.
+  function makeOptions({
+    settings = {},
+    channels = {},
+    failStorageGet = false,
+    failMutation = '',
+    deferStorageGet = false
+  } = {}) {
+    const stored = {
+      [SETTINGS_KEY]: { ...settings },
+      [CHANNEL_VOLUMES_KEY]: JSON.parse(JSON.stringify(channels))
+    };
+
+    const sent = [];
+    const errors = [];
+    const confirms = [];
+    let confirmAnswer = true;
+    const storageListeners = [];
+    let releaseStorageGet = null;
+    const nodes = new Map();
+    const made = [];
+    const deleteButtons = new Map();
+    const escapeText = (text) => String(text)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const markupWithin = (element) => {
+      let markup = element._content.kind === 'markup' ? element._content.value : '';
+      for (const child of element.children) markup += markupWithin(child);
+      return markup;
+    };
+    const makeNode = (id) => {
+      const classes = new Set();
+      const element = {
+        id, listeners: {}, dataset: {}, style: {}, children: [], offsetWidth: 0,
+        value: '', checked: false, disabled: false,
+        _content: { kind: 'text', value: '' },
+        get textContent() { return this._content.kind === 'text' ? this._content.value : ''; },
+        set textContent(text) {
+          this._content = { kind: 'text', value: String(text) };
+          this.children.length = 0;
+        },
+        get innerHTML() {
+          return this._content.kind === 'text'
+            ? escapeText(this._content.value)
+            : this._content.value;
+        },
+        set innerHTML(markup) {
+          this._content = { kind: 'markup', value: String(markup) };
+          this.children.length = 0;
+        },
+        classList: {
+          add: (...names) => names.forEach((name) => classes.add(name)),
+          remove: (...names) => names.forEach((name) => classes.delete(name)),
+          contains: (name) => classes.has(name),
+          toggle(name, force) {
+            const on = force === undefined ? !classes.has(name) : !!force;
+            if (on) classes.add(name); else classes.delete(name);
+            return on;
+          }
+        },
+        get className() { return [...classes].join(' '); },
+        set className(value) {
+          classes.clear();
+          String(value).split(/\s+/).filter(Boolean).forEach((name) => classes.add(name));
+        },
+        appendChild(child) { this.children.push(child); return child; },
+        addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); },
+        // The rows go in as markup, so the buttons the page wires afterwards
+        // are answered out of the ids that markup carries.
+        querySelectorAll(selector) {
+          if (selector !== '.ch-del') return [];
+          return [...markupWithin(element).matchAll(/class="ch-del" data-id="([^"]*)"([^>]*)>/g)]
+            .map(([, id, rest]) => {
+              if (!deleteButtons.has(id)) {
+                const button = makeNode(`del-${id}`);
+                button.dataset.id = id;
+                deleteButtons.set(id, button);
+              }
+              const button = deleteButtons.get(id);
+              button.disabled = rest.includes('disabled');
+              return button;
+            });
+        }
+      };
+      return element;
+    };
+    const node = (id) => {
+      if (!nodes.has(id)) nodes.set(id, makeNode(id));
+      return nodes.get(id);
+    };
+    const body = node('body');
+    body.className = 'initializing';
+    const unitButtons = ['%', 'dB'].map((unit) => {
+      const button = makeNode(`unit-${unit}`);
+      button.dataset.unit = unit;
+      button.disabled = true;
+      return button;
+    });
+    node('unitToggle').querySelectorAll = (selector) => (selector === 'button' ? unitButtons : []);
+    for (const id of [
+      'targetSlider', 'defaultAutoVideoToggle', 'defaultAutoLiveToggle', 'overlayToggle', 'clearAllBtn'
+    ]) {
+      node(id).disabled = true;
+    }
+    node('settingsError').className = 'hidden';
+    const i18nNodes = ['optTitle', 'optTarget'].map((key) => {
+      const element = makeNode(`i18n-${key}`);
+      element.dataset.i18n = key;
+      return element;
+    });
+
+    const sandbox = {
+      console: { log() {}, warn() {}, error: (...args) => errors.push(args) },
+      Promise, Math, JSON, Date, Object, Array, Number, String, Boolean, isNaN, parseFloat, parseInt,
+      setTimeout: (fn) => { fn(); return 0; },
+      requestAnimationFrame: (fn) => fn(),
+      confirm(message) { confirms.push(message); return confirmAnswer; },
+      document: {
+        body,
+        getElementById: node,
+        createElement: (tag) => {
+          const element = makeNode(`made-${made.length}-${tag}`);
+          made.push(element);
+          return element;
+        },
+        querySelectorAll: (selector) => (selector === '[data-i18n]' ? i18nNodes : [])
+      },
+      chrome: {
+        i18n: { getMessage: (key) => key },
+        storage: {
+          local: {
+            get: async (keys) => {
+              if (deferStorageGet) {
+                await new Promise((resolve) => { releaseStorageGet = resolve; });
+              }
+              if (failStorageGet) throw new Error('storage unavailable');
+              const wanted = Array.isArray(keys) ? keys : [keys];
+              const answer = {};
+              for (const key of wanted) {
+                if (key in stored) answer[key] = JSON.parse(JSON.stringify(stored[key]));
+              }
+              return answer;
+            },
+            // A write lands after the turn that asked for it, not during it.
+            set: async (patch) => {
+              await Promise.resolve();
+              Object.assign(stored, JSON.parse(JSON.stringify(patch)));
+            }
+          },
+          onChanged: { addListener: (fn) => storageListeners.push(fn) }
+        },
+        runtime: {
+          sendMessage: async (message) => {
+            sent.push(JSON.parse(JSON.stringify(message)));
+            if (failMutation && message.type === failMutation) {
+              return { ok: false, reason: 'store refused' };
+            }
+            return { ok: true };
+          }
+        }
+      }
+    };
+    sandbox.globalThis = sandbox;
+    vm.createContext(sandbox);
+    vm.runInContext(fs.readFileSync('./utils.js', 'utf8'), sandbox, { filename: 'utils.js' });
+    vm.runInContext(fs.readFileSync('./options.js', 'utf8'), sandbox, { filename: 'options.js' });
+
+    const settle = async () => { for (let turn = 0; turn < 12; turn++) await tick(); };
+    return {
+      node, body, unitButtons, i18nNodes, sent, errors, confirms, stored,
+      answerConfirm(answer) { confirmAnswer = answer; },
+      listMarkup() { return markupWithin(node('channelList')); },
+      deleteButton(id) {
+        node('channelList').querySelectorAll('.ch-del');
+        return deleteButtons.get(id);
+      },
+      async settle() { await settle(); },
+      async releaseStorage() {
+        assert(!!releaseStorageGet, 'the settings read is pending');
+        if (releaseStorageGet) releaseStorageGet();
+        releaseStorageGet = null;
+        await settle();
+      },
+      async fire(id, type) {
+        for (const fn of node(id).listeners[type] || []) await fn({ target: node(id) });
+        await settle();
+      },
+      async clickUnit(unit) {
+        const button = unitButtons.find((candidate) => candidate.dataset.unit === unit);
+        for (const fn of node('unitToggle').listeners.click || []) {
+          await fn({ target: { closest: () => button } });
+        }
+        await settle();
+      },
+      async clickAwayFromUnits() {
+        for (const fn of node('unitToggle').listeners.click || []) {
+          await fn({ target: { closest: () => null } });
+        }
+        await settle();
+      },
+      async clickDelete(id) {
+        node('channelList').querySelectorAll('.ch-del');
+        const button = deleteButtons.get(id);
+        assert(!!button, `there is a delete button for ${id}`);
+        if (!button) return;
+        for (const fn of button.listeners.click || []) await fn({ target: button });
+        await settle();
+      },
+      async fireStorage(changes, area = 'local') {
+        for (const fn of storageListeners) fn(changes, area);
+        await settle();
+      }
+    };
+  }
+
+  {
+    const options = makeOptions({
+      settings: {
+        targetLufs: -20, displayUnit: 'dB', showGainOverlay: true,
+        autoApplyLoudnessVideoDefault: true, autoApplyLoudnessLiveDefault: false
+      },
+      channels: { UC1: { name: 'Alpha', gainVideo: 2, url: 'https://www.youtube.com/channel/UC1' } }
+    });
+    await options.settle();
+
+    assert(options.node('targetSlider').value === -20, 'the stored target reaches the slider');
+    assert(options.node('targetValue').textContent === '-20 LUFS', 'and is named beside it');
+    assert(options.node('overlayToggle').checked === true, 'the overlay choice reaches its toggle');
+    assert(options.node('defaultAutoVideoToggle').checked === true, 'and each Auto default reaches its own');
+    assert(options.node('defaultAutoLiveToggle').checked === false, 'including the one that is off');
+    assert(options.unitButtons.find((b) => b.dataset.unit === 'dB').classList.contains('active'),
+      'the stored unit is the active button');
+    assert(options.i18nNodes.every((el) => el.textContent === el.dataset.i18n),
+      'every node carrying a key is given its message');
+    assert(options.listMarkup().includes('Alpha'), 'the stored channels are drawn');
+    assert(options.node('targetSlider').disabled === false, 'the controls are offered once the load lands');
+    assert(options.unitButtons.every((b) => b.disabled === false), 'the unit buttons with them');
+    assert(options.body.classList.contains('initializing') === false, 'and the page is shown');
+    assert(options.sent[0]?.type === 'store:migrateLegacyGains', 'the legacy fold is asked for first');
+  }
+
+  {
+    const options = makeOptions();
+    await options.settle();
+
+    assert(options.node('targetSlider').value === DEFAULT_TARGET_LUFS,
+      'settings naming no target fall back to the default');
+    assert(options.node('defaultAutoVideoToggle').checked === DEFAULT_AUTO_APPLY_LOUDNESS,
+      'and naming no Auto default to that one');
+    assert(options.unitButtons.find((b) => b.dataset.unit === '%').classList.contains('active'),
+      'and to per cent');
+    assert(options.listMarkup().includes('noSavedChannels'), 'an empty store says there is nothing saved');
+  }
+
+  {
+    const options = makeOptions({ failStorageGet: true });
+    await options.settle();
+
+    assert(options.node('settingsError').classList.contains('hidden') === false,
+      'a load that failed says so');
+    assert(options.node('targetSlider').disabled === true,
+      'and leaves the controls as the markup ships them');
+    assert(options.body.classList.contains('initializing') === false,
+      'and the page is shown either way -- one that never appears cannot be operated');
+    assert(options.listMarkup() === '', 'and no channel list is drawn from a list it never read');
+  }
+
+  {
+    const options = makeOptions({ failStorageGet: true });
+    await options.settle();
+
+    // Another tab writes after this page has given up on its own read.
+    await options.fireStorage({
+      [CHANNEL_VOLUMES_KEY]: { newValue: { UC1: { name: 'Alpha', gainVideo: 2 } } }
+    });
+
+    assert(options.listMarkup() === '',
+      'what another tab writes is not put on a page whose own read never landed');
+  }
+
+  {
+    const options = makeOptions({ failMutation: 'store:migrateLegacyGains' });
+    await options.settle();
+
+    assert(options.node('targetSlider').disabled === false,
+      'a legacy fold that was refused still leaves the page loaded');
+    assert(options.errors.some((args) => String(args[0]).includes('legacy auto gains')),
+      'and the refusal is named');
+  }
+
+  {
+    const options = makeOptions({
+      channels: {
+        UC2: { name: 'Beta', gainVideo: 3 },
+        UC1: { name: 'Alpha', gainVideo: 0.5, gainLive: 1.5 },
+        UC3: { name: 'Gamma' }
+      }
+    });
+    await options.settle();
+    const markup = options.listMarkup();
+
+    assert(markup.indexOf('Alpha') < markup.indexOf('Beta')
+      && markup.indexOf('Beta') < markup.indexOf('Gamma'), 'the rows are in name order');
+    assert(markup.includes('>50%<') && markup.includes('>150%<'),
+      `both of one channel's gains are shown (${markup.replace(/\s+/g, ' ').slice(0, 200)})`);
+    assert((markup.match(/>—</g) || []).length >= 2, 'a gain that was never saved is a dash');
+    assert(!markup.includes('href='), 'a channel with no url is not a link');
+  }
+
+  {
+    const options = makeOptions({
+      settings: { autoApplyLoudnessVideoDefault: true },
+      channels: { UC1: { name: 'Alpha', gainVideo: 2 } }
+    });
+    await options.settle();
+
+    assert(options.listMarkup().includes('labelAuto'),
+      'a channel following the Auto default is drawn as Auto');
+    assert(options.listMarkup().includes('ch-vol auto'), 'and its cell is marked');
+  }
+
+  {
+    const options = makeOptions({
+      channels: { UC1: { name: 'Alpha', gainVideo: 2 } },
+      deferStorageGet: true
+    });
+    await options.settle();
+
+    // Nothing has been read, so there is nothing to delete from yet.
+    assert(options.body.classList.contains('initializing') === true,
+      'the page waits for the read it has out');
+
+    await options.releaseStorage();
+    assert(options.deleteButton('UC1')?.disabled === false,
+      'deleting is offered once the load has read what it would delete from');
+  }
+
+  {
+    const options = makeOptions({ channels: { UC1: { name: 'Alpha', gainVideo: 2 } } });
+    await options.settle();
+    options.sent.length = 0;
+
+    await options.clickDelete('UC1');
+
+    assert(options.sent.length === 1 && options.sent[0].type === 'store:deleteChannel',
+      'the delete goes to the worker');
+    assert(options.sent[0].channelId === 'UC1', 'naming the channel it is for');
+    assert(options.listMarkup().includes('Alpha'),
+      'and the table is not redrawn from a read of its own');
+
+    // The worker's write comes back as the notification that carries the list.
+    await options.fireStorage({ [CHANNEL_VOLUMES_KEY]: { newValue: {} } });
+    assert(options.listMarkup().includes('noSavedChannels'), 'which is what redraws it');
+  }
+
+  {
+    const options = makeOptions({ channels: { UC1: { name: 'Alpha', gainVideo: 2 } } });
+    await options.settle();
+    options.sent.length = 0;
+
+    options.answerConfirm(false);
+    await options.fire('clearAllBtn', 'click');
+    assert(options.confirms.length === 1, 'clearing all asks first');
+    assert(options.sent.length === 0, 'and a refusal sends nothing');
+
+    options.answerConfirm(true);
+    await options.fire('clearAllBtn', 'click');
+    assert(options.sent.length === 1 && options.sent[0].type === 'store:clearChannels',
+      'agreeing sends the clear');
+  }
+
+  {
+    const options = makeOptions({ channels: { UC1: { name: 'Alpha', gainVideo: 2 } } });
+    await options.settle();
+
+    options.node('defaultAutoVideoToggle').checked = true;
+    await options.fire('defaultAutoVideoToggle', 'change');
+
+    assert(options.stored[SETTINGS_KEY].autoApplyLoudnessVideoDefault === true,
+      'the Auto default is saved');
+    assert(options.listMarkup().includes('labelAuto'),
+      'and the table is redrawn under the new default');
+    assert(options.node('defaultAutoVideoToggle').disabled === false,
+      'and the toggle is handed back');
+  }
+
+  {
+    const options = makeOptions({ settings: { targetLufs: -18 } });
+    await options.settle();
+
+    options.node('targetSlider').value = '-24';
+    await options.fire('targetSlider', 'input');
+    assert(options.node('targetValue').textContent === '-24 LUFS', 'dragging names the value');
+    assert(options.stored[SETTINGS_KEY].targetLufs === -18, 'and saves nothing until the drag ends');
+
+    await options.fire('targetSlider', 'change');
+    assert(options.stored[SETTINGS_KEY].targetLufs === -24, 'the end of the drag saves it');
+  }
+
+  {
+    const options = makeOptions({ settings: { targetLufs: -20, showGainOverlay: true } });
+    await options.settle();
+
+    options.node('overlayToggle').checked = false;
+    await options.fire('overlayToggle', 'change');
+    assert(options.stored[SETTINGS_KEY].showGainOverlay === false, 'the overlay choice is saved');
+    assert(options.stored[SETTINGS_KEY].targetLufs === -20, 'and the target survives the write');
+  }
+
+  {
+    const options = makeOptions({
+      settings: { displayUnit: '%' },
+      channels: { UC1: { name: 'Alpha', gainVideo: 2 } }
+    });
+    await options.settle();
+    assert(options.listMarkup().includes('200%'), 'per cent to begin with');
+
+    await options.clickUnit('dB');
+    assert(options.stored[SETTINGS_KEY].displayUnit === 'dB', 'the unit is saved');
+    assert(options.unitButtons.find((b) => b.dataset.unit === 'dB').classList.contains('active'),
+      'the button pressed becomes the active one');
+    assert(options.listMarkup().includes('6.0 dB'), 'and the table is redrawn in it');
+
+    const before = options.listMarkup();
+    await options.clickAwayFromUnits();
+    assert(options.listMarkup() === before, 'a click landing on no button changes nothing');
+  }
+
+  {
+    const options = makeOptions({
+      settings: { targetLufs: -18, displayUnit: '%' },
+      channels: { UC1: { name: 'Alpha', gainVideo: 2 } }
+    });
+    await options.settle();
+
+    await options.fireStorage({
+      [SETTINGS_KEY]: { newValue: { targetLufs: -26, displayUnit: 'dB' } }
+    });
+    assert(options.node('targetSlider').value === -26, 'a target saved elsewhere moves the slider');
+    assert(options.unitButtons.find((b) => b.dataset.unit === 'dB').classList.contains('active'),
+      'and a unit saved elsewhere moves the active button');
+    assert(options.listMarkup().includes('6.0 dB'), 'and the table is redrawn in it');
+
+    await options.fireStorage({
+      [CHANNEL_VOLUMES_KEY]: { newValue: { UC9: { name: 'Zeta', gainVideo: 1 } } }
+    });
+    assert(options.listMarkup().includes('Zeta') && !options.listMarkup().includes('Alpha'),
+      'the list a notification carries is the list drawn');
+  }
+
+  {
+    const options = makeOptions({ settings: { targetLufs: -18 } });
+    await options.settle();
+    await options.fireStorage({ [SETTINGS_KEY]: { newValue: { targetLufs: -26 } } }, 'sync');
+    assert(options.node('targetSlider').value === -18,
+      'a change in another area is not this page to draw');
+  }
+
+  {
+    // The read is still out when another tab's write arrives. What the read
+    // then brings back is older than what is already on the page.
+    const options = makeOptions({
+      settings: { targetLufs: -18 },
+      channels: { UC1: { name: 'Alpha', gainVideo: 2 } },
+      deferStorageGet: true
+    });
+    await options.settle();
+
+    await options.fireStorage({
+      [SETTINGS_KEY]: { newValue: { targetLufs: -26 } },
+      [CHANNEL_VOLUMES_KEY]: { newValue: { UC9: { name: 'Zeta', gainVideo: 1 } } }
+    });
+    assert(options.node('targetSlider').value === -26, 'the notification is on the page');
+
+    await options.releaseStorage();
+    assert(options.node('targetSlider').value === -26,
+      'and the older read that lands after it does not put it back');
+    assert(options.listMarkup().includes('Zeta') && !options.listMarkup().includes('Alpha'),
+      'nor the channel list it was carrying');
+  }
+
+  {
+    // This page's own fold was refused, so it is still reading the map under
+    // the pre-fold rule: a legacy gain with no Auto flag counts as manual, and
+    // the Auto default does not reach it.
+    const options = makeOptions({
+      failMutation: 'store:migrateLegacyGains',
+      settings: { autoApplyLoudnessVideoDefault: true },
+      channels: { UC1: { name: 'Alpha', gain: 2 } }
+    });
+    await options.settle();
+    assert(options.listMarkup().includes('200%'), 'a legacy gain reads as the manual value it holds');
+    assert(!options.listMarkup().includes('labelAuto'), 'and not as Auto');
+
+    // Another context folds the profile, and says so through storage.
+    await options.fireStorage({ [UNIFIED_GAINS_KEY]: { newValue: true } });
+
+    assert(options.listMarkup().includes('labelAuto'),
+      'once it is folded the Auto default reaches the channel');
+
+    // The mark arriving twice is the same mark, not a reason to draw again.
+    const settled = options.listMarkup();
+    await options.fireStorage({ [UNIFIED_GAINS_KEY]: { newValue: true } });
+    assert(options.listMarkup() === settled, 'and the same mark again changes nothing');
+  }
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed > 0 ? 1 : 0);
 }
