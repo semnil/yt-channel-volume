@@ -34,11 +34,35 @@ globalThis.chrome = {
     }
   }
 };
-globalThis.document = { createElement: () => ({ set textContent(v) {}, get innerHTML() { return ''; } }) };
+// esc() writes text into an element and reads the markup back, so the stub has
+// to serialise it the way a browser does: the characters that would otherwise
+// open markup or an entity. The quotes esc adds itself.
+globalThis.document = {
+  createElement: () => ({
+    _text: '',
+    set textContent(value) { this._text = String(value); },
+    get textContent() { return this._text; },
+    get innerHTML() {
+      return this._text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+  })
+};
 const fs = require('fs');
 // Replace const/let with var so eval exposes to global scope
 const src = fs.readFileSync('./utils.js', 'utf8').replace(/^(const|let) /gm, 'var ');
 eval(src);
+
+section('esc');
+// The result is put inside a double-quoted attribute as well as between tags,
+// and a quote that survives adds attributes to that tag.
+{
+  const escaped = esc('UC1" onclick="steal()');
+  assert(!escaped.includes('"'), `no quote survives esc (${escaped})`);
+  assert(escaped === 'UC1&quot; onclick=&quot;steal()', `and it is escaped as one (${escaped})`);
+}
+assert(esc('<b>&</b>') === '&lt;b&gt;&amp;&lt;/b&gt;', 'markup and entities are escaped');
+assert(esc("it's") === 'it&#39;s', 'so is a single quote');
+assert(esc('plain') === 'plain', 'and plain text is left alone');
 
 // ── gainToPercent / percentToGain ────────────────────────────────────
 

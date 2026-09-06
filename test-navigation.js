@@ -5891,6 +5891,11 @@ async function runTests() {
     const nodes = new Map();
     const made = [];
     const deleteButtons = new Map();
+    // A parser hands back the attribute's value, not its markup, so what the
+    // page reads from dataset is the id itself however it was escaped.
+    const unescapeAttr = (value) => value
+      .replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+      .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
     const escapeText = (text) => String(text)
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     const markupWithin = (element) => {
@@ -5940,7 +5945,8 @@ async function runTests() {
         querySelectorAll(selector) {
           if (selector !== '.ch-del') return [];
           return [...markupWithin(element).matchAll(/class="ch-del" data-id="([^"]*)"([^>]*)>/g)]
-            .map(([, id, rest]) => {
+            .map(([, escaped, rest]) => {
+              const id = unescapeAttr(escaped);
               if (!deleteButtons.has(id)) {
                 const button = makeNode(`del-${id}`);
                 button.dataset.id = id;
@@ -6499,6 +6505,21 @@ async function runTests() {
     assert(options.node('defaultAutoLiveToggle').checked === false,
       'and so does a live default');
     assert(options.node('defaultAutoLiveToggle').disabled === false, 'with its toggle handed back');
+  }
+
+  {
+    // The channel id comes from the page. Every value the table writes goes
+    // inside a quoted attribute, so a quote that survived would close that
+    // attribute and put whatever follows on the tag as one of its own.
+    const hostile = 'UC1" onclick="steal()';
+    const options = makeOptions({ channels: { [hostile]: { name: 'Hostile', gainVideo: 2 } } });
+    await options.settle();
+    const markup = options.listMarkup();
+
+    assert(markup.includes('data-id="UC1&quot; onclick=&quot;steal()" title='),
+      `the whole id stays inside the attribute it was written into (${markup.replace(/\s+/g, ' ').slice(0, 240)})`);
+    assert(options.deleteButton(hostile)?.dataset.id === hostile,
+      'and the button still names the channel it is for');
   }
 
   console.log(`\n${passed} passed, ${failed} failed`);
