@@ -14,6 +14,9 @@ function section(name) { console.log(name); }
 
 // Load utils.js into global scope
 let mockStorage = {};
+const mockStorageRemovals = [];
+let holdRemovals = false;
+let releaseRemovals = null;
 globalThis.chrome = {
   runtime: { id: 'test-extension-id' },
   i18n: { getMessage: () => '' },
@@ -23,13 +26,19 @@ globalThis.chrome = {
         if (key === null) return Promise.resolve(JSON.parse(JSON.stringify(mockStorage)));
         return Promise.resolve({ [key]: mockStorage[key] });
       },
-      set(obj) {
+      // A write lands after the turn that asked for it, not during it, so a
+      // caller that does not wait for one reads what was there before.
+      async set(obj) {
+        await Promise.resolve();
         Object.assign(mockStorage, JSON.parse(JSON.stringify(obj)));
-        return Promise.resolve();
       },
-      remove(keys) {
+      async remove(keys) {
+        mockStorageRemovals.push(Array.isArray(keys) ? [...keys] : [keys]);
+        // Held, a case can ask whether the caller waited for the sweep or
+        // answered while it was still out.
+        if (holdRemovals) await new Promise((resolve) => { releaseRemovals = resolve; });
+        await Promise.resolve();
         for (const key of Array.isArray(keys) ? keys : [keys]) delete mockStorage[key];
-        return Promise.resolve();
       }
     }
   }
@@ -51,6 +60,50 @@ const fs = require('fs');
 // Replace const/let with var so eval exposes to global scope
 const src = fs.readFileSync('./utils.js', 'utf8').replace(/^(const|let) /gm, 'var ');
 eval(src);
+
+section('msg');
+{
+  // The harness answers every key with '' so that a message it does not
+  // declare cannot pass unnoticed; this swaps that out to read what msg does
+  // with each answer it can get.
+  const outer = globalThis.chrome;
+  globalThis.chrome = { ...outer, i18n: { getMessage: (key) => (key === 'known' ? 'Known message' : '') } };
+  assert(msg('known') === 'Known message', 'a declared message is what the viewer sees');
+  assert(msg('missing') === 'missing', 'and a key the locale does not declare comes back as itself');
+  globalThis.chrome = outer;
+}
+
+section('setChannelGain — expanding only what is legacy');
+{
+  // The expansion exists for the single-gain form. An entry that already holds
+  // a type must not have it rewritten with the gain it has not got.
+  const perType = { gainLive: 0.5 };
+  setChannelGain(perType, 'video', 0.25);
+  assert(perType.gainLive === 0.5, `the type already there is kept (${perType.gainLive})`);
+  assert(perType.gainVideo === 0.25, 'and the one being set is taken');
+
+  const fresh = { name: 'X' };
+  setChannelGain(fresh, 'video', 0.5);
+  assert(!('gainLive' in fresh),
+    `an entry holding no gain grows only the type being set (${Object.keys(fresh).join(', ')})`);
+  assert(fresh.gainVideo === 0.5, 'which it does take');
+
+  const legacy = { gain: 0.75 };
+  setChannelGain(legacy, 'video', 0.25);
+  assert(legacy.gainLive === 0.75 && legacy.gainVideo === 0.25 && !('gain' in legacy),
+    `the single gain becomes both, and the type being set takes its new value (${JSON.stringify(legacy)})`);
+}
+
+section('hasExplicitAutoApply');
+{
+  assert(hasExplicitAutoApply(null, 'video') === false, 'an entry that is not there holds no choice');
+  assert(hasExplicitAutoApply(undefined, 'live') === false, 'nor does one that was never made');
+  assert(hasExplicitAutoApply({}, 'video') === false, 'nor an empty one');
+  assert(hasExplicitAutoApply({ autoApplyLoudnessVideo: false }, 'video') === true,
+    'a choice of off is still a choice');
+  assert(hasExplicitAutoApply({ autoApplyLoudness: true }, 'live') === true,
+    'and the legacy flag is one for both types');
+}
 
 section('esc');
 // The result is put inside a double-quoted attribute as well as between tags,
@@ -2829,6 +2882,106 @@ async function runMigrationTests() {
   await migrateLegacyAutoGains();
   assert(mockStorage.channelVolumes.UCoff.gainLive === 0.6,
     'a dormant learned gain does not overwrite the gain an Auto-off channel plays at');
+
+  section('isContextValid — a runtime that cannot be reached');
+  {
+    const outer = globalThis.chrome;
+    delete globalThis.chrome;
+    const valid = isContextValid();
+    let ranAnyway = false;
+    let threw = null;
+    try {
+      await updateChannelVolumes(() => { ranAnyway = true; });
+    } catch (err) {
+      threw = err;
+    }
+    globalThis.chrome = outer;
+    assert(valid === false, `a runtime that cannot be reached at all is not valid (${valid})`);
+    assert(threw === null, `and a channel write on it is not attempted (${threw && threw.message})`);
+    assert(ranAnyway === false, 'so the mutation it was given never runs');
+  }
+
+  section('adoptHandleEntry — the name is what says which entry is this channel');
+  {
+    const priorStorage = mockStorage;
+    mockStorage = { channelVolumes: {
+      UCother: { name: 'Same Name', gainVideo: 0.3 },
+      '@handle': { name: 'Different Name', gainVideo: 0.7 }
+    } };
+
+    await CHANNEL_WRITES.adoptHandleEntry({
+      channelId: 'UCnew', authorName: 'Same Name', url: 'https://www.youtube.com/channel/UCnew'
+    });
+    assert(mockStorage.channelVolumes['UCnew'] === undefined,
+      'no handle entry is adopted where none carries this name');
+    assert(mockStorage.channelVolumes['UCother']?.gainVideo === 0.3,
+      'a channel that merely shares the name is left where it is');
+    assert(mockStorage.channelVolumes['@handle']?.gainVideo === 0.7, 'and so is the handle entry');
+
+    await CHANNEL_WRITES.adoptHandleEntry({
+      channelId: 'UCnew', authorName: 'Different Name', url: 'https://www.youtube.com/channel/UCnew'
+    });
+    assert(mockStorage.channelVolumes['UCnew']?.gainVideo === 0.7,
+      `the handle entry whose name matches is adopted (${JSON.stringify(mockStorage.channelVolumes['UCnew'])})`);
+    assert(mockStorage.channelVolumes['@handle'] === undefined, 'and moved rather than copied');
+
+    mockStorage = priorStorage;
+  }
+
+  section('clearLegacyKeys — housekeeping that has nothing to do');
+  {
+    const priorStorage = mockStorage;
+    mockStorageRemovals.length = 0;
+    await clearLegacyKeys([]);
+    assert(mockStorageRemovals.length === 0,
+      `clearing nothing asks storage for nothing (${JSON.stringify(mockStorageRemovals)})`);
+
+    // The keys are swept as part of the fold, and the fold does not answer until
+    // they are gone.
+    mockStorage = {
+      channelVolumes: { UCsweep: { name: 'Sweep', gainVideo: 0.4, autoApplyLoudnessVideo: true } },
+      'autoLoudnessFallback:UCsweep:video': 0.62
+    };
+    await migrateLegacyAutoGains();
+    assert(!('autoLoudnessFallback:UCsweep:video' in mockStorage),
+      `the legacy keys are gone by the time the fold answers (${Object.keys(mockStorage).join(', ')})`);
+    assert(mockStorage[UNIFIED_GAINS_KEY] === true, 'and the profile is marked');
+
+    // A profile already marked is swept again rather than left half-cleared, and
+    // that sweep is finished before the answer too.
+    mockStorage['autoLoudnessFallback:UCsweep:live'] = 0.5;
+    const again = await migrateLegacyAutoGains();
+    assert(again === false, 'a profile already marked is not folded a second time');
+    assert(!('autoLoudnessFallback:UCsweep:live' in mockStorage),
+      `while what was left behind is still cleared (${Object.keys(mockStorage).join(', ')})`);
+
+    // Held, the sweep says which side of the answer it is on. The fold reports
+    // the profile unified, and a caller that reads the keys on the strength of
+    // that answer has to find them gone.
+    for (const marked of [false, true]) {
+      mockStorage = {
+        channelVolumes: { UChold: { name: 'Hold', gainVideo: 0.4, autoApplyLoudnessVideo: true } },
+        'autoLoudnessFallback:UChold:video': 0.62,
+        ...(marked ? { [UNIFIED_GAINS_KEY]: true } : {})
+      };
+      holdRemovals = true;
+      releaseRemovals = null;
+      let answered = false;
+      const folding = migrateLegacyAutoGains().then(() => { answered = true; });
+      for (let turn = 0; turn < 12; turn++) await Promise.resolve();
+      assert(answered === false,
+        `the fold waits for the sweep it started (already marked: ${marked})`);
+      assert(!!releaseRemovals, 'which is out');
+      releaseRemovals();
+      await folding;
+      assert(answered === true, 'and answers once it lands');
+      assert(!('autoLoudnessFallback:UChold:video' in mockStorage),
+        `with the keys gone (${Object.keys(mockStorage).join(', ')})`);
+      holdRemovals = false;
+    }
+
+    mockStorage = priorStorage;
+  }
 
   // ── Summary ────────────────────────────────────────────────────────
 

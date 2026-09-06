@@ -339,7 +339,7 @@ function tick() { return new Promise(r => setTimeout(r, 10)); }
 // held by nothing. It runs in a context of its own here: the page's window,
 // the fetch it wraps, and the DOM it reads.
 
-function createBridge({ pathname = '/watch', videoId = 'urlVideoIdA', preassigned = null } = {}) {
+function createBridge({ pathname = '/watch', videoId = 'urlVideoIdA', preassigned = null, hookRefused = false } = {}) {
   const posted = [];
   const listeners = {};
   const logged = [];
@@ -406,6 +406,13 @@ function createBridge({ pathname = '/watch', videoId = 'urlVideoIdA', preassigne
   // document_start is early, but not always early enough: the page can have
   // assigned its response before the bridge is there to hook the assignment.
   if (preassigned) window.ytInitialPlayerResponse = preassigned;
+  // A page that will not let the assignment be hooked: the bridge catches the
+  // refusal and reads the property as it stands from then on.
+  if (hookRefused) {
+    Object.defineProperty(window, 'ytInitialPlayerResponse', {
+      value: preassigned, writable: true, configurable: false, enumerable: true
+    });
+  }
   vm.runInContext(fs.readFileSync('./page-bridge.js', 'utf8'), sandbox, { filename: 'page-bridge.js' });
 
   const deliver = (data) => {
@@ -2992,6 +2999,22 @@ async function runTests() {
     await bridge.request();
     assert(bridge.last()?.loudnessDb === -12.5,
       `and the ask is answered from it (${bridge.last()?.loudnessDb})`);
+  }
+
+  section('Bridge: a page that will not let the assignment be hooked');
+  {
+    // The hook is wrapped in a catch, so a page that refuses it leaves the
+    // bridge reading the property as it stands. Nothing it captured of its own
+    // is there to fall back on, and the ask still has to be answered.
+    const bridge = createBridge({ hookRefused: true });
+    bridge.assign(playerResponse({ loudnessDb: -9.5, channelId: 'UCunhooked' }));
+
+    await bridge.request();
+
+    assert(bridge.last()?.loudnessDb === -9.5,
+      `the ask is answered from the property the page wrote (${bridge.last()?.loudnessDb})`);
+    assert(bridge.last()?.channelId === 'UCunhooked',
+      `naming the channel it carries (${bridge.last()?.channelId})`);
   }
 
   section('Bridge: the answer from load is preferred over the page');
@@ -5944,6 +5967,40 @@ async function runTests() {
     assert(shipped.exported === undefined,
       'the internals are handed to nobody where no test asked for them');
     assert(live.exported !== undefined, 'and to a test that did');
+  }
+
+  section('The worker takes the writes and leaves the rest alone');
+  {
+    // Every tab's saves and the popup's own broadcasts share one channel. The
+    // worker answers the saves; a message it does not own has to be left for
+    // whoever does, unclaimed and unanswered.
+    const notMine = [
+      { type: 'stateChanged', gain: 1 },
+      { type: 'store:noSuchWrite' },
+      { type: 42 },
+      {}
+    ];
+    for (const message of notMine) {
+      let answered = 'nothing';
+      let claimed = null;
+      for (const fn of mockWorkerListeners) {
+        claimed = fn(message, {}, (payload) => { answered = payload; });
+      }
+      assert(claimed === false,
+        `${JSON.stringify(message)} is not claimed by the worker (${claimed})`);
+      assert(answered === 'nothing',
+        `and is not answered by it (${JSON.stringify(answered)})`);
+    }
+
+    // The ones it does own are claimed and answered.
+    let ownAnswer;
+    let ownClaimed = null;
+    for (const fn of mockWorkerListeners) {
+      ownClaimed = fn({ type: 'store:clearChannels' }, {}, (payload) => { ownAnswer = payload; });
+    }
+    assert(ownClaimed === true, 'a write it owns is claimed');
+    for (let turn = 0; turn < 6; turn++) await tick();
+    assert(ownAnswer?.ok === true, `and answered (${JSON.stringify(ownAnswer)})`);
   }
 
   section('The dump the popup\'s opening writes');
