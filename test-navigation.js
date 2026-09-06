@@ -5862,6 +5862,205 @@ async function runTests() {
       `the drag does not move the level of the video moved to (${ytcv.state.currentGain})`);
   }
 
+  // content.js decides three things once, as it loads: whether to fold the
+  // legacy gains, whether to listen for settings changes, and whether to hand
+  // its internals to a test. The copy this file loaded took every yes, so a
+  // second copy is run in a context of its own to read the other side.
+  function loadContentStartup({ contextValid = true, testFlag = true } = {}) {
+    const vmMod = require('vm');
+    const sent = [];
+    const storageListeners = [];
+    const messageListeners = [];
+    const sandbox = {
+      console: { log() {}, warn() {}, error() {}, info() {} },
+      Promise, Math, JSON, Date, Object, Array, String, Number, Boolean, Symbol,
+      isNaN, parseFloat, parseInt, Set, Map, WeakSet, WeakMap, Error, TypeError, RegExp,
+      setTimeout: () => 0,
+      clearTimeout() {},
+      setInterval: () => 0,
+      clearInterval() {},
+      URL,
+      // A page the extension does not act on: the startup decisions still run,
+      // and everything they lead to stops at the first watch-page check.
+      location: { pathname: '/feed/subscriptions', href: 'https://www.youtube.com/feed/subscriptions', search: '' },
+      MutationObserver: class { observe() {} disconnect() {} },
+      window: { addEventListener() {}, postMessage() {} },
+      document: {
+        readyState: 'complete',
+        visibilityState: 'visible',
+        documentElement: {},
+        querySelector: () => null,
+        querySelectorAll: () => [],
+        addEventListener() {},
+        createElement: () => ({ style: {}, classList: { add() {}, remove() {} } }),
+        contains: () => true
+      },
+      chrome: {
+        runtime: {
+          ...(contextValid ? { id: 'test-extension-id' } : {}),
+          async sendMessage(message) { sent.push(message); return { ok: true }; },
+          onMessage: { addListener: (fn) => messageListeners.push(fn) }
+        },
+        storage: {
+          local: {
+            async get() { return {}; },
+            async set() {}
+          },
+          onChanged: { addListener: (fn) => storageListeners.push(fn) }
+        }
+      }
+    };
+    if (testFlag) sandbox.__TEST_YTCV__ = true;
+    sandbox.globalThis = sandbox;
+    vmMod.createContext(sandbox);
+    vmMod.runInContext(fs.readFileSync('./utils.js', 'utf8'), sandbox, { filename: 'utils.js' });
+    vmMod.runInContext(fs.readFileSync('./content.js', 'utf8'), sandbox, { filename: 'content.js' });
+    return { sent, storageListeners, messageListeners, exported: sandbox.__YTCV__ };
+  }
+
+  section('Startup: what a copy of content.js decides as it loads');
+  {
+    const live = loadContentStartup({});
+    await tick();
+    assert(live.sent.some((m) => m.type === 'store:migrateLegacyGains'),
+      `a runtime it can reach is asked to fold the legacy gains (${live.sent.map((m) => m.type).join(', ')})`);
+    assert(live.storageListeners.length === 1,
+      `and settings changes are listened for (${live.storageListeners.length})`);
+
+    const invalidated = loadContentStartup({ contextValid: false });
+    await tick();
+    assert(invalidated.sent.length === 0,
+      `a runtime the reload invalidated is asked nothing (${invalidated.sent.map((m) => m.type).join(', ')})`);
+    assert(invalidated.storageListeners.length === 0,
+      `and nothing is listened for on it (${invalidated.storageListeners.length})`);
+    // The write refuses on its own, so the fold resolves having done nothing.
+    // Marking the profile folded on the strength of that leaves this tab
+    // reading the map under the new rule with nothing folded into it.
+    assert(invalidated.exported?.state.storageMigrated === false,
+      `and the profile is not marked folded by a fold that never ran (${invalidated.exported?.state.storageMigrated})`);
+
+    const shipped = loadContentStartup({ testFlag: false });
+    await tick();
+    assert(shipped.exported === undefined,
+      'the internals are handed to nobody where no test asked for them');
+    assert(live.exported !== undefined, 'and to a test that did');
+  }
+
+  section('The dump the popup\'s opening writes');
+  {
+    // A display that disagreed with the page is reproduced from this dump, so
+    // what it says about the DOM has to be what the DOM held.
+    const priorCanonical = mockDOMElements['canonical'];
+    const priorOwner = mockDOMElements['ownerLink'];
+    const priorMeta = mockDOMElements['metaChannel'];
+    const priorName = mockDOMElements['channelName'];
+    mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCdiag' };
+    mockDOMElements['ownerLink'] = { href: 'https://www.youtube.com/channel/UCowner' };
+    mockDOMElements['metaChannel'] = { content: 'UCmeta' };
+    mockDOMElements['channelName'] = { textContent: '  Diag Channel  ' };
+
+    const logs = [];
+    const realLog = console.log;
+    console.log = (...args) => logs.push(args);
+    mockPostMessageHandler = () => {
+      setTimeout(() => simulateBridgeMessage({
+        loudnessDb: -2, isLiveContent: false, isLiveNow: false,
+        channelId: 'UCdiag', author: 'Diag Channel'
+      }), 0);
+    };
+    try {
+      await simulateRuntimeMessage({ type: 'forceDetect' });
+    } finally {
+      console.log = realLog;
+      mockPostMessageHandler = null;
+      mockDOMElements['canonical'] = priorCanonical;
+      mockDOMElements['ownerLink'] = priorOwner;
+      mockDOMElements['metaChannel'] = priorMeta;
+      mockDOMElements['channelName'] = priorName;
+    }
+
+    const dump = logs.find((args) => args[0] === '[YTCV][popup-open]')?.[1];
+    assert(!!dump, 'the popup opening writes a dump');
+    assert(dump?.dom?.canonicalHref === 'https://www.youtube.com/channel/UCdiag',
+      `naming the canonical link (${dump?.dom?.canonicalHref})`);
+    assert(dump?.dom?.ownerChannelHref === 'https://www.youtube.com/channel/UCowner',
+      `the owner link (${dump?.dom?.ownerChannelHref})`);
+    assert(dump?.dom?.ownerHandleHref === 'https://www.youtube.com/channel/UCowner',
+      `the handle link (${dump?.dom?.ownerHandleHref})`);
+    assert(dump?.dom?.metaChannelId === 'UCmeta',
+      `the channel the meta names (${dump?.dom?.metaChannelId})`);
+    assert(dump?.dom?.channelNameText === 'Diag Channel',
+      `and the name as it reads, trimmed (${dump?.dom?.channelNameText})`);
+  }
+
+  section('Apply: a page that is not a watch page starts nothing');
+  {
+    // The fold is retried on every apply until it lands, so a page the
+    // extension does not act on must not be one of those applies.
+    const priorPath = mockLocation.pathname;
+    const priorHref = mockLocation.href;
+    ytcv._set('storageMigrated', false);
+    ytcv._set('_applyRunning', false);
+    mockLocation.pathname = '/feed/subscriptions';
+    mockLocation.href = 'https://www.youtube.com/feed/subscriptions';
+    const before = mockSentMessages.length;
+
+    await ytcv.triggerApply();
+
+    assert(mockSentMessages.length === before,
+      `nothing is asked of the worker there (${mockSentMessages.length - before})`);
+    assert(ytcv.state.storageMigrated === false, 'and the fold is left for a page that is one');
+
+    mockLocation.pathname = priorPath;
+    mockLocation.href = priorHref;
+    ytcv._set('storageMigrated', true);
+  }
+
+  section('Apply: the notify that follows the level carries the gain it applied');
+  {
+    // The level arrives after the first draw, and the gain it resolves to is
+    // applied before the popup is told. Telling it first leaves the popup
+    // showing the gain from before the level, with nothing to correct it: the
+    // notify that would is the one that already went.
+    const priorPath = mockLocation.pathname;
+    const priorHref = mockLocation.href;
+    const priorSearch = mockLocation.search;
+    const priorChannels = mockStorage['channelVolumes'];
+    mockLocation.pathname = '/watch';
+    mockLocation.search = '?v=vidLate';
+    mockLocation.href = 'https://www.youtube.com/watch?v=vidLate';
+    mockStorage['channelVolumes'] = { UClate: { name: 'Late Ch', gainVideo: 0.4 } };
+    ytcv._set('currentChannel', { id: '', name: '', url: '' });
+    ytcv._set('currentGain', 1.0);
+    ytcv._set('currentLoudnessDb', null);
+    ytcv._set('_lastVideoId', '');
+    ytcv._set('_applyRunning', false);
+    mockSentMessages.length = 0;
+    mockPostMessageHandler = () => {
+      setTimeout(() => simulateBridgeMessage({
+        loudnessDb: 0, isLiveContent: false, isLiveNow: false,
+        channelId: 'UClate', author: 'Late Ch'
+      }), 0);
+    };
+
+    await ytcv.applyVideoVolume();
+    for (let turn = 0; turn < 10; turn++) await tick();
+    mockPostMessageHandler = null;
+
+    const broadcasts = mockSentMessages.filter((m) => m.type === 'stateChanged');
+    const last = broadcasts[broadcasts.length - 1];
+    assert(broadcasts.length > 0, 'the popup is told something');
+    assert(Math.abs((last?.gain ?? 0) - 0.4) < 1e-9,
+      `and what it is told last is the gain in force (${last?.gain})`);
+    assert(Math.abs(ytcv.state.currentGain - 0.4) < 1e-9,
+      `which is the gain the channel had saved (${ytcv.state.currentGain})`);
+
+    mockLocation.pathname = priorPath;
+    mockLocation.search = priorSearch;
+    mockLocation.href = priorHref;
+    mockStorage['channelVolumes'] = priorChannels;
+  }
+
   // ── options.js ────────────────────────────────────────────────────
   section('options page');
 
