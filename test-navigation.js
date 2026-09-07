@@ -479,6 +479,7 @@ function makePopup({ tabUrl = 'https://www.youtube.com/watch?v=abc', answer = nu
   const nodes = new Map();
   const popupTimers = [];
   const asked = [];
+  const attempts = [];
   const broadcastListeners = [];
   const node = (id) => {
     if (!nodes.has(id)) {
@@ -531,7 +532,14 @@ function makePopup({ tabUrl = 'https://www.youtube.com/watch?v=abc', answer = nu
       i18n: { getMessage: (key) => key },
       tabs: {
         query: async () => (tabUrl === null ? [] : [{ id: 9, url: tabUrl }]),
-        sendMessage: async (_tabId, message) => {
+        // Chrome refuses a message addressed to no tab rather than delivering
+        // it, and the attempt is recorded before the refusal: a message sent
+        // nowhere was still one the popup tried to send.
+        sendMessage: async (tabId, message) => {
+          attempts.push(tabId);
+          if (typeof tabId !== 'number') {
+            throw new TypeError('Error in invocation of tabs.sendMessage: no matching signature');
+          }
           asked.push(JSON.parse(JSON.stringify(message)));
           if (answer) return answer(message);
           return simulateRuntimeMessage(message);
@@ -549,7 +557,7 @@ function makePopup({ tabUrl = 'https://www.youtube.com/watch?v=abc', answer = nu
   vm.runInContext(fs.readFileSync('./utils.js', 'utf8'), popupSandbox, { filename: 'utils.js' });
   vm.runInContext(fs.readFileSync('./popup.js', 'utf8'), popupSandbox, { filename: 'popup.js' });
   return {
-    node, presets, asked,
+    node, presets, asked, attempts,
     // The popup's own start-up is a storage read, a tab lookup and a
     // forceDetect, and forceDetect is answered from a .then. Waiting a fixed
     // number of turns says nothing about whether it has drawn; the channel on
@@ -5227,6 +5235,15 @@ async function runTests() {
     await noTab.settled();
     assert(noTab.node('notYt').style.display === '',
       'so does a window with no active tab');
+
+    // A gesture made on a screen that never found a tab has nowhere to go.
+    const noTabGesture = makePopup({ tabUrl: null });
+    await noTabGesture.settled();
+    await noTabGesture.firePreset(1, 'click');
+    await noTabGesture.fire('volumeSlider', 'change');
+    await noTabGesture.fire('applyBtn', 'click');
+    assert(noTabGesture.attempts.length === 0,
+      `nothing is sent from a screen with no tab behind it (${JSON.stringify(noTabGesture.attempts)})`);
 
     const notWatch = makePopup({ answer: async () => ({ isWatchPage: false }) });
     await notWatch.settled();
