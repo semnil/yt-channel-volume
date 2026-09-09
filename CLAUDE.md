@@ -110,6 +110,7 @@ options.html / options.js (settings screen, opened in its own tab)
 | `tools/verify-version.sh` | Holds a release tag to the manifest: `version_name` where the manifest has one (which has to begin with `version`), `version` otherwise. Run only where a release is being made |
 | `tools/fonts/` | The drawing font M PLUS 1p (Regular / Bold) and OFL.txt. Taken from `ofl/mplus1p` in google/fonts (commit `66a36c8`). Committed to the repository so that CI and each machine produce the same pixels |
 | `test.js` | Unit tests (node test.js) |
+| `tools/mutation/` | What holds the suites to more than being green. `sweep.mjs` turns a source into mutants by rule, runs a suite against each and reports the ones that live through it; `sweep-all.sh` walks a list of sources into one report and stops the run where a sweep stopped rather than leaving an empty section. `equivalents.md` names every mutant the suites let through and what was measured about each, and `sweep.mjs --verify` — which `test-navigation.js` runs — asks whether each entry still names a site the code has. `test.js` reads `content.js`, `popup.js` and `page-bridge.js` as text rather than executing them, so sweeps of those three are judged by `test-navigation.js` alone. `sweep.mjs` is the same file in the sibling extensions; a change to it belongs in all three |
 | `test-navigation.js` | Navigation and state-transition tests (node test-navigation.js). `content.js`, `page-bridge.js`, `background.js`, `popup.js` and `options.js` run in a VM harness here. Its `simulateRuntimeMessage` models Chrome's message port: a listener returning anything but `true` shuts it, so a handler that answers from a `.then` without `return true` ends the run naming the message rather than leaving the suite to wander against storage it is still writing to. A caller that means to send a message the listener declines passes `expectNoAnswer` |
 | `test-screenshots.py` | Tests for `gen_screenshots.py`'s arguments, output destination, and the shapes `--check` turns down (python3 test-screenshots.py. Also run from `node test.js`. Where symlinks cannot be created and where `resource` is absent, the affected cases are reported as skipped) |
 
@@ -174,6 +175,20 @@ python3 gen_screenshots.py --check
 node test.js
 node test-navigation.js
 python3 test-screenshots.py
+
+# Sweep one source for mutants the suite lets through (writes into the tree it
+# is given, so give it a worktree rather than the checkout being worked in).
+# MUTATE_LINES=<first>-<last> sweeps a region, MUTATE_COUNT=1 sizes a run
+# without making one, and MUTATE_CONFIRM=<shell line> re-judges the survivors
+# alone against a second suite.
+node tools/mutation/sweep.mjs <worktree> content.js node test-navigation.js
+
+# Every source, one at a time, into one report
+MUTATE_CONFIRM="node test.js" sh tools/mutation/sweep-all.sh <worktree> <report> \
+  "node test-navigation.js" utils.js options.js background.js
+
+# Ask whether equivalents.md still names sites the code has (no suite is run)
+node tools/mutation/sweep.mjs --verify
 
 # Package for Chrome Web Store
 python3 pack.py

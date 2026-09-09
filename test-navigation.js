@@ -6795,6 +6795,258 @@ async function runTests() {
       'and the button still names the channel it is for');
   }
 
+  section('Apply: the popup is told a level and the gain that goes with it');
+  {
+    // The level arrives while the channel's own entry is still being read. The
+    // popup is drawn from what it is told, so a message pairing the new level
+    // with the gain from before it is a screen that never existed.
+    mockStorage['channelVolumes'] = {
+      UCpair: { name: 'Pair Ch', gainVideo: 0.5, autoApplyLoudnessVideo: true }
+    };
+    setURL('/watch', 'pairVid');
+    mockVideoEl = { id: 'pair-video' };
+    mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCpair' };
+    ytcv._set('storageMigrated', true);
+    ytcv._set('storageSettled', true);
+    ytcv._set('_lastVideoId', 'pairVid');
+    ytcv._set('_lastProcessedVideo', null);
+    ytcv._set('_applyRunning', false);
+    ytcv._set('currentChannel', { id: 'UCpair', name: 'Pair Ch', url: '' });
+    ytcv._set('currentChannelVideoId', 'pairVid');
+    ytcv._set('currentLoudnessDb', null);
+    ytcv._set('currentLoudnessVideoId', '');
+    ytcv._set('currentVideoType', 'video');
+    ytcv._set('currentGain', 0.5);
+    ytcv.notifyPopup();
+    mockSentMessages.length = 0;
+
+    const applying = ytcv.applyVideoVolume();
+    // The bridge answers while the apply is still out.
+    simulateBridgeMessage({ loudnessDb: -6, isLiveContent: false, channelId: 'UCpair' });
+    await applying;
+    await tick();
+
+    const told = mockSentMessages.filter((m) => m?.type === 'stateChanged');
+    const stale = told.filter((m) => m.loudnessDb === -6 && m.gain === 0.5);
+    assert(stale.length === 0,
+      `no message carries the new level beside the gain from before it (${JSON.stringify(told.map((m) => [m.loudnessDb, m.gain]))})`);
+    assert(told.some((m) => m.loudnessDb === -6),
+      `and the level does reach the popup (${JSON.stringify(told.map((m) => [m.loudnessDb, m.gain]))})`);
+  }
+
+  section('The mutation sweep\'s own record');
+  {
+    // tools/mutation/equivalents.md says why each surviving mutant is one the
+    // code cannot be told apart from. A reason outlives the line it was written
+    // against unless something asks; this asks, without running a sweep.
+    //
+    // Not during one, though: a sweep holds a mutated source, the check reads
+    // that source, and every mutant of a line named there would fail it. That
+    // reads as a kill and inflates the very score the list is keeping.
+    // A tree of its own for the sweep to write into, since a sweep writes.
+    const sweepBox = () => {
+      const nodePath = require('path');
+      const cp = require('child_process');
+      const box = fs.mkdtempSync(nodePath.join(require('os').tmpdir(), 'cv-sweep-'));
+      fs.mkdirSync(nodePath.join(box, 'tools', 'mutation'), { recursive: true });
+      fs.copyFileSync('./tools/mutation/sweep.mjs', nodePath.join(box, 'tools/mutation/sweep.mjs'));
+      fs.writeFileSync(nodePath.join(box, 'src.js'),
+        'function pick(a, b) {\n  if (!a) return b;\n  return a;\n}\nmodule.exports = { pick };\n');
+      fs.writeFileSync(nodePath.join(box, 'suite.js'), 'require("./src.js"); process.exit(0);\n');
+      // A shim loaded before sweep.mjs, so that a named fs call can be made to fail
+      // the way a full disk or a read-only directory makes it fail.
+      fs.writeFileSync(nodePath.join(box, 'inject.cjs'), [
+        "const fs = require('fs');",
+        "for (const [name, code] of [['writeFileSync', 'ENOSPC'], ['unlinkSync', 'EACCES']]) {",
+        '  const real = fs[name];',
+        '  fs[name] = (...args) => {',
+        '    if (process.env.INJECT === name) {',
+        '      const err = new Error(code); err.code = code; throw err;',
+        '    }',
+        '    return real(...args);',
+        '  };',
+        '}',
+        '// The three ways a restore fails. RESTORE_FAILS=<how>:<n> picks one and says',
+        '// which of the writes that put the source back it happens on: content puts',
+        '// down something else and reports success, write refuses, read lets the write',
+        '// through and refuses the read that checks it. The errors carry no code, so',
+        '// what is printed is the message they do carry.',
+        'const wrote = fs.writeFileSync, read = fs.readFileSync;',
+        "const pristine = read('src.js', 'utf8');",
+        "const [how, nth] = (process.env.RESTORE_FAILS || '').split(':');",
+        'let restores = 0, refuseRead = false;',
+        'fs.writeFileSync = (file, data, ...rest) => {',
+        "  if (nth && String(file).endsWith('src.js') && data === pristine && ++restores >= Number(nth)) {",
+        "    if (how === 'write') throw new Error('the disk went away');",
+        "    if (how === 'read') refuseRead = true;",
+        "    if (how === 'content') return wrote(file, data + '// not the source', ...rest);",
+        '  }',
+        '  return wrote(file, data, ...rest);',
+        '};',
+        'fs.readFileSync = (file, ...rest) => {',
+        "  if (refuseRead && String(file).endsWith('src.js')) {",
+        '    refuseRead = false;',
+        "    throw new Error('the file went away');",
+        '  }',
+        '  return read(file, ...rest);',
+        '};',
+        ''
+      ].join('\n'));
+      cp.execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: box });
+      cp.execFileSync('git', ['add', '-A'], { cwd: box });
+      cp.execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'box'], { cwd: box });
+      // The sweeps these cases run are their own. A sweep running this suite has its
+      // knobs in the environment, and a run that inherited them would measure what
+      // that sweep asked for rather than what the case asks for.
+      const boxEnv = (extra) => {
+        const env = { ...process.env, ...extra };
+        for (const knob of ['MUTATE_LINES', 'MUTATE_COUNT', 'MUTATE_CONFIRM', 'MUTATE_OPTIONAL']) {
+          if (!extra || !(knob in extra)) delete env[knob];
+        }
+        return env;
+      };
+      const marker = nodePath.join(box, '.mutation-sweep-running');
+      return {
+        sweep: (...args) => cp.spawnSync('node', ['tools/mutation/sweep.mjs', '.', ...args], { cwd: box, encoding: 'utf8', env: boxEnv() }),
+        sweepWith: (env, ...args) => cp.spawnSync('node', ['--require', './inject.cjs', 'tools/mutation/sweep.mjs', '.', ...args], { cwd: box, encoding: 'utf8', env: boxEnv(env) }),
+        locked: () => fs.existsSync(marker),
+        mark: (text) => fs.writeFileSync(marker, text + '\n'),
+        unmark: () => fs.rmSync(marker, { force: true }),
+        source: () => fs.readFileSync(nodePath.join(box, 'src.js'), 'utf8'),
+        remove: () => fs.rmSync(box, { recursive: true, force: true })
+      };
+    };
+    {
+      // The marker is claimed before the source is read, so a source that is not
+      // there used to leave the tree locked by a run that was already gone — and
+      // every later sweep of that tree stopped on a marker nobody could account for.
+      const box = sweepBox();
+      try {
+        const missing = box.sweep('does-not-exist.js', 'node', 'suite.js');
+        assert(missing.status === 2 && /does-not-exist\.js could not be read \(ENOENT\)/.test(missing.stderr),
+          `a source that is not there is named (exit ${missing.status}, ${missing.stderr.trim()})`);
+        assert(box.locked() === false,
+          'and the tree is not left locked by a run that never began');
+        const after = box.sweep('src.js', 'node', 'suite.js');
+        assert(after.status === 0 && /src\.js is back as it was/.test(after.stdout),
+          `so the tree takes a sweep afterwards (exit ${after.status}, ${(after.stderr || after.stdout).trim()})`);
+    
+          // The two ends of the marker's life, made to fail the way a full disk and a
+        // read-only directory make them fail. What the run is holding is the file
+        // it created, which is why a marker it could not write into is still its
+        // own to take away.
+        const unwritable = box.sweepWith({ INJECT: 'writeFileSync' }, 'src.js', 'node', 'suite.js');
+        assert(unwritable.status === 2 && /\.mutation-sweep-running could not be written \(ENOSPC\)/.test(unwritable.stderr),
+          `a marker it cannot write into is named as that (exit ${unwritable.status}, ${unwritable.stderr.trim()})`);
+        assert(box.locked() === false, 'and it is still taken away');
+        const again = box.sweep('src.js', 'node', 'suite.js');
+        assert(again.status === 0, `so the tree is not left locked (exit ${again.status})`);
+    
+        const unremovable = box.sweepWith({ INJECT: 'unlinkSync', MUTATE_COUNT: '1' }, 'src.js', 'node', 'suite.js');
+        assert(unremovable.status === 5 && /could not take its marker off .*\(EACCES\)/.test(unremovable.stderr),
+          `a marker left behind is not exit 0 (exit ${unremovable.status}, ${unremovable.stderr.trim()})`);
+        assert(box.locked() === true, 'and it says so about a marker that is really there');
+        box.unmark();
+    
+      // A marker a live process holds is refused, and the holder named.
+        box.mark('src.js is being mutated by tools/mutation/sweep.mjs (pid ' + process.pid + ')');
+        const busy = box.sweep('src.js', 'node', 'suite.js');
+        assert(busy.status === 2 && busy.stderr.includes('already being swept by pid ' + process.pid),
+          `a tree already being swept is refused (exit ${busy.status}, ${busy.stderr.trim()})`);
+        assert(box.locked() === true, "and the holder's marker is left where it is");
+    
+        // One nobody holds says so rather than being taken over.
+        box.mark('src.js is being mutated by tools/mutation/sweep.mjs (pid 999999)');
+        const stale = box.sweep('src.js', 'node', 'suite.js');
+        assert(stale.status === 2 && /carries a marker from pid 999999 that is gone/.test(stale.stderr),
+          `a marker nobody holds is named (exit ${stale.status}, ${stale.stderr.trim()})`);
+        // The sweep's last write is let through with a line of its own added, so
+        // what it reads back is not what it wrote. What decides whether the marker
+        // comes off is the source having been read again and matched, not the write
+        // having reported success: a tree that holds a mutant keeps the marker. The
+        // runs after the first have every mutant filtered out, so the write before
+        // the last one is a restore as well, and the last three are the three ways a
+        // restore fails.
+        const boxSrc = 'function pick(a, b) {\n  if (!a) return b;\n  return a;\n}\nmodule.exports = { pick };\n';
+        for (const { fails, knobs, says, holds } of [
+          { fails: 'content:2', knobs: {}, holds: boxSrc + '// not the source' },
+          { fails: 'content:2', knobs: { MUTATE_LINES: '900-901' }, holds: boxSrc + '// not the source' },
+          { fails: 'write:2', knobs: {}, says: /src\.js could not be written back \(the disk went away\)/ },
+          { fails: 'read:2', knobs: {}, says: /src\.js could not be read back \(the file went away\)/ }
+        ]) {
+          const spoiledBox = sweepBox();
+          try {
+            const spoiled = spoiledBox.sweepWith({ RESTORE_FAILS: fails, ...knobs }, 'src.js', 'node', 'suite.js');
+            assert(spoiled.status === 4, `a source that may not be back is not exit 0 (${fails}: exit ${spoiled.status}, ${spoiled.stderr.trim()})`);
+            assert(/src\.js is not what it was before the sweep; the tree holds a mutant, and .*\.mutation-sweep-running stays/.test(spoiled.stderr),
+              `${fails}: the tree is said to hold a mutant, and the marker to stay`);
+            assert(!/is back as it was/.test(spoiled.stdout),
+              `${fails}: a run that could not put the source back does not say it did`);
+            assert(spoiledBox.locked() === true, `${fails}: the marker stays up over it`);
+            assert(!says || says.test(spoiled.stderr), `${fails}: the failure is named`);
+            assert(!holds || spoiledBox.source() === holds, `${fails}: the source on disk is the one it could not put back`);
+          } finally {
+            spoiledBox.remove();
+          }
+        }
+      } finally {
+        box.remove();
+      }
+    }
+
+    // A copy of the sweeper and a list written for the occasion, so that what the
+    // check refuses can be asked without touching the tree this suite runs in.
+    const equivalentsBox = (entries, sources) => {
+      const nodePath = require('path');
+      const box = fs.mkdtempSync(nodePath.join(require('os').tmpdir(), 'cv-equivalents-'));
+      fs.mkdirSync(nodePath.join(box, 'tools', 'mutation'), { recursive: true });
+      fs.copyFileSync('./tools/mutation/sweep.mjs', nodePath.join(box, 'tools/mutation/sweep.mjs'));
+      fs.writeFileSync(nodePath.join(box, 'tools/mutation/equivalents.md'), entries);
+      for (const [name, text] of Object.entries(sources)) {
+        fs.writeFileSync(nodePath.join(box, name), text);
+      }
+      const run = require('child_process').spawnSync(
+        'node', ['tools/mutation/sweep.mjs', '--verify'], { cwd: box, encoding: 'utf8' }
+      );
+      fs.rmSync(box, { recursive: true, force: true });
+      return run;
+    };
+    const boxSource = 'function pick(a, b) {\n  if (!a) return b;\n  return a;\n}\n';
+    const boxEntry = '- `src.js:2` a guard is dropped ×1 — if (!a) return b;';
+    const good = equivalentsBox('# t\n\n' + boxEntry + '\n', { 'src.js': boxSource });
+    assert(good.status === 0 && /1 entries covering 1 mutants/.test(good.stdout),
+      `a list that still names the code passes (${(good.stderr || good.stdout).trim()})`);
+    // The ways a list stops describing the code. Each is what the check is for,
+    // and each has to be refused rather than counted.
+    for (const [what, entries, status] of [
+      ['more of a site than the code has', '# t\n\n- `src.js:2` a guard is dropped ×9 — if (!a) return b;\n', 1],
+      ['a line that moved', '# t\n\n- `src.js:3` a guard is dropped ×1 — if (!a) return b;\n', 1],
+      ['another guard taking that line', '# t\n\n- `src.js:2` a guard is dropped ×1 — if (!b) return a;\n', 1],
+      ['a source that is gone', '# t\n\n- `gone.js:2` a guard is dropped ×1 — if (!a) return b;\n', 1],
+      ['an entry it cannot read', '# t\n\n' + boxEntry + '\n- `src.js:2` a guard is dropped x1\n', 2],
+      ['a count of none', '# t\n\n- `src.js:99` a guard is dropped ×0 — if (!nothing) return here;\n', 2],
+      ['a bullet written with another mark', '# t\n\n' + boxEntry + '\n* `src.js:99` a guard is dropped ×1 — if (!nothing) return here;\n', 2],
+      ['an entry indented into the prose', '# t\n\n' + boxEntry + '\n  - `src.js:99` a guard is dropped ×1 — if (!nothing) return here;\n', 2],
+      ['an entry that lost a backtick', '# t\n\n' + boxEntry + '\n- src.js:99` a guard is dropped ×1 — if (!nothing) return here;\n', 2],
+      ['an entry written as a numbered list', '# t\n\n' + boxEntry + '\n1. `src.js:99` a guard is dropped ×1 — if (!nothing) return here;\n', 2],
+      ['a list naming no mutants', '# t\n\nnothing here\n', 2]
+    ]) {
+      const refused = equivalentsBox(entries, { 'src.js': boxSource });
+      assert(refused.status === status && refused.stdout === '',
+        `${what} is refused rather than counted (exit ${refused.status}, ${refused.stdout.trim()})`);
+    }
+
+    if (fs.existsSync('./.mutation-sweep-running')) {
+      assert(true, 'a sweep is holding a mutated source, so the record is not read');
+    } else {
+      const run = require('child_process').spawnSync(
+        'node', ['tools/mutation/sweep.mjs', '--verify'], { encoding: 'utf8' }
+      );
+      assert(run.status === 0 && /every one of them still a site the code has/.test(run.stdout),
+        `every mutant the suite lets through is still one the code has (${(run.stderr || run.stdout).trim()})`);
+    }
+  }
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed > 0 ? 1 : 0);
 }
