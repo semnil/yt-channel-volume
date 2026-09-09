@@ -179,8 +179,8 @@ python3 test-screenshots.py
 # Sweep one source for mutants the suite lets through (writes into the tree it
 # is given, so give it a worktree rather than the checkout being worked in).
 # MUTATE_LINES=<first>-<last> sweeps a region, MUTATE_COUNT=1 sizes a run
-# without making one, and MUTATE_CONFIRM=<shell line> re-judges the survivors
-# alone against a second suite.
+# without making one, MUTATE_CONFIRM=<shell line> re-judges the survivors alone
+# against a second suite, and MUTATE_OPTIONAL=1 adds the optional-chaining rule.
 node tools/mutation/sweep.mjs <worktree> content.js node test-navigation.js
 
 # Every source, one at a time, into one report
