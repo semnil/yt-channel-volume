@@ -6853,8 +6853,10 @@ async function runTests() {
       fs.writeFileSync(nodePath.join(box, 'src.js'),
         'function pick(a, b) {\n  if (!a) return b;\n  return a;\n}\nmodule.exports = { pick };\n');
       fs.writeFileSync(nodePath.join(box, 'suite.js'), 'require("./src.js"); process.exit(0);\n');
-      // A shim loaded before sweep.mjs, so that a named fs call can be made to fail
-      // the way a full disk or a read-only directory makes it fail.
+      // A shim loaded before sweep.mjs, so that the filesystem under it can be made
+      // to fail: a named call refused the way a full disk or a read-only directory
+      // refuses it, and a restore that reports success while putting down something
+      // else.
       fs.writeFileSync(nodePath.join(box, 'inject.cjs'), [
         "const fs = require('fs');",
         "for (const [name, code] of [['writeFileSync', 'ENOSPC'], ['unlinkSync', 'EACCES']]) {",
