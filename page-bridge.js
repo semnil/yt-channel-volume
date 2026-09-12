@@ -89,30 +89,28 @@
     });
   } catch (_) {}
 
-  // The reasons that requests made through the wrapper below on a watch page
-  // failed with, when the request could not be made at all (a TypeError reading
-  // "Failed to fetch"). An unhandled rejection carrying one of them has its
-  // default prevented; any other rejection is left as it is.
-  const failedWatchRequests = new WeakSet();
+  // A request made on a watch page goes through requestMadeOnWatchPage below,
+  // and the TypeError a request that could not be made rejects with carries the
+  // stack of the call that made it. An unhandled rejection whose reason is that
+  // TypeError, with that function in its stack, has its default prevented. Any
+  // other rejection is left as it is.
+  const WATCH_REQUEST_FRAME = /\bat requestMadeOnWatchPage \(chrome-extension:\/\//;
   window.addEventListener('unhandledrejection', (e) => {
-    if (failedWatchRequests.has(e.reason)) e.preventDefault();
+    const r = e.reason;
+    if (r instanceof TypeError && r.message === 'Failed to fetch' && WATCH_REQUEST_FRAME.test(String(r.stack))) {
+      e.preventDefault();
+    }
   });
 
   // ── Method 2: Hook fetch for SPA navigation ───────────────────────
 
   const origFetch = window.fetch;
+  function requestMadeOnWatchPage(page, fetchArgs) {
+    return origFetch.apply(page, fetchArgs);
+  }
   window.fetch = function (...args) {
-    const onWatchPage = isWatchPage();
-    const result = origFetch.apply(this, args);
+    const result = isWatchPage() ? requestMadeOnWatchPage(this, args) : origFetch.apply(this, args);
     const url = (typeof args[0] === 'string') ? args[0] : (args[0]?.url || '');
-    if (onWatchPage) {
-      // The request's promise is held as handled from here, so a request the
-      // page leaves without a handler raises no unhandled rejection of its own,
-      // whatever it fails with.
-      result.then(undefined, (err) => {
-        if (err instanceof TypeError && err.message === 'Failed to fetch') failedWatchRequests.add(err);
-      });
-    }
     if (url.includes('/youtubei/v1/player')) {
       result.then(resp => resp.clone().json()).then(data => {
         if (isWatchPage() && isCurrentVideo(data)) {

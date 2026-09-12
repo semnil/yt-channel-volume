@@ -98,5 +98,5 @@ second guards is inside a `try { } catch (_) {}`, which takes what a missing
 player or a missing method throws.
 
 - `page-bridge.js:75` a guard is always taken ×1 — if (window.ytInitialPlayerResponse) {
-- `page-bridge.js:143` && becomes || ×1 — &&
-- `page-bridge.js:143` a guard is always taken ×1 — if (player && typeof player.getPlayerResponse === 'function') {
+- `page-bridge.js:141` && becomes || ×1 — &&
+- `page-bridge.js:141` a guard is always taken ×1 — if (player && typeof player.getPlayerResponse === 'function') {
