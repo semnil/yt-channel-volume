@@ -441,10 +441,13 @@ function createBridge({ pathname = '/watch', videoId = 'urlVideoIdA', preassigne
       return { returned, fromNetwork };
     },
     failNextFetch(error) { fetchRejection = error; },
-    // An unhandled rejection as the window dispatches one, its reason made in
-    // the page's realm. Answers whether a listener prevented its default.
-    rejectPromise(errorName, message) {
-      const reason = vm.runInContext(`new ${errorName}(${JSON.stringify(message)})`, sandbox);
+    // An error made in the page's realm, where the network's errors are made.
+    pageError(errorName, message) {
+      return vm.runInContext(`new ${errorName}(${JSON.stringify(message)})`, sandbox);
+    },
+    // An unhandled rejection as the window dispatches one. Answers whether a
+    // listener prevented its default.
+    dispatchUnhandledRejection(reason) {
       const event = { reason, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } };
       for (const fn of listeners['unhandledrejection'] || []) fn(event);
       return event.defaultPrevented;
@@ -3172,15 +3175,48 @@ async function runTests() {
       `and so does one it does not read (${failedOther})`);
   }
 
-  section('Bridge: a page request that fails with nothing handling it stays out of the error list');
+  section('Bridge: a request that could not be made on a watch page stays out of the error list');
   {
     const bridge = createBridge();
-    assert(bridge.rejectPromise('TypeError', 'Failed to fetch') === true,
-      'the rejection a failed request leaves unhandled has its default prevented');
-    assert(bridge.rejectPromise('TypeError', 'something else') === false,
-      'a TypeError that says something else is left as it is');
-    assert(bridge.rejectPromise('Error', 'Failed to fetch') === false,
-      'and so is another kind of error that reads the same');
+    const failed = bridge.pageError('TypeError', 'Failed to fetch');
+    bridge.failNextFetch(failed);
+    const call = await bridge.fetchPlayer(playerResponse(), 'https://www.youtube.com/other');
+    assert(bridge.dispatchUnhandledRejection(failed) === true,
+      'the failure of a request made on the watch page has its default prevented');
+    assert(call.returned === call.fromNetwork, 'the page is handed the promise the network gave');
+    let seen = null;
+    await Promise.resolve(call.returned).catch((err) => { seen = err; });
+    assert(seen === failed, 'and it rejects with the reason the network gave');
+
+    assert(bridge.dispatchUnhandledRejection(bridge.pageError('TypeError', 'Failed to fetch')) === false,
+      'the same TypeError from a promise the page made itself is left as it is');
+
+    const other = bridge.pageError('TypeError', 'something else');
+    bridge.failNextFetch(other);
+    await bridge.fetchPlayer(playerResponse(), 'https://www.youtube.com/other');
+    assert(bridge.dispatchUnhandledRejection(other) === false,
+      'a request that failed with something else is left as it is');
+  }
+
+  section('Bridge: a request made off a watch page is left as it is');
+  {
+    const bridge = createBridge({ pathname: '/feed/subscriptions' });
+    const failed = bridge.pageError('TypeError', 'Failed to fetch');
+    bridge.failNextFetch(failed);
+    await bridge.fetchPlayer(playerResponse(), 'https://www.youtube.com/other');
+    assert(bridge.dispatchUnhandledRejection(failed) === false,
+      'the failure of a request made on another page is left as it is');
+
+    // The page a request was made on is what counts, not the one it fails on.
+    const moved = createBridge({ pathname: '/feed/subscriptions' });
+    const late = moved.pageError('TypeError', 'Failed to fetch');
+    moved.failNextFetch(late);
+    const pending = moved.window.fetch('https://www.youtube.com/other');
+    moved.setUrl('/watch', 'urlVideoIdA');
+    await Promise.resolve(pending).catch(() => {});
+    moved.failNextFetch(null);
+    assert(moved.dispatchUnhandledRejection(late) === false,
+      'a request made before the page reached a watch page is left as it is');
   }
 
   section('Bridge: the request reaches the network as the page made it');
