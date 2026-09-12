@@ -89,6 +89,16 @@
     });
   } catch (_) {}
 
+  // An unhandled rejection whose reason is the TypeError a failed request
+  // rejects with has its default prevented, so a page fetch nothing handles is
+  // not reported against the wrapper below. Any other rejection is left as it is.
+  window.addEventListener('unhandledrejection', (e) => {
+    const r = e.reason;
+    if (r instanceof TypeError && r.message === 'Failed to fetch') {
+      e.preventDefault();
+    }
+  });
+
   // ── Method 2: Hook fetch for SPA navigation ───────────────────────
 
   const origFetch = window.fetch;

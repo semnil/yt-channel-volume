@@ -441,6 +441,14 @@ function createBridge({ pathname = '/watch', videoId = 'urlVideoIdA', preassigne
       return { returned, fromNetwork };
     },
     failNextFetch(error) { fetchRejection = error; },
+    // An unhandled rejection as the window dispatches one, its reason made in
+    // the page's realm. Answers whether a listener prevented its default.
+    rejectPromise(errorName, message) {
+      const reason = vm.runInContext(`new ${errorName}(${JSON.stringify(message)})`, sandbox);
+      const event = { reason, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } };
+      for (const fn of listeners['unhandledrejection'] || []) fn(event);
+      return event.defaultPrevented;
+    },
     networkCalls,
     window,
     // Method 3 and the on-demand path: what content.js asks for.
@@ -3162,6 +3170,17 @@ async function runTests() {
     await Promise.resolve(otherFailed.returned).catch((err) => { failedOther = err; });
     assert(failedOther instanceof TypeError,
       `and so does one it does not read (${failedOther})`);
+  }
+
+  section('Bridge: a page request that fails with nothing handling it stays out of the error list');
+  {
+    const bridge = createBridge();
+    assert(bridge.rejectPromise('TypeError', 'Failed to fetch') === true,
+      'the rejection a failed request leaves unhandled has its default prevented');
+    assert(bridge.rejectPromise('TypeError', 'something else') === false,
+      'a TypeError that says something else is left as it is');
+    assert(bridge.rejectPromise('Error', 'Failed to fetch') === false,
+      'and so is another kind of error that reads the same');
   }
 
   section('Bridge: the request reaches the network as the page made it');

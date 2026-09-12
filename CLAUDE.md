@@ -10,6 +10,7 @@ It leaves the YouTube player's volume slider alone and controls the level with a
 page-bridge.js (MAIN world content script, document_start)
 ├── Object.defineProperty: hooks the assignment of ytInitialPlayerResponse
 ├── Fetch hook: intercepts /youtubei/v1/player responses (covers SPA navigation)
+├── unhandledrejection listener: prevents the default of a `TypeError: Failed to fetch` rejection, so a page fetch nothing handles is not reported against the fetch wrapper
 ├── extractFromYtPlayer: reads from ytd-watch-flexy / movie_player (covers SPA navigation)
 ├── isLiveContent: extracts videoDetails.isLiveContent
 └── postMessage → relays loudnessDb + isLiveContent + channelId + author to content.js
@@ -124,6 +125,7 @@ options.html / options.js (settings screen, opened in its own tab)
 - **Three routes to loudnessDb**: (1) `Object.defineProperty` detects the variable being set, (2) a fetch hook (`/youtubei/v1/player`), (3) the YouTube player's internal DOM data (`ytd-watch-flexy.__data` / `movie_player.getPlayerResponse`)
 - **Filling in isLiveNow**: `_capturedResp`'s `isLiveNow` is fixed as of page load, so the request handler asks the page's own responses whether the stream has started (this covers the waiting → stream start transition). The value is taken from the most current answer that names the video the URL does: `movie_player.getPlayerResponse()` over `ytd-watch-flexy` (which holds the response the page was built with) over the one kept from load, and its `isLive` is used as it stands, so a stream that has ended takes the badge down without waiting for the tab to leave. This runs whichever answer the level came from: after an SPA navigation the one kept from load names the video the tab has left, and the level comes from the page instead. content.js's `forceDetect` (on popup open) asks the bridge again, and where the response updates `currentIsLiveNow` the popup is notified through `stateChanged`
 - **videoId filter**: the fetch hook drops prefetch responses for other videos
+- **A page fetch nothing handles**: Chrome reports an unhandled rejection from a page request against the `window.fetch` wrapper the request went through, and records `Uncaught (in promise) TypeError: Failed to fetch` in the extension's error list. The bridge's `unhandledrejection` listener calls `preventDefault()` when `reason instanceof TypeError && reason.message === 'Failed to fetch'` and leaves any other rejection as it is
 - **watch pages only**: the MutationObserver, scheduleApply and the AudioContext creation happen on `/watch` alone
 - **Saved per channel × type**: `gainLive` (stream/archive) and `gainVideo` (video/Shorts/premiere) are managed separately. videoType is decided from `videoDetails.isLiveContent` alone (`isLiveContent ? 'live' : 'video'`), and loudnessDb takes no part in the decision. A live stream and its archive are `isLiveContent=true` and count as live; a premiere is `isLiveContent=false` and so counts as video
 - **Accounting for YouTube's loudness normalization**: where loudnessDb > 0, YouTube has already attenuated to -14 LUFS → effectiveLufs = -14. Where loudnessDb <= 0, it is used as it stands
