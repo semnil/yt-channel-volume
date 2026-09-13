@@ -89,11 +89,27 @@
     });
   } catch (_) {}
 
+  // A request made on a watch page goes through requestMadeOnWatchPage below,
+  // and the TypeError a request that could not be made rejects with carries the
+  // stack of the call that made it. An unhandled rejection whose reason is that
+  // TypeError, with that function in its stack, has its default prevented. Any
+  // other rejection is left as it is.
+  const WATCH_REQUEST_FRAME = /\bat requestMadeOnWatchPage \(chrome-extension:\/\//;
+  window.addEventListener('unhandledrejection', (e) => {
+    const r = e.reason;
+    if (r instanceof TypeError && r.message === 'Failed to fetch' && WATCH_REQUEST_FRAME.test(String(r.stack))) {
+      e.preventDefault();
+    }
+  });
+
   // ── Method 2: Hook fetch for SPA navigation ───────────────────────
 
   const origFetch = window.fetch;
+  function requestMadeOnWatchPage(page, fetchArgs) {
+    return origFetch.apply(page, fetchArgs);
+  }
   window.fetch = function (...args) {
-    const result = origFetch.apply(this, args);
+    const result = isWatchPage() ? requestMadeOnWatchPage(this, args) : origFetch.apply(this, args);
     const url = (typeof args[0] === 'string') ? args[0] : (args[0]?.url || '');
     if (url.includes('/youtubei/v1/player')) {
       result.then(resp => resp.clone().json()).then(data => {

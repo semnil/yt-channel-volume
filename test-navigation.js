@@ -347,6 +347,8 @@ function createBridge({ pathname = '/watch', videoId = 'urlVideoIdA', preassigne
   let moviePlayer = null;
   let fetchAnswer = null;
   let fetchRejection = null;
+  let fetchFailure = null;
+  let lastFetchFailure = null;
   let fromNetwork = null;
   const networkCalls = [];
 
@@ -386,6 +388,16 @@ function createBridge({ pathname = '/watch', videoId = 'urlVideoIdA', preassigne
     fetch(...args) {
       networkCalls.push({ thisArg: this, args });
       const body = fetchAnswer;
+      if (fetchFailure) {
+        // Made inside the call, so its stack names what called fetch, as the
+        // TypeError of a request Chrome could not make does; rejected
+        // afterwards, the way such a request fails.
+        const reason = fetchFailure();
+        fetchFailure = null;
+        lastFetchFailure = reason;
+        fromNetwork = new Promise((resolve, reject) => { setTimeout(() => reject(reason), 0); });
+        return fromNetwork;
+      }
       fromNetwork = fetchRejection
         ? Promise.reject(fetchRejection)
         : Promise.resolve({ clone: () => ({ json: () => Promise.resolve(body) }), args });
@@ -413,7 +425,9 @@ function createBridge({ pathname = '/watch', videoId = 'urlVideoIdA', preassigne
       value: preassigned, writable: true, configurable: false, enumerable: true
     });
   }
-  vm.runInContext(fs.readFileSync('./page-bridge.js', 'utf8'), sandbox, { filename: 'page-bridge.js' });
+  vm.runInContext(fs.readFileSync('./page-bridge.js', 'utf8'), sandbox, {
+    filename: 'chrome-extension://abcdefghijklmnopabcdefghijklmnop/page-bridge.js'
+  });
 
   const deliver = (data) => {
     for (const fn of listeners['message'] || []) fn({ source: window, data });
@@ -441,6 +455,37 @@ function createBridge({ pathname = '/watch', videoId = 'urlVideoIdA', preassigne
       return { returned, fromNetwork };
     },
     failNextFetch(error) { fetchRejection = error; },
+    // The next request fails with an error made in the page's realm: a
+    // TypeError, or an Error carrying the name given.
+    failNextFetchInPage(errorName, message) {
+      const make = vm.runInContext(
+        '(name, message) => { if (name === "TypeError") return new TypeError(message); const e = new Error(message); e.name = name; return e; }',
+        sandbox
+      );
+      fetchFailure = () => make(errorName, message);
+    },
+    lastFetchFailure: () => lastFetchFailure,
+    // A promise the page rejects itself, with a TypeError made in its realm.
+    pageRejects(message) {
+      return vm.runInContext(`Promise.reject(new TypeError(${JSON.stringify(message)}))`, sandbox);
+    },
+    // Unhandled rejections as Node reports them, which is for a promise with no
+    // handler; each is dispatched to the page's listeners as the window
+    // dispatches one. `reportedFor` lists, per report for that promise, whether
+    // a listener prevented its default.
+    watchUnhandledRejections() {
+      const seen = [];
+      const onRejection = (reason, promise) => {
+        const event = { reason, promise, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } };
+        for (const fn of listeners['unhandledrejection'] || []) fn(event);
+        seen.push(event);
+      };
+      process.on('unhandledRejection', onRejection);
+      return {
+        reportedFor: (promise) => seen.filter((event) => event.promise === promise).map((event) => event.defaultPrevented),
+        stop: () => process.off('unhandledRejection', onRejection)
+      };
+    },
     networkCalls,
     window,
     // Method 3 and the on-demand path: what content.js asks for.
@@ -3162,6 +3207,78 @@ async function runTests() {
     await Promise.resolve(otherFailed.returned).catch((err) => { failedOther = err; });
     assert(failedOther instanceof TypeError,
       `and so does one it does not read (${failedOther})`);
+  }
+
+  section('Bridge: a request that could not be made on a watch page stays out of the error list');
+  {
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
+    const same = (actual, expected) => JSON.stringify(actual) === JSON.stringify(expected);
+    const bridge = createBridge();
+    const watch = bridge.watchUnhandledRejections();
+    try {
+      const handled = bridge.pageRejects('Failed to fetch');
+      handled.catch(() => {});
+      const pageOwn = bridge.pageRejects('Failed to fetch');
+      bridge.failNextFetchInPage('TypeError', 'Failed to fetch');
+      const noHandler = bridge.window.fetch('https://www.youtube.com/other');
+      bridge.failNextFetchInPage('TypeError', 'Failed to fetch');
+      const thenOnly = bridge.window.fetch('https://www.youtube.com/other').then((res) => res);
+      bridge.failNextFetchInPage('TypeError', 'Failed to fetch');
+      const awaited = (async () => { await bridge.window.fetch('https://www.youtube.com/other'); })();
+      bridge.failNextFetchInPage('AbortError', 'signal is aborted without reason');
+      const aborted = bridge.window.fetch('https://www.youtube.com/other');
+      bridge.failNextFetchInPage('TypeError', 'something else');
+      const otherTypeError = bridge.window.fetch('https://www.youtube.com/other');
+      bridge.failNextFetchInPage('TypeError', 'Failed to fetch');
+      const madeHereFailedAway = bridge.window.fetch('https://www.youtube.com/other');
+      bridge.setUrl('/feed/subscriptions', '');
+      await settle();
+      await settle();
+
+      assert(same(watch.reportedFor(handled), []), 'a promise with a handler is not reported at all');
+      assert(same(watch.reportedFor(pageOwn), [false]),
+        'the same TypeError from a promise the page rejected itself is reported and left as it is');
+      assert(same(watch.reportedFor(noHandler), [true]),
+        'a request the page left with no handler is reported, with its default prevented');
+      assert(same(watch.reportedFor(thenOnly), [true]), 'and so is the promise a then made from it');
+      assert(same(watch.reportedFor(awaited), [true]), 'and the promise of an async function that awaited it');
+      assert(same(watch.reportedFor(aborted), [false]), 'an aborted request is reported and left as it is');
+      assert(same(watch.reportedFor(otherTypeError), [false]), 'so is a request that failed with another TypeError');
+      assert(same(watch.reportedFor(madeHereFailedAway), [true]),
+        'a request made on the watch page is quietened when it fails after the page left');
+    } finally {
+      watch.stop();
+    }
+  }
+
+  section('Bridge: a request made off a watch page is left as it is');
+  {
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
+    const same = (actual, expected) => JSON.stringify(actual) === JSON.stringify(expected);
+    const bridge = createBridge({ pathname: '/feed/subscriptions' });
+    const watch = bridge.watchUnhandledRejections();
+    try {
+      bridge.failNextFetchInPage('TypeError', 'Failed to fetch');
+      const offPage = bridge.window.fetch('https://www.youtube.com/other');
+      bridge.failNextFetchInPage('TypeError', 'Failed to fetch');
+      const madeAwayFailedHere = bridge.window.fetch('https://www.youtube.com/other');
+      bridge.setUrl('/watch', 'urlVideoIdA');
+      await settle();
+      await settle();
+      assert(same(watch.reportedFor(offPage), [false]), 'a request made on another page is reported and left as it is');
+      assert(same(watch.reportedFor(madeAwayFailedHere), [false]),
+        'and so is one made before the page reached a watch page');
+    } finally {
+      watch.stop();
+    }
+
+    const handedBack = createBridge();
+    handedBack.failNextFetchInPage('TypeError', 'Failed to fetch');
+    const call = await handedBack.fetchPlayer(playerResponse(), 'https://www.youtube.com/other');
+    assert(call.returned === call.fromNetwork, 'the page is handed the promise the network gave');
+    let caught = null;
+    await Promise.resolve(call.returned).catch((err) => { caught = err; });
+    assert(caught === handedBack.lastFetchFailure(), 'and it rejects with the reason the network gave');
   }
 
   section('Bridge: the request reaches the network as the page made it');
