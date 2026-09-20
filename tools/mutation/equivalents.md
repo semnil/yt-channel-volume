@@ -30,7 +30,7 @@ than executing them, so the sweeps of those three are judged by
 inside a `try`, so a null source is caught, and the assignment below runs either
 way.
 
-- `content.js:408` a guard is always taken ×1 — if (sourceNode) {
+- `content.js:436` a guard is always taken ×1 — if (sourceNode) {
 
 
 The dropped await before `notifyPopup` in the retry's callback. Measured by
@@ -40,29 +40,29 @@ run by the time the callback is reached — every notification carries the level
 beside the gain that goes with it whether the await is there or not. With Auto
 off the gain does not move at all.
 
-- `content.js:533` an await is dropped ×1 — await
+- `content.js:561` an await is dropped ×1 — await
 
 The navigation observer's watch-page check. `triggerApply` opens with the same
 one.
 
-- `content.js:645` a guard is dropped ×1 — if (!isWatchPage()) return;
+- `content.js:673` a guard is dropped ×1 — if (!isWatchPage()) return;
 
 `respondOnce`'s guard against a second answer, and `return true` after a
 synchronous `sendResponse`. Both were measured against Chrome rather than
 reasoned about: a response sent inside the listener is delivered whatever the
 listener returns, and a second one is dropped rather than delivered or thrown.
 
-- `content.js:751` a guard is dropped ×1 — if (answered) return;
-- `content.js:765` true becomes false ×1 — return true;
-- `content.js:772` true becomes false ×1 — return true;
-- `content.js:778` true becomes false ×1 — return true;
-- `content.js:782` true becomes false ×1 — return true;
-- `content.js:786` true becomes false ×1 — return true;
-- `content.js:809` true becomes false ×1 — return true;
-- `content.js:813` true becomes false ×1 — return true;
-- `content.js:817` true becomes false ×1 — return true;
-- `content.js:830` true becomes false ×1 — return true;
-- `content.js:849` true becomes false ×1 — return true;
+- `content.js:779` a guard is dropped ×1 — if (answered) return;
+- `content.js:793` true becomes false ×1 — return true;
+- `content.js:800` true becomes false ×1 — return true;
+- `content.js:806` true becomes false ×1 — return true;
+- `content.js:810` true becomes false ×1 — return true;
+- `content.js:814` true becomes false ×1 — return true;
+- `content.js:837` true becomes false ×1 — return true;
+- `content.js:841` true becomes false ×1 — return true;
+- `content.js:845` true becomes false ×1 — return true;
+- `content.js:858` true becomes false ×1 — return true;
+- `content.js:877` true becomes false ×1 — return true;
 
 ## popup.js
 

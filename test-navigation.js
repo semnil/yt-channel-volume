@@ -2944,14 +2944,16 @@ async function runTests() {
   assert(ytcv.state._lastProcessedVideo === null, 'and no video is taken up');
   setURL('/watch', 'obsVid1');
 
-  // ── Going quiet after a reload ──────────────────────────────────────
+  // ── What a write nobody asked for leaves behind ─────────────────────
 
-  // reportFailure keeps the console clear after an extension reload, which is
-  // the one cause of these failures that is not worth reporting. The state it
-  // reads is the state at the failure, not at the request: a save already in
-  // flight is what fails on the reload. Nothing had made a failure land on an
-  // invalidated context, so the check had no case either way.
-  section('Extension reload: the failure it causes is not reported');
+  // Auto's save is made again by the next video, the next navigation and the
+  // next apply, so the start of a stretch of failures is named at info, which
+  // Chrome keeps out of the extension's error list, and the error is left for a
+  // write that failed after another. reportFailure keeps the console clear
+  // after an extension reload, which is the one cause of these failures that is
+  // not worth reporting. The state it reads is the state at the failure, not at
+  // the request: a save already in flight is what fails on the reload.
+  section('A write nobody asked for: where a stretch of failures starts');
   mockStorage['channelVolumes'] = {
     UCreload: { name: 'Reload Ch', gainVideo: 0.5, autoApplyLoudnessVideo: true }
   };
@@ -2964,34 +2966,75 @@ async function runTests() {
   ytcv._set('storageMigrated', true);
   ytcv._set('storageReady', Promise.resolve());
   const realConsoleError = console.error;
+  const realConsoleInfo = console.info;
   const realSet = chrome.storage.local.set;
   let reported = [];
-  console.error = (...args) => { reported.push(args[0]); };
-  chrome.storage.local.set = () => Promise.reject(new Error('storage write failed'));
-  await ytcv.applyPreferredGain();
-  await tick();
-  console.error = realConsoleError;
+  let noted = [];
+  // A FAIL of this suite goes to console.error, so the console is only taken
+  // for the apply itself and given back before anything is asserted.
+  const captureConsole = () => {
+    console.error = (...args) => { reported.push(args[0]); };
+    console.info = (...args) => { noted.push(args[0]); };
+  };
+  const releaseConsole = () => {
+    console.error = realConsoleError;
+    console.info = realConsoleInfo;
+  };
+  const applyWithConsoleTaken = async () => {
+    captureConsole();
+    await ytcv.applyPreferredGain();
+    await tick();
+    releaseConsole();
+  };
+  const refuseWrites = () => Promise.reject(new Error('storage write failed'));
+  chrome.storage.local.set = refuseWrites;
+  await applyWithConsoleTaken();
   // The service worker logs its own side of the same failure; content.js's is
   // the one this is about.
   const fromContent = () => reported.filter(m => String(m).includes('auto gain not stored'));
-  assert(fromContent().length === 1,
-    `a failure on a live context is reported (${JSON.stringify(reported)})`);
+  const notedByContent = () => noted.filter(m => String(m).includes('auto gain not stored'));
+  assert(notedByContent().length === 1,
+    `the first failure on a live context is named (${JSON.stringify(noted)})`);
+  assert(fromContent().length === 0,
+    `and left where Chrome does not collect it (${JSON.stringify(reported)})`);
 
+  section('A write nobody asked for: a stretch that a second write did not end');
+  await applyWithConsoleTaken();
+  assert(fromContent().length === 1,
+    `a write that failed after another is reported (${JSON.stringify(reported)})`);
+  await applyWithConsoleTaken();
+  assert(fromContent().length === 1,
+    `and the stretch is reported once, not per write (${JSON.stringify(reported)})`);
+  assert(notedByContent().length === 1,
+    `the stretch keeps the one line it started with (${JSON.stringify(noted)})`);
+
+  section('A write nobody asked for: one that lands ends the stretch');
+  chrome.storage.local.set = realSet;
+  await applyWithConsoleTaken();
+  reported = [];
+  noted = [];
+  // The worker skips a write that changes nothing, so the failing write that
+  // follows carries a gain the entry does not already hold.
+  ytcv._set('currentLoudnessDb', -12);
+  chrome.storage.local.set = refuseWrites;
+  await applyWithConsoleTaken();
+  assert(notedByContent().length === 1 && fromContent().length === 0,
+    `the next failure opens a stretch of its own (${JSON.stringify([noted, reported])})`);
+
+  section('Extension reload: the failure it causes is named nowhere');
   const idBeforeReload = chrome.runtime.id;
   reported = [];
-  console.error = (...args) => { reported.push(args[0]); };
+  noted = [];
   chrome.storage.local.set = () => {
     // The reload is what makes the write fail, so it is gone by the rejection.
     chrome.runtime.id = undefined;
     return Promise.reject(new Error('storage write failed'));
   };
-  await ytcv.applyPreferredGain();
-  await tick();
-  console.error = realConsoleError;
+  await applyWithConsoleTaken();
   chrome.runtime.id = idBeforeReload;
   chrome.storage.local.set = realSet;
-  assert(fromContent().length === 0,
-    `the same failure after a reload is not (${JSON.stringify(reported)})`);
+  assert(fromContent().length === 0 && notedByContent().length === 0,
+    `the same failure after a reload is named nowhere (${JSON.stringify([noted, reported])})`);
 
   // Every write goes through one function, and after a reload that function is
   // the last thing standing between the page and a chrome.runtime call that

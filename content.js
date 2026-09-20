@@ -13,6 +13,31 @@
     console.error('[YTCV] ' + what, err);
   }
 
+  // A write the viewer did not ask for is made again by the next video, the
+  // next navigation or the next apply. The stretch of failures that opens is
+  // named at info where it starts and as an error once a second write has
+  // failed too, and Chrome collects the error as an error of the extension.
+  let unaskedWriteFailing = false;
+  let unaskedWriteReported = false;
+
+  function unaskedWriteStored() {
+    unaskedWriteFailing = false;
+    unaskedWriteReported = false;
+  }
+
+  function reportUnaskedWriteFailure(what, err) {
+    if (!isContextValid()) return;
+    if (!unaskedWriteFailing) {
+      unaskedWriteFailing = true;
+      console.info('[YTCV] ' + what, err);
+      return;
+    }
+    if (!unaskedWriteReported) {
+      unaskedWriteReported = true;
+      console.error('[YTCV] ' + what, err);
+    }
+  }
+
   /** @type {AudioContext | null} */
   let audioCtx = null;
   /** @type {GainNode | null} */
@@ -220,7 +245,8 @@
           channelId: bridgeChId,
           authorName,
           url: 'https://www.youtube.com/channel/' + bridgeChId
-        }).catch(err => reportFailure('handle entry not adopted', err));
+        }).then(unaskedWriteStored,
+          err => reportUnaskedWriteFailure('handle entry not adopted', err));
       }
     }
     if (applyAutomaticLoudnessGain()) {
@@ -286,7 +312,8 @@
     if (storageMigrated) {
       saveChannelGain(
         channelId, currentChannel.name, gain, videoType, currentChannel.url
-      ).catch(err => reportFailure('auto gain not stored', err));
+      ).then(unaskedWriteStored,
+        err => reportUnaskedWriteFailure('auto gain not stored', err));
     }
     return true;
   }
@@ -319,7 +346,8 @@
       await saveChannelGain(
         requestedChannelId, currentChannel.name, gain,
         requestedVideoType, currentChannel.url
-      ).catch(err => reportFailure('auto gain not stored', err));
+      ).then(unaskedWriteStored,
+        err => reportUnaskedWriteFailure('auto gain not stored', err));
     }
   }
 
@@ -626,8 +654,8 @@
     if (foldInFlight) return foldInFlight;
     storageSettled = false;
     foldInFlight = requestChannelWrite('migrateLegacyGains', {})
-      .then(() => { storageMigrated = true; })
-      .catch(err => reportFailure('legacy auto gains not folded in', err))
+      .then(() => { storageMigrated = true; unaskedWriteStored(); })
+      .catch(err => reportUnaskedWriteFailure('legacy auto gains not folded in', err))
       .then(() => { storageSettled = true; foldInFlight = null; });
     storageReady = foldInFlight;
     return storageReady;
