@@ -14,28 +14,29 @@
   }
 
   // A write the viewer did not ask for is made again by the next video, the
-  // next navigation or the next apply. The stretch of failures that opens is
-  // named at info where it starts and as an error once a second write has
-  // failed too, and Chrome collects the error as an error of the extension.
-  let unaskedWriteFailing = false;
-  let unaskedWriteReported = false;
+  // next navigation or the next apply. Each of them keeps a stretch of its own,
+  // under the name it is reported by: the start is named at info, the error is
+  // left for a write of that name that failed after another, and a write of
+  // that name that lands ends the stretch. Chrome collects the error as an
+  // error of the extension.
+  const unaskedWriteStretches = new Map();
 
-  function unaskedWriteStored() {
-    unaskedWriteFailing = false;
-    unaskedWriteReported = false;
-  }
-
-  function reportUnaskedWriteFailure(what, err) {
-    if (!isContextValid()) return;
-    if (!unaskedWriteFailing) {
-      unaskedWriteFailing = true;
-      console.info('[YTCV] ' + what, err);
-      return;
-    }
-    if (!unaskedWriteReported) {
-      unaskedWriteReported = true;
-      console.error('[YTCV] ' + what, err);
-    }
+  function nameUnaskedWrite(what, write) {
+    return write.then(() => {
+      unaskedWriteStretches.delete(what);
+    }, (err) => {
+      if (!isContextValid()) return;
+      const stretch = unaskedWriteStretches.get(what);
+      if (!stretch) {
+        unaskedWriteStretches.set(what, { reported: false });
+        console.info('[YTCV] ' + what, err);
+        return;
+      }
+      if (!stretch.reported) {
+        stretch.reported = true;
+        console.error('[YTCV] ' + what, err);
+      }
+    });
   }
 
   /** @type {AudioContext | null} */
@@ -241,12 +242,11 @@
         const authorName = event.data.author;
         // Sent before Auto's own save for this message, so the worker decides
         // the adoption against a map that does not hold that gain yet.
-        requestChannelWrite('adoptHandleEntry', {
+        nameUnaskedWrite('handle entry not adopted', requestChannelWrite('adoptHandleEntry', {
           channelId: bridgeChId,
           authorName,
           url: 'https://www.youtube.com/channel/' + bridgeChId
-        }).then(unaskedWriteStored,
-          err => reportUnaskedWriteFailure('handle entry not adopted', err));
+        }));
       }
     }
     if (applyAutomaticLoudnessGain()) {
@@ -310,10 +310,9 @@
     // before the fold, though: a flagless gain is what a pre-unification
     // manual save looks like, and the fold would pin this channel Auto-off.
     if (storageMigrated) {
-      saveChannelGain(
+      nameUnaskedWrite('auto gain not stored', saveChannelGain(
         channelId, currentChannel.name, gain, videoType, currentChannel.url
-      ).then(unaskedWriteStored,
-        err => reportUnaskedWriteFailure('auto gain not stored', err));
+      ));
     }
     return true;
   }
@@ -343,11 +342,10 @@
     if (autoEnabled && hasLoudness && storageMigrated) {
       // The gain is already playing. A failed write must not abort the caller —
       // `forceDetect` answers the popup from this path.
-      await saveChannelGain(
+      await nameUnaskedWrite('auto gain not stored', saveChannelGain(
         requestedChannelId, currentChannel.name, gain,
         requestedVideoType, currentChannel.url
-      ).then(unaskedWriteStored,
-        err => reportUnaskedWriteFailure('auto gain not stored', err));
+      ));
     }
   }
 
@@ -653,9 +651,8 @@
     if (storageMigrated) return storageReady;
     if (foldInFlight) return foldInFlight;
     storageSettled = false;
-    foldInFlight = requestChannelWrite('migrateLegacyGains', {})
-      .then(() => { storageMigrated = true; unaskedWriteStored(); })
-      .catch(err => reportUnaskedWriteFailure('legacy auto gains not folded in', err))
+    foldInFlight = nameUnaskedWrite('legacy auto gains not folded in',
+      requestChannelWrite('migrateLegacyGains', {}).then(() => { storageMigrated = true; }))
       .then(() => { storageSettled = true; foldInFlight = null; });
     storageReady = foldInFlight;
     return storageReady;

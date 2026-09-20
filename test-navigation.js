@@ -3036,6 +3036,58 @@ async function runTests() {
   assert(fromContent().length === 0 && notedByContent().length === 0,
     `the same failure after a reload is named nowhere (${JSON.stringify([noted, reported])})`);
 
+  // The bridge sends the handle adoption before Auto's own save, and on a
+  // channel that already has its UC entry the worker writes nothing and answers
+  // ok. Each label keeps a stretch of its own, so that answer does not stand in
+  // for the save that keeps failing.
+  section('A write nobody asked for: one label does not end another label\'s stretch');
+  mockStorage['channelVolumes'] = {
+    UCshared: {
+      name: 'Shared Ch',
+      autoApplyLoudnessVideo: true,
+      url: 'https://www.youtube.com/channel/UCshared'
+    }
+  };
+  setURL('/watch', 'sharedVid1');
+  ytcv._set('currentChannel', { id: '', name: '', url: '' });
+  ytcv._set('_lastVideoId', null);
+  ytcv._set('_lastProcessedVideo', null);
+  ytcv._set('storageMigrated', true);
+  ytcv._set('storageReady', Promise.resolve());
+  const bridgeMessageWithAuthor = async (loudnessDb) => {
+    captureConsole();
+    simulateBridgeMessage({
+      loudnessDb, isLiveContent: false, channelId: 'UCshared', author: 'Shared Ch'
+    });
+    await tick();
+    await tick();
+    await tick();
+    await tick();
+    releaseConsole();
+  };
+  // A write that lands ends whatever stretch the cases above were left in, and
+  // it stores a gain the failing writes that follow do not repeat (the worker
+  // skips a write that changes nothing).
+  chrome.storage.local.set = realSet;
+  await bridgeMessageWithAuthor(-3);
+  reported = [];
+  noted = [];
+  chrome.storage.local.set = refuseWrites;
+  await bridgeMessageWithAuthor(-6);
+  assert(notedByContent().length === 1 && fromContent().length === 0,
+    `the first save failure is named at info (${JSON.stringify([noted, reported])})`);
+  await bridgeMessageWithAuthor(-6);
+  assert(fromContent().length === 1,
+    `the save that failed after it is reported (${JSON.stringify(reported)})`);
+  await bridgeMessageWithAuthor(-6);
+  assert(fromContent().length === 1,
+    `and that stretch is reported once (${JSON.stringify(reported)})`);
+  const adoption = () => [...noted, ...reported]
+    .filter(m => String(m).includes('handle entry not adopted'));
+  assert(adoption().length === 0,
+    `the adoption that wrote nothing is named nowhere (${JSON.stringify(adoption())})`);
+  chrome.storage.local.set = realSet;
+
   // Every write goes through one function, and after a reload that function is
   // the last thing standing between the page and a chrome.runtime call that
   // throws. Nothing had asked it to refuse: the case below is also what the
