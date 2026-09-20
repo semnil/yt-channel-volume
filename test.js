@@ -1782,7 +1782,7 @@ assert(!packaged.includes('.DS_Store'),
     ['push', 'v1.2.3-alpha', ['validTag=true', 'prerelease=true', 'version=v1.2.3-alpha']],
     // A run somebody started by hand carries a branch name here and makes no
     // release, which is not a failure — it is what the flag is for.
-    ['workflow_dispatch', 'master', ['validTag=false']],
+    ['workflow_dispatch', 'main', ['validTag=false']],
     ['workflow_dispatch', 'v1.2.3', ['validTag=false']],
     // Four parts, two parts, and a word the prerelease arm does not name.
     ['push', 'v1.2.3.4', null],
