@@ -282,7 +282,7 @@
   // level stands, and the player is looked at again until it does.
   function preferPlayingLevel(result, data) {
     const lkfs = playingLoudnessLkfs();
-    const playing = relativeToTarget(lkfs, data);
+    const playing = playingLevel(lkfs, data);
     if (playing !== null) {
       result.db = playing;
       stopFollowing();
@@ -290,6 +290,23 @@
       followPlaying();
     }
     return result;
+  }
+
+  // The player names its level rounded to 0.1 dB (`toFixed(1)` of the
+  // rendition's trackAbsoluteLoudnessLkfs). Where the renditions the response
+  // describes whose level rounds to the one named all carry one loudnessDb,
+  // that is the level, as the response gives it; otherwise the named level,
+  // against the target.
+  function playingLevel(lkfs, data) {
+    const formats = data?.streamingData?.adaptiveFormats;
+    const renditions = [data?.playerConfig?.audioConfig, ...(Array.isArray(formats) ? formats : [])];
+    const matching = renditions
+      .filter((r) => typeof r?.trackAbsoluteLoudnessLkfs === 'number' &&
+        typeof r.loudnessDb === 'number' &&
+        Number(r.trackAbsoluteLoudnessLkfs.toFixed(1)) === lkfs)
+      .map((r) => r.loudnessDb);
+    if (matching.length && matching.every((db) => db === matching[0])) return matching[0];
+    return relativeToTarget(lkfs, data);
   }
 
   // Looked at every FOLLOW_INTERVAL_MS, FOLLOW_ATTEMPTS times at most, and

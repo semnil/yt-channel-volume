@@ -4071,6 +4071,75 @@ async function runTests() {
       `and it wins over the setting where the two disagree (${drc.last()?.loudnessDb})`);
   }
 
+  section('Playing level: a named level a rendition rounds to is taken as the response gives it');
+  {
+    const described = () => {
+      const pr = playerResponse({ loudnessDb: -12.389999 });
+      pr.playerConfig.audioConfig.trackAbsoluteLoudnessLkfs = -26.389999;
+      pr.streamingData = { adaptiveFormats: [
+        { itag: 251, loudnessDb: -12.389999, trackAbsoluteLoudnessLkfs: -26.389999 },
+        { itag: 251, isDrc: true, loudnessDb: -0.32999992, trackAbsoluteLoudnessLkfs: -14.33 }
+      ] };
+      return pr;
+    };
+    const answerFor = async (volume, pr = described()) => {
+      const bridge = createBridge({ manualTimers: true });
+      bridge.assign(pr);
+      bridge.setMoviePlayer(pr, { getStatsForNerds: () => statsFor(volume) });
+      await bridge.request();
+      return bridge.last();
+    };
+
+    const plain = await answerFor('100%/100% (cont.-26.4dB tgt.-14.0dB)');
+    assert(plain?.loudnessDb === -12.389999 && plain?.baseLoudnessDb === -12.389999,
+      `the plain rendition's level, exactly, and so the same as the base (${plain?.loudnessDb} / ${plain?.baseLoudnessDb})`);
+    const stable = await answerFor('100%/100% DRC (cont.-14.3dB tgt.-14.0dB)');
+    assert(stable?.loudnessDb === -0.32999992, `the stable rendition's, exactly (${stable?.loudnessDb})`);
+
+    const unlisted = await answerFor('100%/100% (cont.-20.0dB tgt.-14.0dB)');
+    assert(near(unlisted?.loudnessDb, -6), `a level no rendition rounds to is taken as named (${unlisted?.loudnessDb})`);
+
+    // Two renditions round to the one level and disagree below it.
+    const split = described();
+    split.streamingData.adaptiveFormats.push(
+      { itag: 140, loudnessDb: 0.43000031, trackAbsoluteLoudnessLkfs: -13.57 },
+      { itag: 140, loudnessDb: 0.39000034, trackAbsoluteLoudnessLkfs: -13.61 }
+    );
+    const either = await answerFor('100%/95% (cont.-13.6dB tgt.-14.0dB)', split);
+    assert(near(either?.loudnessDb, 0.4), `renditions that disagree leave the named level (${either?.loudnessDb})`);
+
+    // A rendition with no absolute level cannot be matched.
+    const bare = described();
+    delete bare.streamingData.adaptiveFormats[1].trackAbsoluteLoudnessLkfs;
+    const unmatched = await answerFor('100%/100% DRC (cont.-14.3dB tgt.-14.0dB)', bare);
+    assert(near(unmatched?.loudnessDb, -0.3), `a rendition with no absolute level is not matched (${unmatched?.loudnessDb})`);
+
+    // A match needs no target to put it against: the rendition carries its level.
+    const untargeted = described();
+    delete untargeted.playerConfig.audioConfig.loudnessTargetLkfs;
+    const matchedAlone = await answerFor('100%/100% DRC (cont.-14.3dB tgt.-14.0dB)', untargeted);
+    assert(matchedAlone?.loudnessDb === -0.32999992, `a match stands without a target (${matchedAlone?.loudnessDb})`);
+
+    // A response that describes no rendition at all: nothing to match, and no
+    // target either.
+    const bareResponse = playerResponse();
+    delete bareResponse.playerConfig;
+    const nothing = await answerFor('100%/100% DRC (cont.-14.3dB tgt.-14.0dB)', bareResponse);
+    assert(nothing?.loudnessDb === null && nothing?.source === 'request',
+      `a response with no player config is answered, with no level (${nothing?.loudnessDb} / ${nothing?.source})`);
+
+    // The player names this video's level, and nothing on the page answers
+    // for this video.
+    const alone = createBridge({ manualTimers: true });
+    alone.setMoviePlayer(described(), {
+      getPlayerResponse: () => null,
+      getStatsForNerds: () => statsFor('100%/100% DRC (cont.-14.3dB tgt.-14.0dB)')
+    });
+    await alone.request();
+    assert(alone.last()?.source === 'request' && alone.last()?.loudnessDb === null,
+      `with no response for the video the ask is still answered, with no level (${alone.last()?.source} / ${alone.last()?.loudnessDb})`);
+  }
+
   section('Playing level: a line the player has not settled is not taken');
   {
     const pr = playerResponse({ loudnessDb: -12.39, drcLoudnessDb: -0.33 });

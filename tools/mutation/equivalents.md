@@ -110,5 +110,5 @@ stored setting, or a level or volume line of `null`.
 - `page-bridge.js:38` a guard is always taken ×1 — if (player && typeof player.getDrcUserPreference === 'function') {
 - `page-bridge.js:78` || becomes && ×1 — ||
 - `page-bridge.js:78` a guard is dropped ×1 — if (!player || typeof player.getStatsForNerds !== 'function') return nul
-- `page-bridge.js:347` && becomes || ×1 — &&
-- `page-bridge.js:347` a guard is always taken ×1 — if (moviePlayer && typeof moviePlayer.getStatsForNerds === 'function') {
+- `page-bridge.js:364` && becomes || ×1 — &&
+- `page-bridge.js:364` a guard is always taken ×1 — if (moviePlayer && typeof moviePlayer.getStatsForNerds === 'function') {
