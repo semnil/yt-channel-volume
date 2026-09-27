@@ -16,6 +16,7 @@
       type: MSG_TYPE,
       videoId: info.videoId || currentVideoId(),
       loudnessDb: info.db,
+      baseLoudnessDb: info.baseDb,
       isLiveContent: info.isLiveContent,
       isLiveNow: info.isLiveNow,
       channelId: info.channelId,
@@ -86,8 +87,12 @@
     }
   }
 
+  // `db` is the level of the rendition played; `baseDb` is the level of the
+  // plain rendition the response describes (`audioConfig`), before stable
+  // volume, which is what a stored gain is held against.
   function extractFromPlayerResponse(data) {
     let db = null;
+    let baseDb = null;
     let isLiveContent = false;
     let isLiveNow = false;
     let videoId = '';
@@ -98,6 +103,7 @@
       if (typeof db !== 'number') {
         db = relativeToTarget(data?.playerConfig?.audioConfig?.perceptualLoudnessDb, data);
       }
+      baseDb = db;
       const drcDb = drcPreference().value === 1 ? drcLoudnessDb(data) : null;
       if (drcDb !== null) db = drcDb;
       isLiveContent = !!data?.videoDetails?.isLiveContent;
@@ -106,7 +112,7 @@
       channelId = data?.videoDetails?.channelId || '';
       author = data?.videoDetails?.author || '';
     } catch (_) {}
-    return { db, isLiveContent, isLiveNow, videoId, channelId, author };
+    return { db, baseDb, isLiveContent, isLiveNow, videoId, channelId, author };
   }
 
   function currentVideoId() {
@@ -237,6 +243,7 @@
   function answerCurrentVideo(source) {
     let result = {
       db: null,
+      baseDb: null,
       isLiveContent: false,
       isLiveNow: false,
       videoId: currentVideoId(),

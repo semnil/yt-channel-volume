@@ -272,14 +272,28 @@ function isManualGainLocked(autoApplyEnabled, hasLoudness) {
   return !!autoApplyEnabled && !!hasLoudness;
 }
 
-function calcGain(loudnessDb, targetLufs) {
-  const effectiveLufs = loudnessDb > 0
+// The level YouTube plays a rendition at, after its own normalization.
+function effectiveLufs(loudnessDb) {
+  return loudnessDb > 0
     ? YT_REFERENCE_LUFS
     : YT_REFERENCE_LUFS + loudnessDb;
-  const compensationDb = targetLufs - effectiveLufs;
+}
+
+function calcGain(loudnessDb, targetLufs) {
+  const compensationDb = targetLufs - effectiveLufs(loudnessDb);
   const gain = Math.pow(10, compensationDb / 20);
   if (!isFinite(gain)) return 1.0;
   return Math.max(0, Math.min(6, gain));
+}
+
+// A stored gain is held against the base rendition (the plain audio the
+// player response describes). Multiplied by this, it is the gain for the
+// rendition playing, so that both come out at the same level. Where either
+// level is not known the two are taken as one.
+function renditionGainRatio(playingDb, baseDb) {
+  if (typeof playingDb !== 'number' || typeof baseDb !== 'number') return 1;
+  const ratio = Math.pow(10, (effectiveLufs(baseDb) - effectiveLufs(playingDb)) / 20);
+  return Number.isFinite(ratio) ? ratio : 1;
 }
 
 function esc(s) {

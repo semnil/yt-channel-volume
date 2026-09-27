@@ -51,6 +51,9 @@
   let currentChannel = { id: '', name: '', url: '' };
   let currentChannelVideoId = '';
   let currentLoudnessDb = null;
+  // The level of the plain rendition the player response describes, before
+  // stable volume. Stored gains are held against it.
+  let currentBaseLoudnessDb = null;
   let currentLoudnessVideoId = '';
   let currentGain = 1.0;
   let targetLufs = DEFAULT_TARGET_LUFS;
@@ -188,6 +191,8 @@
 
     const db = event.data.loudnessDb;
     const hasLoudness = db !== null && db !== undefined && !isNaN(db);
+    const baseDb = event.data.baseLoudnessDb;
+    const hasBase = typeof baseDb === 'number' && !isNaN(baseDb);
     const loudnessVideoChanged = bridgeVideoId &&
       bridgeVideoId !== currentLoudnessVideoId;
     if (loudnessVideoChanged) {
@@ -195,8 +200,10 @@
       // LUFS so Auto uses the saved channel gain instead of stale loudness.
       currentLoudnessVideoId = bridgeVideoId;
       currentLoudnessDb = hasLoudness ? db : null;
+      currentBaseLoudnessDb = hasBase ? baseDb : null;
     } else if (hasLoudness) {
       currentLoudnessDb = db;
+      if (hasBase) currentBaseLoudnessDb = baseDb;
     }
     if (event.data.isLiveContent !== undefined) {
       currentVideoType = event.data.isLiveContent ? 'live' : 'video';
@@ -297,11 +304,32 @@
     return calcGain(loudnessDb, targetLufs);
   }
 
+  // A stored gain is held against the base rendition and played on the
+  // rendition playing. Where the base level is not known, the level playing
+  // stands in for it.
+  function currentRenditionRatio() {
+    return renditionGainRatio(currentLoudnessDb, currentBaseLoudnessDb ?? currentLoudnessDb);
+  }
+
+  function storedGainToPlaying(gain) {
+    return gain * currentRenditionRatio();
+  }
+
+  function playingGainToStored(gain) {
+    return gain / currentRenditionRatio();
+  }
+
+  // What Auto and "Apply to channel" store: the gain for the base rendition.
+  function calcStoredGainFromLoudness() {
+    return calcGainFromLoudness(currentBaseLoudnessDb ?? currentLoudnessDb);
+  }
+
   function applyAutomaticLoudnessGain() {
     // Before the fold, fall through to applyPreferredGain, which waits for it.
     if (!storageSettled) return false;
     if (!isCurrentAutoApplyEnabled() || currentLoudnessDb === null) return false;
     const gain = calcGainFromLoudness(currentLoudnessDb);
+    const storedGain = calcStoredGainFromLoudness();
     const channelId = currentChannel.id;
     const videoType = currentVideoType;
     commitGain(gain);
@@ -311,7 +339,7 @@
     // manual save looks like, and the fold would pin this channel Auto-off.
     if (storageMigrated) {
       nameUnaskedWrite('auto gain not stored', saveChannelGain(
-        channelId, currentChannel.name, gain, videoType, currentChannel.url
+        channelId, currentChannel.name, storedGain, videoType, currentChannel.url
       ));
     }
     return true;
@@ -335,15 +363,16 @@
     setCurrentAutoApplyFromEntry(entry);
     const autoEnabled = isCurrentAutoApplyEnabled(requestedVideoType);
     const hasLoudness = currentLoudnessDb !== null;
+    const stored = getChannelGain(entry, requestedVideoType);
     const gain = autoEnabled && hasLoudness
       ? calcGainFromLoudness(currentLoudnessDb)
-      : getChannelGain(entry, requestedVideoType) ?? 1.0;
+      : (stored != null ? storedGainToPlaying(stored) : 1.0);
     commitGain(gain);
     if (autoEnabled && hasLoudness && storageMigrated) {
       // The gain is already playing. A failed write must not abort the caller —
       // `forceDetect` answers the popup from this path.
       await nameUnaskedWrite('auto gain not stored', saveChannelGain(
-        requestedChannelId, currentChannel.name, gain,
+        requestedChannelId, currentChannel.name, calcStoredGainFromLoudness(),
         requestedVideoType, currentChannel.url
       ));
     }
@@ -540,6 +569,7 @@
 
     if (!hasEarlyBridgeLoudness) {
       currentLoudnessDb = null;
+      currentBaseLoudnessDb = null;
       currentLoudnessVideoId = '';
       currentVideoType = 'video';
       currentVideoTypeDetected = false;
@@ -737,9 +767,10 @@
         const anyAutoApplyChanged =
           previousAutoApplyVideo !== currentAutoApplyLoudnessVideo ||
           previousAutoApplyLive !== currentAutoApplyLoudnessLive;
+        const stored = entry ? getChannelGain(entry, currentVideoType) : 1.0;
         const gain = currentAutoApply && currentLoudnessDb !== null
           ? calcGainFromLoudness(currentLoudnessDb)
-          : (entry ? getChannelGain(entry, currentVideoType) : 1.0);
+          : (entry && stored != null ? storedGainToPlaying(stored) : stored);
         if (gain == null && !currentTypeAutoApplyChanged) {
           if (anyAutoApplyChanged) notifyPopup();
           return;
@@ -815,7 +846,7 @@
       fillCurrentChannelNameFromDomFallback();
       const gain = calcGainFromLoudness(currentLoudnessDb);
       commitGain(gain);
-      saveManualChannelGain(currentChannel.id, currentChannel.name, gain, currentVideoType, currentChannel.url).then(() => {
+      saveManualChannelGain(currentChannel.id, currentChannel.name, calcStoredGainFromLoudness(), currentVideoType, currentChannel.url).then(() => {
         notifyPopup();
         sendResponse({ ok: true, gain });
       }).catch(err => {
@@ -857,7 +888,7 @@
       const { gain } = msg;
       fillCurrentChannelNameFromDomFallback();
       commitGain(gain);
-      saveManualChannelGain(currentChannel.id, currentChannel.name, gain, currentVideoType, currentChannel.url).then(() => {
+      saveManualChannelGain(currentChannel.id, currentChannel.name, playingGainToStored(currentGain), currentVideoType, currentChannel.url).then(() => {
         notifyPopup();
         sendResponse({ ok: true });
       }).catch(err => {
@@ -915,6 +946,7 @@
           currentVideoType,
           currentIsLiveNow,
           currentLoudnessDb,
+          currentBaseLoudnessDb,
           currentGain,
           audioChain: {
             connected: !!connectedVideo,
@@ -965,7 +997,7 @@
       get state() {
         return {
           currentChannel, currentChannelVideoId,
-          currentGain, currentLoudnessDb, currentLoudnessVideoId,
+          currentGain, currentLoudnessDb, currentBaseLoudnessDb, currentLoudnessVideoId,
           currentVideoType, currentVideoTypeDetected, currentIsLiveNow, showGainOverlay,
           currentAutoApplyLoudnessVideo, currentAutoApplyLoudnessLive,
           storageSettled, storageMigrated,
@@ -1007,6 +1039,7 @@
           case 'currentAutoApplyLoudnessVideo': currentAutoApplyLoudnessVideo = val; break;
           case 'currentAutoApplyLoudnessLive': currentAutoApplyLoudnessLive = val; break;
           case 'currentLoudnessDb': currentLoudnessDb = val; break;
+          case 'currentBaseLoudnessDb': currentBaseLoudnessDb = val; break;
           case 'storageReady': storageReady = val; break;
           case 'storageSettled': storageSettled = val; break;
           case 'storageMigrated': storageMigrated = val; break;

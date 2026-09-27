@@ -2741,6 +2741,29 @@ assert(calcGain(0, -18) === calcGain(-0.001, -18) || true, 'boundary at 0: non-p
 // Verify 0 takes the non-positive path (effectiveLufs = -14 + 0 = -14)
 assertClose(calcGain(0, -18), Math.pow(10, (-18 - (-14))/20), 0.001, 'loudnessDb=0 uses non-positive path');
 
+section('renditionGainRatio — a stored gain carried to the rendition playing');
+
+// Stable volume raising a quiet video from -26.39 to -14.33 LUFS: a gain held
+// against the plain rendition comes down by the 12.06 dB the player added.
+assertClose(renditionGainRatio(-0.33, -12.39), Math.pow(10, -12.06 / 20), 1e-9,
+  'the stable rendition takes the stored gain down by what it raised the level');
+assertClose(renditionGainRatio(-12.39, -0.33), Math.pow(10, 12.06 / 20), 1e-9,
+  'and a quieter rendition takes it up');
+assertClose(calcGain(-12.39, -18) * renditionGainRatio(-0.33, -12.39), calcGain(-0.33, -18), 1e-9,
+  'the base rendition\'s Auto gain, carried over, is the playing rendition\'s Auto gain');
+assert(renditionGainRatio(-4, -4) === 1, 'one rendition: the gain as it is');
+
+// Both above -14 LUFS: YouTube brings both down to -14 before any gain.
+assertClose(renditionGainRatio(0.4, 6.96), 1, 1e-9, 'two renditions YouTube attenuates are one level');
+assertClose(renditionGainRatio(0.4, -3), Math.pow(10, -3 / 20), 1e-9,
+  'an attenuated rendition counts at -14 against a quieter one');
+
+assert(renditionGainRatio(null, -12.39) === 1, 'no level playing: the gain as it is');
+assert(renditionGainRatio(-0.33, null) === 1, 'no base level: the gain as it is');
+assert(renditionGainRatio(undefined, undefined) === 1, 'neither: the gain as it is');
+assert(renditionGainRatio(NaN, -12.39) === 1, 'NaN → 1');
+assert(renditionGainRatio(-Infinity, -12.39) === 1, 'a level that is not finite → 1');
+
 // ── Constants ────────────────────────────────────────────────────────
 
 section('Constants');

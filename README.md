@@ -82,6 +82,7 @@ background.js (service worker)
 - At a gain of 1.0 (passthrough) the audio chain stays disconnected → avoids the Live Caption flicker
 - YouTube's CSP forbids inline script, so loudnessDb extraction runs in the MAIN world from `page-bridge.js`
 - The Loudness is the one of the audio the player is playing — the audio track, **Stable Volume** and **Voice boost** included, as the player's stats for nerds name it — and it is read again when the player switches that audio mid-video
+- A saved channel volume is kept for the video's regular audio, and adjusted to the audio playing; a live stream on air, which has neither a Loudness nor **Stable Volume**, plays it as it is
 
 ## Build
 

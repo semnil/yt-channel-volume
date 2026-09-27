@@ -1602,6 +1602,121 @@ async function runTests() {
   assert(ytcv.state.currentGain === 0.6,
     'live without LUFS uses the manually saved gain');
 
+  // ── Stored gains are held against the plain rendition ──────────────
+
+  // One video's two renditions: the stable one is 12.06 dB louder than the
+  // plain one.
+  const PLAIN_DB = -12.39;
+  const STABLE_DB = -0.33;
+  const closeTo = (a, b) => typeof a === 'number' && Math.abs(a - b) < 1e-9;
+  const enterVideo = (channelId, videoId, videoType, entry) => {
+    mockStorage['channelVolumes'] = entry ? { [channelId]: entry } : {};
+    setURL('/watch', videoId);
+    ytcv._set('currentChannel', { id: channelId, name: entry?.name || channelId, url: 'https://www.youtube.com/channel/' + channelId });
+    ytcv._set('currentChannelVideoId', videoId);
+    ytcv._set('currentVideoType', videoType);
+    ytcv._set('currentLoudnessDb', null);
+    ytcv._set('currentBaseLoudnessDb', null);
+    ytcv._set('currentLoudnessVideoId', '');
+    ytcv._set('currentAutoApplyLoudnessVideo', !!entry?.autoApplyLoudnessVideo);
+    ytcv._set('currentAutoApplyLoudnessLive', !!entry?.autoApplyLoudnessLive);
+    ytcv._set('targetLufs', -18);
+  };
+  const bridgeSays = async (channelId, videoId, over) => {
+    simulateBridgeMessage({
+      videoId, isLiveContent: false, isLiveNow: false, channelId, author: 'Rendition Ch', ...over
+    });
+    await tick();
+  };
+
+  section('Stable volume: Auto stores the plain rendition\'s gain, and a stream on air plays it');
+  {
+    enterVideo('UCrendition', 'ARCHIVESTB1', 'live', { name: 'Rendition Ch', autoApplyLoudnessLive: true });
+    await bridgeSays('UCrendition', 'ARCHIVESTB1', {
+      isLiveContent: true, loudnessDb: STABLE_DB, baseLoudnessDb: PLAIN_DB
+    });
+    assert(closeTo(ytcv.state.currentGain, calcGain(STABLE_DB, -18)),
+      `the archive plays at the stable rendition's gain (${ytcv.state.currentGain})`);
+    assert(closeTo(mockStorage['channelVolumes']['UCrendition'].gainLive, calcGain(PLAIN_DB, -18)),
+      `and stores the plain rendition's (${mockStorage['channelVolumes']['UCrendition'].gainLive})`);
+
+    // On air there is neither a level nor a stable rendition.
+    setURL('/watch', 'ONAIRSTB001');
+    ytcv._set('currentChannelVideoId', 'ONAIRSTB001');
+    await bridgeSays('UCrendition', 'ONAIRSTB001', {
+      isLiveContent: true, isLiveNow: true, loudnessDb: null, baseLoudnessDb: null
+    });
+    assert(closeTo(ytcv.state.currentGain, calcGain(PLAIN_DB, -18)),
+      `the stream on air plays the stored gain as it is (${ytcv.state.currentGain})`);
+  }
+
+  section('Stable volume: a stored gain is carried to the rendition playing');
+  {
+    enterVideo('UCcarried', 'CARRIEDVID1', 'video', { name: 'Carried Ch', gainVideo: 2.0, autoApplyLoudnessVideo: false });
+    await bridgeSays('UCcarried', 'CARRIEDVID1', { loudnessDb: STABLE_DB, baseLoudnessDb: PLAIN_DB });
+    const ratio = renditionGainRatio(STABLE_DB, PLAIN_DB);
+    assert(closeTo(ytcv.state.currentGain, 2.0 * ratio),
+      `the stable rendition plays the stored gain less what it raised (${ytcv.state.currentGain})`);
+    assert(mockStorage['channelVolumes']['UCcarried'].gainVideo === 2.0,
+      'playing it stores nothing');
+
+    await bridgeSays('UCcarried', 'CARRIEDVID1', { loudnessDb: PLAIN_DB, baseLoudnessDb: PLAIN_DB, source: 'audio-change' });
+    assert(closeTo(ytcv.state.currentGain, 2.0),
+      `the plain rendition plays it as it is (${ytcv.state.currentGain})`);
+
+    // Stored from another tab, it is carried the same way.
+    await bridgeSays('UCcarried', 'CARRIEDVID1', { loudnessDb: STABLE_DB, baseLoudnessDb: PLAIN_DB, source: 'audio-change' });
+    simulateStorageChange({
+      channelVolumes: { newValue: { UCcarried: { name: 'Carried Ch', gainVideo: 3.0, autoApplyLoudnessVideo: false } } }
+    });
+    assert(closeTo(ytcv.state.currentGain, 3.0 * ratio),
+      `a gain another tab stored is carried too (${ytcv.state.currentGain})`);
+  }
+
+  section('Stable volume: a manual gain is stored against the plain rendition');
+  {
+    enterVideo('UCmanualStb', 'MANUALSTB01', 'video', { name: 'Manual Stable Ch', gainVideo: 1.5, autoApplyLoudnessVideo: false });
+    await bridgeSays('UCmanualStb', 'MANUALSTB01', { loudnessDb: STABLE_DB, baseLoudnessDb: PLAIN_DB });
+    const ratio = renditionGainRatio(STABLE_DB, PLAIN_DB);
+
+    const set = await popupGesture({ type: 'setGain', channelId: 'UCmanualStb', gain: 0.5 });
+    assert(set?.ok === true, `the slider's save succeeds (${JSON.stringify(set)})`);
+    assert(ytcv.state.currentGain === 0.5, `the level heard is the one chosen (${ytcv.state.currentGain})`);
+    assert(closeTo(mockStorage['channelVolumes']['UCmanualStb'].gainVideo, 0.5 / ratio),
+      `and it is stored as the plain rendition's (${mockStorage['channelVolumes']['UCmanualStb'].gainVideo})`);
+    await ytcv.applyPreferredGain();
+    assert(closeTo(ytcv.state.currentGain, 0.5),
+      `read back, it plays at the level chosen (${ytcv.state.currentGain})`);
+
+    const applied = await popupGesture({ type: 'applyLoudness' });
+    assert(applied?.ok === true && closeTo(applied?.gain, calcGain(STABLE_DB, -18)),
+      `"Apply to channel" plays the stable rendition's gain (${JSON.stringify(applied)})`);
+    assert(closeTo(mockStorage['channelVolumes']['UCmanualStb'].gainVideo, calcGain(PLAIN_DB, -18)),
+      `and stores the plain rendition's (${mockStorage['channelVolumes']['UCmanualStb'].gainVideo})`);
+  }
+
+  section('Stable volume: a channel with no stored gain is left alone');
+  {
+    enterVideo('UCnothingStb', 'NOTHINGSTB1', 'video', null);
+    ytcv._set('currentGain', 1.0);
+    await bridgeSays('UCnothingStb', 'NOTHINGSTB1', { loudnessDb: STABLE_DB, baseLoudnessDb: PLAIN_DB });
+    assert(ytcv.state.currentGain === 1.0,
+      `the stable rendition does not move a gain nobody stored (${ytcv.state.currentGain})`);
+  }
+
+  section('Stable volume: with no base level the level playing stands in');
+  {
+    enterVideo('UCnoBase', 'NOBASESTB01', 'video', { name: 'No Base Ch', autoApplyLoudnessVideo: true });
+    await bridgeSays('UCnoBase', 'NOBASESTB01', { loudnessDb: STABLE_DB });
+    assert(closeTo(mockStorage['channelVolumes']['UCnoBase'].gainVideo, calcGain(STABLE_DB, -18)),
+      `Auto stores the gain it plays (${mockStorage['channelVolumes']['UCnoBase'].gainVideo})`);
+
+    enterVideo('UCnanBase', 'NANBASESTB1', 'video', { name: 'NaN Base Ch', autoApplyLoudnessVideo: true });
+    await bridgeSays('UCnanBase', 'NANBASESTB1', { loudnessDb: STABLE_DB, baseLoudnessDb: NaN });
+    assert(closeTo(mockStorage['channelVolumes']['UCnanBase'].gainVideo, calcGain(STABLE_DB, -18)),
+      `and a base that is not a number counts as none (${mockStorage['channelVolumes']['UCnanBase'].gainVideo})`);
+  }
+
   section('Auto LUFS: detected loudness blocks manual gain changes');
   const detectedManualChannelId = 'UCdetectedManual';
   mockStorage['channelVolumes'] = {
@@ -3959,6 +4074,40 @@ async function runTests() {
     await left.runTimers();
     assert(left.posted.length === before && left.pendingTimers() === 0,
       `off a watch page it answers nothing and stops (${left.posted.length - before} / ${left.pendingTimers()})`);
+  }
+
+  section('Base level: the plain rendition\'s level goes with every answer');
+  {
+    const bridge = createBridge({ manualTimers: true });
+    const pr = playerResponse({ loudnessDb: -12.39, drcLoudnessDb: -0.33 });
+    bridge.assign(pr);
+    assert(bridge.last()?.loudnessDb === -0.33 && bridge.last()?.baseLoudnessDb === -12.39,
+      `from load, the stable level plays and the plain one is the base (${bridge.last()?.loudnessDb} / ${bridge.last()?.baseLoudnessDb})`);
+
+    await bridge.fetchPlayer(pr);
+    assert(bridge.last()?.source === 'fetch' && bridge.last()?.baseLoudnessDb === -12.39,
+      `from a player request (${bridge.last()?.source} / ${bridge.last()?.baseLoudnessDb})`);
+
+    bridge.setMoviePlayer(pr, { getStatsForNerds: () => statsFor('100%/95% (cont.-13.6dB tgt.-14.0dB)') });
+    await bridge.request();
+    assert(near(bridge.last()?.loudnessDb, 0.4) && bridge.last()?.baseLoudnessDb === -12.39,
+      `and where the player names what it plays (${bridge.last()?.loudnessDb} / ${bridge.last()?.baseLoudnessDb})`);
+
+    const perceptual = createBridge();
+    const absolute = playerResponse();
+    delete absolute.playerConfig.audioConfig.loudnessDb;
+    absolute.playerConfig.audioConfig.perceptualLoudnessDb = -26.5;
+    perceptual.assign(absolute);
+    assert(perceptual.last()?.baseLoudnessDb === -12.5,
+      `the absolute field, against the target, is a base as well (${perceptual.last()?.baseLoudnessDb})`);
+
+    const none = createBridge();
+    const empty = playerResponse();
+    empty.playerConfig.audioConfig = {};
+    none.assign(empty);
+    assert(none.last()?.baseLoudnessDb === null, `with no level there is no base (${none.last()?.baseLoudnessDb})`);
+    await none.request();
+    assert(none.last()?.baseLoudnessDb === null, `asked, still none (${none.last()?.baseLoudnessDb})`);
   }
 
   section('Stable volume: what the popup-open dump reports');
@@ -6587,6 +6736,7 @@ async function runTests() {
     mockDOMElements['ownerLink'] = { href: 'https://www.youtube.com/channel/UCowner' };
     mockDOMElements['metaChannel'] = { content: 'UCmeta' };
     mockDOMElements['channelName'] = { textContent: '  Diag Channel  ' };
+    ytcv._set('currentBaseLoudnessDb', -9.5);
 
     const logs = [];
     const realLog = console.log;
@@ -6602,6 +6752,7 @@ async function runTests() {
     } finally {
       console.log = realLog;
       mockPostMessageHandler = null;
+      ytcv._set('currentBaseLoudnessDb', null);
       mockDOMElements['canonical'] = priorCanonical;
       mockDOMElements['ownerLink'] = priorOwner;
       mockDOMElements['metaChannel'] = priorMeta;
@@ -6620,6 +6771,8 @@ async function runTests() {
       `the channel the meta names (${dump?.dom?.metaChannelId})`);
     assert(dump?.dom?.channelNameText === 'Diag Channel',
       `and the name as it reads, trimmed (${dump?.dom?.channelNameText})`);
+    assert(dump?.currentBaseLoudnessDb === -9.5,
+      `and the base level stored gains are held against (${dump?.currentBaseLoudnessDb})`);
   }
 
   section('The dump says whether the audio chain holds the element the page plays');
