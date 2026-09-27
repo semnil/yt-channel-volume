@@ -916,6 +916,14 @@
           currentIsLiveNow,
           currentLoudnessDb,
           currentGain,
+          audioChain: {
+            connected: !!connectedVideo,
+            connectedIsPageVideo: connectedVideo
+              ? connectedVideo === document.querySelector('video.html5-main-video, video')
+              : null,
+            contextState: audioCtx?.state ?? null,
+            gainNodeValue: gainNode ? gainNode.gain.value : null
+          },
           dom: {
             canonicalHref: canonical?.href || null,
             ownerChannelHref: ownerUc?.href || null,

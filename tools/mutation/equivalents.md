@@ -97,6 +97,18 @@ The player-response captures. Without the first check the capture holds
 second guards is inside a `try { } catch (_) {}`, which takes what a missing
 player or a missing method throws.
 
-- `page-bridge.js:82` a guard is always taken ×1 — if (window.ytInitialPlayerResponse) {
-- `page-bridge.js:148` && becomes || ×1 — &&
-- `page-bridge.js:148` a guard is always taken ×1 — if (player && typeof player.getPlayerResponse === 'function') {
+- `page-bridge.js:138` a guard is always taken ×1 — if (window.ytInitialPlayerResponse) {
+- `page-bridge.js:204` && becomes || ×1 — &&
+- `page-bridge.js:204` a guard is always taken ×1 — if (player && typeof player.getPlayerResponse === 'function') {
+
+The player's stable volume setting and its stats line are read the same way:
+each call is inside a `try { } catch (_) {}`, and what a missing player or a
+missing method throws lands where the guard would have sent it — on to the
+stored setting, or a level or volume line of `null`.
+
+- `page-bridge.js:37` && becomes || ×1 — &&
+- `page-bridge.js:37` a guard is always taken ×1 — if (player && typeof player.getDrcUserPreference === 'function') {
+- `page-bridge.js:77` || becomes && ×1 — ||
+- `page-bridge.js:77` a guard is dropped ×1 — if (!player || typeof player.getStatsForNerds !== 'function') return nul
+- `page-bridge.js:330` && becomes || ×1 — &&
+- `page-bridge.js:330` a guard is always taken ×1 — if (moviePlayer && typeof moviePlayer.getStatsForNerds === 'function') {

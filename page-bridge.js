@@ -24,12 +24,66 @@
     }, '*');
   }
 
+  // Stable volume, the player's setting, plays a rendition of the audio of its
+  // own (an adaptive format marked `isDrc`), and that rendition carries a level
+  // of its own. The setting is read from the player; before the player is
+  // there, from the entry the player keeps in localStorage; and where neither
+  // answers it is taken as on, as the player takes it.
+  const DRC_PREFERENCE_KEY = 'yt-player-drc-pref';
+
+  function drcPreference() {
+    try {
+      const player = document.getElementById('movie_player');
+      if (player && typeof player.getDrcUserPreference === 'function') {
+        const value = player.getDrcUserPreference();
+        if (value === 0 || value === 1) return { value, from: 'player' };
+      }
+    } catch (_) {}
+    try {
+      const stored = JSON.parse(window.localStorage.getItem(DRC_PREFERENCE_KEY));
+      const expired = typeof stored?.expiration === 'number' &&
+        stored.expiration > 0 && stored.expiration < Date.now();
+      if (stored && !expired) {
+        const value = JSON.parse(stored.data);
+        if (value === 0 || value === 1) return { value, from: 'storage' };
+      }
+    } catch (_) {}
+    return { value: 1, from: 'default' };
+  }
+
+  function drcLoudnessDb(data) {
+    const formats = data?.streamingData?.adaptiveFormats;
+    if (!Array.isArray(formats)) return null;
+    const drc = formats.find((f) => f?.isDrc === true && typeof f.loudnessDb === 'number');
+    return drc ? drc.loudnessDb : null;
+  }
+
   // loudnessDb is a level against the response's loudness target; an absolute
   // level (LKFS) is put on that footing by taking the target off it. Without a
   // target there is nothing to put it against.
   function relativeToTarget(lkfs, data) {
     const target = data?.playerConfig?.audioConfig?.loudnessTargetLkfs;
     return typeof lkfs === 'number' && typeof target === 'number' ? lkfs - target : null;
+  }
+
+  // The level of what the player is playing now, as its stats-for-nerds volume
+  // line names it: `cont.<LKFS>dB` belongs to the rendition it chose, whichever
+  // audio track, stable volume or voice boost chose it. The line is taken only
+  // once the player names the formats it plays (before that it carries the
+  // response's level) and only while it names the video the URL does.
+  function playingLoudnessLkfs() {
+    try {
+      const player = document.getElementById('movie_player');
+      if (!player || typeof player.getStatsForNerds !== 'function') return null;
+      const stats = player.getStatsForNerds();
+      if (!stats?.codecs) return null;
+      const videoId = currentVideoId();
+      if (!videoId || String(stats.video_id_and_cpn).split(' / ')[0] !== videoId) return null;
+      const m = /\bcont\.(-?\d+(?:\.\d+)?)dB\b/.exec(String(stats.volume));
+      return m ? Number(m[1]) : null;
+    } catch (_) {
+      return null;
+    }
   }
 
   function extractFromPlayerResponse(data) {
@@ -44,6 +98,8 @@
       if (typeof db !== 'number') {
         db = relativeToTarget(data?.playerConfig?.audioConfig?.perceptualLoudnessDb, data);
       }
+      const drcDb = drcPreference().value === 1 ? drcLoudnessDb(data) : null;
+      if (drcDb !== null) db = drcDb;
       isLiveContent = !!data?.videoDetails?.isLiveContent;
       isLiveNow = !!data?.videoDetails?.isLive;
       videoId = data?.videoDetails?.videoId || '';
@@ -159,7 +215,26 @@
   window.addEventListener('message', (event) => {
     if (event.source !== window) return;
     if (event.data?.type !== '__yt_channel_volume_request__') return;
+    watchAudioChanges();
+    answerCurrentVideo('request');
+  });
 
+  // Turning stable volume on or off swaps the rendition under the same video,
+  // and the player announces it with onPlaybackAudioChange. The answer is given
+  // again then, so the level follows the rendition being played.
+  const watchedPlayers = new WeakSet();
+  function watchAudioChanges() {
+    try {
+      const player = document.getElementById('movie_player');
+      if (!player || watchedPlayers.has(player) || typeof player.addEventListener !== 'function') return;
+      watchedPlayers.add(player);
+      player.addEventListener('onPlaybackAudioChange', () => {
+        if (isWatchPage()) answerCurrentVideo('audio-change');
+      });
+    } catch (_) {}
+  }
+
+  function answerCurrentVideo(source) {
     let result = {
       db: null,
       isLiveContent: false,
@@ -191,8 +266,40 @@
       : (resp && isCurrentVideo(resp) ? resp : null);
     result.isLiveNow = !!newest?.videoDetails?.isLive;
 
-    postResult(result, 'request');
-  });
+    // The level of what the player is playing takes over from the one the
+    // response describes. Until the player names what it plays, the answer
+    // above stands, and the player is looked at again until it does.
+    const lkfs = playingLoudnessLkfs();
+    const playing = relativeToTarget(lkfs, newest);
+    if (playing !== null) {
+      result.db = playing;
+    } else if (lkfs === null) {
+      followPlaying();
+    }
+
+    postResult(result, source);
+  }
+
+  // Looked at every FOLLOW_INTERVAL_MS, FOLLOW_ATTEMPTS times at most, and
+  // answered again (source `playing`) the first time the player names a level.
+  const FOLLOW_INTERVAL_MS = 250;
+  const FOLLOW_ATTEMPTS = 40;
+  let followTimer = null;
+  function followPlaying() {
+    if (followTimer !== null) return;
+    let attempts = 0;
+    const look = () => {
+      followTimer = null;
+      if (!isWatchPage()) return;
+      if (playingLoudnessLkfs() !== null) {
+        answerCurrentVideo('playing');
+        return;
+      }
+      attempts += 1;
+      if (attempts < FOLLOW_ATTEMPTS) followTimer = setTimeout(look, FOLLOW_INTERVAL_MS);
+    };
+    followTimer = setTimeout(look, FOLLOW_INTERVAL_MS);
+  }
 
   // ── Diagnostic dump (MAIN-world visibility for popup-open) ─────────
   // Content script cannot read `_capturedResp` / movie_player methods from
@@ -215,13 +322,23 @@
         author: pr.videoDetails.author,
         isLiveContent: !!pr.videoDetails.isLiveContent,
         isLive: !!pr.videoDetails.isLive,
-        loudnessDb: pr.playerConfig?.audioConfig?.loudnessDb
+        loudnessDb: pr.playerConfig?.audioConfig?.loudnessDb,
+        drcLoudnessDb: drcLoudnessDb(pr)
       } : null;
+      let playerVolume = null;
+      try {
+        if (moviePlayer && typeof moviePlayer.getStatsForNerds === 'function') {
+          playerVolume = moviePlayer.getStatsForNerds()?.volume ?? null;
+        }
+      } catch (_) {}
       console.log('[YTCV][bridge-diag]', {
         urlVideoId: currentVideoId(),
         captured: summarize(cap),
         flexy: summarize(flexyPr),
-        moviePlayer: summarize(mpPr)
+        moviePlayer: summarize(mpPr),
+        drcPreference: drcPreference(),
+        playerVolume,
+        playingLkfs: playingLoudnessLkfs()
       });
     } catch (_) { /* logging must never break flow */ }
   });

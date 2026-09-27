@@ -339,8 +339,10 @@ function tick() { return new Promise(r => setTimeout(r, 10)); }
 // held by nothing. It runs in a context of its own here: the page's window,
 // the fetch it wraps, and the DOM it reads.
 
-function createBridge({ pathname = '/watch', videoId = 'urlVideoIdA', preassigned = null, hookRefused = false } = {}) {
+function createBridge({ pathname = '/watch', videoId = 'urlVideoIdA', preassigned = null, hookRefused = false, stored = {}, manualTimers = false } = {}) {
   const posted = [];
+  const pendingTimers = [];
+  let playerListeners = {};
   const listeners = {};
   const logged = [];
   let flexy = null;
@@ -369,6 +371,8 @@ function createBridge({ pathname = '/watch', videoId = 'urlVideoIdA', preassigne
   let cascade = 0;
   const window = {
     addEventListener(type, fn) { (listeners[type] ||= []).push(fn); },
+    // What the player keeps in localStorage, by key, as the strings it wrote.
+    localStorage: { getItem: (key) => (key in stored ? stored[key] : null) },
     postMessage(data) {
       posted.push(data);
       cascade += 1;
@@ -408,6 +412,12 @@ function createBridge({ pathname = '/watch', videoId = 'urlVideoIdA', preassigne
   const sandbox = {
     window, location, console: { log: (...args) => logged.push(args) },
     URL, Promise, JSON, Object, Math, Date, String, Number, Boolean,
+    // The page's timers, left out of what keeps this run alive — or, for a
+    // case that counts them, held until the case runs them.
+    setTimeout: manualTimers
+      ? (fn, ms) => { pendingTimers.push({ fn, ms }); return pendingTimers.length; }
+      : (fn, ms) => { const t = setTimeout(fn, ms); t.unref?.(); return t; },
+    clearTimeout,
     document: {
       querySelector: (selector) => (selector.includes('ytd-watch-flexy') ? flexy : null),
       getElementById: (id) => (id === 'movie_player' ? moviePlayer : null)
@@ -498,8 +508,31 @@ function createBridge({ pathname = '/watch', videoId = 'urlVideoIdA', preassigne
       await tick();
     },
     setFlexy(playerResponse) { flexy = playerResponse ? { __data: { playerResponse } } : null; },
-    setMoviePlayer(playerResponse) {
-      moviePlayer = playerResponse ? { getPlayerResponse: () => playerResponse } : null;
+    // The player, answering with the response given and with whatever else a
+    // case hands it — its stable volume setting, its stats. What it is asked to
+    // listen for is kept, so a case can fire what the player would announce.
+    setMoviePlayer(playerResponse, extra = {}) {
+      playerListeners = {};
+      moviePlayer = playerResponse
+        ? {
+          getPlayerResponse: () => playerResponse,
+          addEventListener(type, fn) { (playerListeners[type] ||= []).push(fn); },
+          ...extra
+        }
+        : null;
+    },
+    playerListenerCount: (type) => (playerListeners[type] || []).length,
+    // Runs the timers pending now (not ones they set) and hands back their delays.
+    async runTimers() {
+      const due = pendingTimers.splice(0);
+      for (const t of due) t.fn();
+      await tick();
+      return due.map((t) => t.ms);
+    },
+    pendingTimers: () => pendingTimers.length,
+    async playerAnnounces(type) {
+      for (const fn of (playerListeners[type] || []).slice()) fn('Default');
+      await tick();
     },
     last() { return posted[posted.length - 1]; }
   };
@@ -513,6 +546,14 @@ const playerResponse = (over = {}) => ({
       ...(over.loudnessTargetLkfs === null ? {} : { loudnessTargetLkfs: over.loudnessTargetLkfs ?? -14 })
     }
   },
+  ...(over.drcLoudnessDb !== undefined ? {
+    streamingData: {
+      adaptiveFormats: [
+        { itag: 251, loudnessDb: over.loudnessDb ?? -7.5 },
+        { itag: 251, isDrc: true, loudnessDb: over.drcLoudnessDb }
+      ]
+    }
+  } : {}),
   videoDetails: {
     videoId: over.videoId ?? 'urlVideoIdA',
     channelId: over.channelId ?? 'UCbridge',
@@ -1344,6 +1385,33 @@ async function runTests() {
     'bridge loudness stores the calculated gain as the channel gain');
   assert(!('autoApplyLoudnessLive' in mockStorage['channelVolumes']['UCbridgeLearn']),
     'storing an Auto gain does not touch the other type');
+
+  section('Auto LUFS: a new level for the same video replaces the gain');
+  {
+    // Turning stable volume over swaps the rendition under the video the page
+    // is on; the bridge answers again with that rendition's level.
+    simulateBridgeMessage({
+      videoId: 'BRIDGELEARN', loudnessDb: -0.33, isLiveContent: false,
+      channelId: 'UCbridgeLearn', author: 'Bridge Learn', source: 'audio-change'
+    });
+    await tick();
+    const stable = calcGain(-0.33, -18);
+    assert(Math.abs(ytcv.state.currentGain - stable) < 0.001,
+      `the stable rendition's gain is played (${ytcv.state.currentGain})`);
+    assert(Math.abs(mockStorage['channelVolumes']['UCbridgeLearn'].gainVideo - stable) < 0.001,
+      `and stored (${mockStorage['channelVolumes']['UCbridgeLearn'].gainVideo})`);
+
+    simulateBridgeMessage({
+      videoId: 'BRIDGELEARN', loudnessDb: -12.39, isLiveContent: false,
+      channelId: 'UCbridgeLearn', author: 'Bridge Learn', source: 'audio-change'
+    });
+    await tick();
+    const plain = calcGain(-12.39, -18);
+    assert(Math.abs(ytcv.state.currentGain - plain) < 0.001,
+      `and the plain rendition's once it is back (${ytcv.state.currentGain})`);
+    assert(ytcv.getState().contentLufs === YT_REFERENCE_LUFS - 12.39,
+      `the level shown follows it (${ytcv.getState().contentLufs})`);
+  }
 
   section('Auto LUFS: archive gain becomes the same-channel live gain');
   // Keep this regression independent of mutable, real YouTube content.
@@ -3657,6 +3725,267 @@ async function runTests() {
     assert(both?.moviePlayer?.loudnessDb === -4.5 && both?.moviePlayer?.isLive === true,
       `and the player's beside it (${JSON.stringify(both?.moviePlayer?.loudnessDb)})`);
     assert(both?.captured?.loudnessDb === -2.5, 'with the one from load as well');
+  }
+
+  // ── Stable volume: the level of the rendition the player plays ─────
+
+  const DRC_PREF = 'yt-player-drc-pref';
+  const storedPref = (data, expiration = 1822019732480) =>
+    JSON.stringify({ data: String(data), expiration, creation: 1790483732480 });
+
+  section('Stable volume: a setting nothing answers for is taken as on');
+  {
+    // At load the player is not there yet and a viewer who never touched the
+    // setting has nothing stored; the player plays the stable rendition then.
+    const bridge = createBridge();
+    bridge.assign(playerResponse({ loudnessDb: -12.39, drcLoudnessDb: -0.33 }));
+    assert(bridge.last()?.loudnessDb === -0.33,
+      `the level is the stable rendition's (${bridge.last()?.loudnessDb})`);
+  }
+
+  section('Stable volume: the setting the player stored decides it before the player is there');
+  {
+    const off = createBridge({ stored: { [DRC_PREF]: storedPref(0) } });
+    off.assign(playerResponse({ loudnessDb: -12.39, drcLoudnessDb: -0.33 }));
+    assert(off.last()?.loudnessDb === -12.39,
+      `stored off, the level is the plain rendition's (${off.last()?.loudnessDb})`);
+
+    const on = createBridge({ stored: { [DRC_PREF]: storedPref(1) } });
+    on.assign(playerResponse({ loudnessDb: -12.39, drcLoudnessDb: -0.33 }));
+    assert(on.last()?.loudnessDb === -0.33,
+      `stored on, the stable rendition's (${on.last()?.loudnessDb})`);
+
+    // The player drops an entry past its expiration and falls back to on.
+    const lapsed = createBridge({ stored: { [DRC_PREF]: storedPref(0, 1) } });
+    lapsed.assign(playerResponse({ loudnessDb: -12.39, drcLoudnessDb: -0.33 }));
+    assert(lapsed.last()?.loudnessDb === -0.33,
+      `an expired entry counts for nothing (${lapsed.last()?.loudnessDb})`);
+
+    const garbled = createBridge({ stored: { [DRC_PREF]: '{not json' } });
+    garbled.assign(playerResponse({ loudnessDb: -12.39, drcLoudnessDb: -0.33 }));
+    assert(garbled.last()?.loudnessDb === -0.33,
+      `nor does one that cannot be read (${garbled.last()?.loudnessDb})`);
+
+    const unknown = createBridge({ stored: { [DRC_PREF]: storedPref(2) } });
+    unknown.assign(playerResponse({ loudnessDb: -12.39, drcLoudnessDb: -0.33 }));
+    assert(unknown.last()?.loudnessDb === -0.33,
+      `nor one holding neither 0 nor 1 (${unknown.last()?.loudnessDb})`);
+  }
+
+  section('Stable volume: the player\'s own setting comes before what it stored');
+  {
+    const bridge = createBridge({ stored: { [DRC_PREF]: storedPref(1) } });
+    const pr = playerResponse({ loudnessDb: -12.39, drcLoudnessDb: -0.33 });
+    bridge.assign(pr);
+    bridge.setMoviePlayer(pr, { getDrcUserPreference: () => 0 });
+    await bridge.request();
+    assert(bridge.last()?.loudnessDb === -12.39,
+      `the player says off, and the plain rendition's level is answered (${bridge.last()?.loudnessDb})`);
+
+    const odd = createBridge({ stored: { [DRC_PREF]: storedPref(0) } });
+    odd.assign(pr);
+    odd.setMoviePlayer(pr, { getDrcUserPreference: () => 'on' });
+    await odd.request();
+    assert(odd.last()?.loudnessDb === -12.39,
+      `an answer from the player that is neither 0 nor 1 leaves it to the stored one (${odd.last()?.loudnessDb})`);
+
+    const unset = createBridge();
+    unset.assign(pr);
+    unset.setMoviePlayer(pr, { getDrcUserPreference: () => 2 });
+    await unset.request();
+    assert(unset.last()?.loudnessDb === -0.33,
+      `and with nothing stored, to the default (${unset.last()?.loudnessDb})`);
+  }
+
+  section('Stable volume: a video with no stable rendition keeps its plain level');
+  {
+    const bridge = createBridge({ stored: { [DRC_PREF]: storedPref(1) } });
+    bridge.assign(playerResponse({ loudnessDb: -12.39 }));
+    assert(bridge.last()?.loudnessDb === -12.39,
+      `the setting is on and there is nothing to switch to (${bridge.last()?.loudnessDb})`);
+
+    const levelless = createBridge();
+    const pr = playerResponse({ loudnessDb: -12.39 });
+    pr.streamingData = { adaptiveFormats: [{ itag: 251, isDrc: true }] };
+    levelless.assign(pr);
+    assert(levelless.last()?.loudnessDb === -12.39,
+      `nor where the stable rendition carries no level (${levelless.last()?.loudnessDb})`);
+  }
+
+  section('Stable volume: turning it over mid-video answers again');
+  {
+    const bridge = createBridge();
+    const pr = playerResponse({ loudnessDb: -12.39, drcLoudnessDb: -0.33 });
+    bridge.assign(pr);
+    let preference = 1;
+    bridge.setMoviePlayer(pr, { getDrcUserPreference: () => preference });
+    await bridge.request();
+    await bridge.request();
+    assert(bridge.playerListenerCount('onPlaybackAudioChange') === 1,
+      `the player is listened to once however often it is asked (${bridge.playerListenerCount('onPlaybackAudioChange')})`);
+    assert(bridge.last()?.loudnessDb === -0.33, `on, the stable level (${bridge.last()?.loudnessDb})`);
+
+    const before = bridge.posted.length;
+    preference = 0;
+    await bridge.playerAnnounces('onPlaybackAudioChange');
+    assert(bridge.posted.length === before + 1,
+      `the change is answered once (${bridge.posted.length - before})`);
+    assert(bridge.last()?.loudnessDb === -12.39 && bridge.last()?.source === 'audio-change',
+      `with the plain level, saying why (${bridge.last()?.loudnessDb} / ${bridge.last()?.source})`);
+    assert(bridge.last()?.videoId === 'urlVideoIdA' && bridge.last()?.channelId === 'UCbridge',
+      `for the video and channel the page is on (${bridge.last()?.videoId} / ${bridge.last()?.channelId})`);
+
+    preference = 1;
+    await bridge.playerAnnounces('onPlaybackAudioChange');
+    assert(bridge.last()?.loudnessDb === -0.33, `and back again (${bridge.last()?.loudnessDb})`);
+
+    const left = bridge.posted.length;
+    bridge.setUrl('/results', '');
+    await bridge.playerAnnounces('onPlaybackAudioChange');
+    assert(bridge.posted.length === left,
+      `off a watch page the announcement is left alone (${bridge.posted.length - left})`);
+  }
+
+  // ── The level the player names for what it plays ───────────────────
+
+  // The player's stats-for-nerds, as it answers for the video in the URL once
+  // it has chosen its formats. Before it has, `codecs` is empty and `cont.` is
+  // the response's own level.
+  const statsFor = (volume, { id = 'urlVideoIdA', codecs = 'av01.0.04M.08 (397) / opus (251)' } = {}) =>
+    ({ volume, video_id_and_cpn: `${id} / JHCF WP0H HBKP KJCD 1DSG`, codecs });
+  const near = (a, b) => typeof a === 'number' && Math.abs(a - b) < 1e-9;
+
+  section('Playing level: the player\'s own level takes over from the response');
+  {
+    // A dubbed track the response does not describe: its level comes from the
+    // player alone.
+    const bridge = createBridge();
+    const pr = playerResponse({ loudnessDb: 6.96, drcLoudnessDb: 0 });
+    bridge.assign(pr);
+    bridge.setMoviePlayer(pr, { getStatsForNerds: () => statsFor('100%/95% (cont.-13.6dB tgt.-14.0dB)') });
+    await bridge.request();
+    assert(near(bridge.last()?.loudnessDb, 0.4),
+      `the level is the player's, against the target (${bridge.last()?.loudnessDb})`);
+
+    const drc = createBridge();
+    const drcPr = playerResponse({ loudnessDb: -12.39, drcLoudnessDb: -0.33 });
+    drc.assign(drcPr);
+    drc.setMoviePlayer(drcPr, {
+      getDrcUserPreference: () => 0,
+      getStatsForNerds: () => statsFor('100%/100% DRC (cont.-14.3dB tgt.-14.0dB)')
+    });
+    await drc.request();
+    assert(near(drc.last()?.loudnessDb, -0.3),
+      `and it wins over the setting where the two disagree (${drc.last()?.loudnessDb})`);
+  }
+
+  section('Playing level: a line the player has not settled is not taken');
+  {
+    const pr = playerResponse({ loudnessDb: -12.39, drcLoudnessDb: -0.33 });
+    const cases = [
+      ['before it names its formats', statsFor('100%/100% (cont.-26.4dB tgt.-14.0dB)', { codecs: '' })],
+      ['for another video', statsFor('100%/100% (cont.-26.4dB tgt.-14.0dB)', { id: 'someOtherId' })],
+      ['with no level in it, as on a live stream', statsFor('100%/100%')],
+      ['when asking throws', () => { throw new Error('the player is gone'); }]
+    ];
+    for (const [what, stats] of cases) {
+      const bridge = createBridge({ manualTimers: true });
+      bridge.assign(pr);
+      bridge.setMoviePlayer(pr, { getStatsForNerds: typeof stats === 'function' ? stats : () => stats });
+      await bridge.request();
+      assert(bridge.last()?.loudnessDb === -0.33,
+        `${what}, the response's level is answered (${bridge.last()?.loudnessDb})`);
+    }
+
+    const untargeted = createBridge({ manualTimers: true });
+    const noTarget = playerResponse({ loudnessDb: -12.39, drcLoudnessDb: -0.33, loudnessTargetLkfs: null });
+    untargeted.assign(noTarget);
+    untargeted.setMoviePlayer(noTarget, { getStatsForNerds: () => statsFor('100%/100% DRC (cont.-14.3dB tgt.-14.0dB)') });
+    await untargeted.request();
+    assert(untargeted.last()?.loudnessDb === -0.33,
+      `a level with no target to put it against is not taken (${untargeted.last()?.loudnessDb})`);
+    assert(untargeted.pendingTimers() === 0,
+      `and not waited for either, since the player has named it (${untargeted.pendingTimers()})`);
+  }
+
+  section('Playing level: answered again once the player names it');
+  {
+    const bridge = createBridge({ manualTimers: true });
+    const pr = playerResponse({ loudnessDb: 6.96, drcLoudnessDb: 0 });
+    bridge.assign(pr);
+    let stats = statsFor('100%/45% (cont.-7.0dB tgt.-14.0dB)', { codecs: '' });
+    bridge.setMoviePlayer(pr, { getStatsForNerds: () => stats });
+    await bridge.request();
+    await bridge.request();
+    assert(bridge.pendingTimers() === 1,
+      `one look is pending however often it is asked (${bridge.pendingTimers()})`);
+
+    const before = bridge.posted.length;
+    const delays = await bridge.runTimers();
+    assert(delays.length === 1 && delays[0] === 250, `looked at after 250 ms (${delays})`);
+    assert(bridge.posted.length === before, `nothing is answered while it is unsettled (${bridge.posted.length - before})`);
+
+    stats = statsFor('100%/95% (cont.-13.6dB tgt.-14.0dB)');
+    await bridge.runTimers();
+    assert(bridge.posted.length === before + 1, `answered once it is settled (${bridge.posted.length - before})`);
+    assert(near(bridge.last()?.loudnessDb, 0.4) && bridge.last()?.source === 'playing',
+      `with the player's level, saying why (${bridge.last()?.loudnessDb} / ${bridge.last()?.source})`);
+    assert(bridge.pendingTimers() === 0, `and the looking stops (${bridge.pendingTimers()})`);
+  }
+
+  section('Playing level: the looking gives up, and stops off a watch page');
+  {
+    // A live stream names no level at all.
+    const bridge = createBridge({ manualTimers: true });
+    const pr = playerResponse({ loudnessDb: -12.39 });
+    bridge.assign(pr);
+    bridge.setMoviePlayer(pr, { getStatsForNerds: () => statsFor('100%/100%') });
+    await bridge.request();
+    let looks = 0;
+    while (bridge.pendingTimers() > 0 && looks < 100) {
+      await bridge.runTimers();
+      looks += 1;
+    }
+    assert(looks === 40, `it is looked at 40 times, 10 s in all (${looks})`);
+
+    const left = createBridge({ manualTimers: true });
+    left.assign(pr);
+    let stats = statsFor('100%/100% (cont.-26.4dB tgt.-14.0dB)', { codecs: '' });
+    left.setMoviePlayer(pr, { getStatsForNerds: () => stats });
+    await left.request();
+    const before = left.posted.length;
+    left.setUrl('/results', '');
+    stats = statsFor('100%/100% (cont.-26.4dB tgt.-14.0dB)');
+    await left.runTimers();
+    assert(left.posted.length === before && left.pendingTimers() === 0,
+      `off a watch page it answers nothing and stops (${left.posted.length - before} / ${left.pendingTimers()})`);
+  }
+
+  section('Stable volume: what the popup-open dump reports');
+  {
+    const bridge = createBridge({ stored: { [DRC_PREF]: storedPref(0) } });
+    const pr = playerResponse({ loudnessDb: -12.39, drcLoudnessDb: -0.33 });
+    bridge.assign(pr);
+    bridge.setMoviePlayer(pr, {
+      getStatsForNerds: () => statsFor('100%/100% (cont.-26.4dB tgt.-14.0dB)')
+    });
+    await bridge.diagnose();
+    const [, dump] = bridge.logged[bridge.logged.length - 1] || [];
+    assert(dump?.drcPreference?.value === 0 && dump?.drcPreference?.from === 'storage',
+      `the setting and where it was read (${JSON.stringify(dump?.drcPreference)})`);
+    assert(dump?.captured?.loudnessDb === -12.39 && dump?.captured?.drcLoudnessDb === -0.33,
+      `both levels the response carries (${dump?.captured?.loudnessDb} / ${dump?.captured?.drcLoudnessDb})`);
+    assert(dump?.playerVolume === '100%/100% (cont.-26.4dB tgt.-14.0dB)',
+      `and the player's own volume line (${dump?.playerVolume})`);
+    assert(dump?.playingLkfs === -26.4, `with the level read from it (${dump?.playingLkfs})`);
+
+    const bare = createBridge();
+    bare.assign(pr);
+    await bare.diagnose();
+    const [, without] = bare.logged[bare.logged.length - 1] || [];
+    assert(without?.playerVolume === null && without?.drcPreference?.from === 'default',
+      `with no player, no line and the default (${without?.playerVolume} / ${without?.drcPreference?.from})`);
+    assert(without?.playingLkfs === null, `and no level (${without?.playingLkfs})`);
   }
 
   // ── After a reload, and what a message has to be to be read ────────
@@ -6291,6 +6620,60 @@ async function runTests() {
       `the channel the meta names (${dump?.dom?.metaChannelId})`);
     assert(dump?.dom?.channelNameText === 'Diag Channel',
       `and the name as it reads, trimmed (${dump?.dom?.channelNameText})`);
+  }
+
+  section('The dump says whether the audio chain holds the element the page plays');
+  {
+    // Whether the chain survives the player swapping its audio is read from
+    // this dump, so it has to tell the element the chain was built on from the
+    // one the page holds now.
+    const priorVideo = mockVideoEl;
+    const priorConnected = ytcv.state.connectedVideo;
+    const priorGainNode = ytcv.state.gainNode;
+    const dumpNow = async () => {
+      const logs = [];
+      const realLog = console.log;
+      console.log = (...args) => logs.push(args);
+      mockPostMessageHandler = () => {
+        setTimeout(() => simulateBridgeMessage({
+          loudnessDb: -2, isLiveContent: false, isLiveNow: false,
+          channelId: 'UCdiag', author: 'Diag Channel'
+        }), 0);
+      };
+      try {
+        await simulateRuntimeMessage({ type: 'forceDetect' });
+      } finally {
+        console.log = realLog;
+        mockPostMessageHandler = null;
+      }
+      return logs.find((args) => args[0] === '[YTCV][popup-open]')?.[1]?.audioChain;
+    };
+    try {
+      const chainVideo = { id: 'chain-video' };
+      mockVideoEl = chainVideo;
+      ytcv._set('connectedVideo', chainVideo);
+      ytcv._set('gainNode', { gain: { value: 0.4 } });
+      const held = await dumpNow();
+      assert(held?.connected === true && held?.connectedIsPageVideo === true,
+        `built on the element the page plays (${JSON.stringify(held)})`);
+      assert(held?.gainNodeValue === 0.4, `with the gain the node holds (${held?.gainNodeValue})`);
+
+      ytcv._set('connectedVideo', chainVideo);
+      mockVideoEl = { id: 'replaced-video' };
+      const replaced = await dumpNow();
+      assert(replaced?.connectedIsPageVideo === false,
+        `and says so once the page plays another element (${JSON.stringify(replaced)})`);
+
+      ytcv._set('connectedVideo', null);
+      ytcv._set('gainNode', null);
+      const none = await dumpNow();
+      assert(none?.connected === false && none?.connectedIsPageVideo === null && none?.gainNodeValue === null,
+        `and that there is none before one is built (${JSON.stringify(none)})`);
+    } finally {
+      mockVideoEl = priorVideo;
+      ytcv._set('connectedVideo', priorConnected);
+      ytcv._set('gainNode', priorGainNode);
+    }
   }
 
   section('Apply: a page that is not a watch page starts nothing');

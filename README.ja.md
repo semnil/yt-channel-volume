@@ -81,6 +81,7 @@ background.js (service worker)
 - YouTube のボリュームスライダーには一切触れない
 - ゲインが 1.0 (パススルー) の場合はオーディオチェーンを接続しない → Live Caption のちらつきを回避
 - YouTube の CSP が inline script を禁止するため、loudnessDb 抽出は MAIN world の `page-bridge.js` で実行
+- Loudness は、プレーヤーが実際に再生している音声 (音声トラック・「一定音量」・「音声ブースト」を含む。詳細統計情報が示すもの) の値を使う。再生中にプレーヤーが音声を切り替えると読み直す
 
 ## ビルド
 
