@@ -145,9 +145,11 @@
   // writes its own gain without it and keeps following the default.
   function saveChannelGain(channelId, name, gain, videoType, url, autoApply) {
     if (!channelId) return Promise.resolve();
-    // Every gain this tab stores is held against the plain rendition.
+    // A gain stored while the plain rendition's level is known is held
+    // against it; one stored without that level plays as it is.
     return requestChannelWrite('saveChannelGain', {
-      channelId, name, gain, videoType, url, autoApply, heldAgainstPlain: true
+      channelId, name, gain, videoType, url, autoApply,
+      heldAgainstPlain: currentBaseLoudnessDb !== null
     });
   }
 

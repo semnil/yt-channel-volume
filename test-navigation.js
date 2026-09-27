@@ -1725,6 +1725,42 @@ async function runTests() {
     assert(mockStorage['channelVolumes']['UCmanualStb'].gainVideoPlain === true, 'marked');
   }
 
+  section('Stable volume: a gain chosen on air is stored to play as it is');
+  {
+    // On air there is no level, so the plain rendition's is not known either.
+    enterVideo('UConAir', 'ONAIRMANUAL', 'live', { name: 'On Air Ch', autoApplyLoudnessLive: false });
+    await bridgeSays('UConAir', 'ONAIRMANUAL', { isLiveContent: true, isLiveNow: true, loudnessDb: null, baseLoudnessDb: null });
+    const set = await popupGesture({ type: 'setGain', channelId: 'UConAir', gain: 2.0 });
+    const stored = mockStorage['channelVolumes']['UConAir'];
+    assert(set?.ok === true && stored.gainLive === 2.0 && !('gainLivePlain' in stored),
+      `the gain is stored as chosen, unmarked (${JSON.stringify(stored)})`);
+    await ytcv.applyPreferredGain();
+    assert(ytcv.state.currentGain === 2.0, `read back on air, it plays as chosen (${ytcv.state.currentGain})`);
+
+    // The archive of the same channel, on either rendition.
+    setURL('/watch', 'ARCHIVEAIR1');
+    ytcv._set('currentChannelVideoId', 'ARCHIVEAIR1');
+    await bridgeSays('UConAir', 'ARCHIVEAIR1', { isLiveContent: true, loudnessDb: STABLE_DB, baseLoudnessDb: PLAIN_DB });
+    assert(ytcv.state.currentGain === 2.0, `an archive on the stable rendition plays it as it is (${ytcv.state.currentGain})`);
+    await bridgeSays('UConAir', 'ARCHIVEAIR1', { isLiveContent: true, loudnessDb: PLAIN_DB, baseLoudnessDb: PLAIN_DB, source: 'audio-change' });
+    assert(ytcv.state.currentGain === 2.0, `and on the plain one (${ytcv.state.currentGain})`);
+
+    // Another tab stores it the same way; this tab plays it as it is.
+    await bridgeSays('UConAir', 'ARCHIVEAIR1', { isLiveContent: true, loudnessDb: STABLE_DB, baseLoudnessDb: PLAIN_DB, source: 'audio-change' });
+    simulateStorageChange({ channelVolumes: { newValue: { UConAir: { ...stored, gainLive: 1.5 } } } });
+    assert(ytcv.state.currentGain === 1.5, `a gain another tab stored on air plays as it is here (${ytcv.state.currentGain})`);
+
+    // Chosen again where the plain level is known, it is marked and carried.
+    const again = await popupGesture({ type: 'setGain', channelId: 'UConAir', gain: 0.5 });
+    const marked = mockStorage['channelVolumes']['UConAir'];
+    assert(again?.ok === true && marked.gainLivePlain === true &&
+      closeTo(marked.gainLive, 0.5 / renditionGainRatio(STABLE_DB, PLAIN_DB)),
+      `a gain chosen on the archive is marked and held against the plain rendition (${JSON.stringify(marked)})`);
+    await bridgeSays('UConAir', 'ARCHIVEAIR1', { isLiveContent: true, loudnessDb: PLAIN_DB, baseLoudnessDb: PLAIN_DB, source: 'audio-change' });
+    assert(closeTo(ytcv.state.currentGain, 0.5 / renditionGainRatio(STABLE_DB, PLAIN_DB)),
+      `and the plain rendition plays it carried (${ytcv.state.currentGain})`);
+  }
+
   section('Stable volume: a channel with no stored gain is left alone');
   {
     enterVideo('UCnothingStb', 'NOTHINGSTB1', 'video', null);
@@ -1740,6 +1776,8 @@ async function runTests() {
     await bridgeSays('UCnoBase', 'NOBASESTB01', { loudnessDb: STABLE_DB });
     assert(closeTo(mockStorage['channelVolumes']['UCnoBase'].gainVideo, calcGain(STABLE_DB, -18)),
       `Auto stores the gain it plays (${mockStorage['channelVolumes']['UCnoBase'].gainVideo})`);
+    assert(!('gainVideoPlain' in mockStorage['channelVolumes']['UCnoBase']),
+      'unmarked, since no plain level was known');
 
     enterVideo('UCnanBase', 'NANBASESTB1', 'video', { name: 'NaN Base Ch', autoApplyLoudnessVideo: true });
     await bridgeSays('UCnanBase', 'NANBASESTB1', { loudnessDb: STABLE_DB, baseLoudnessDb: NaN });
@@ -1818,6 +1856,7 @@ async function runTests() {
     'a new channel falls back to the channel ID as its name');
 
   section('Auto LUFS: re-applying the same gain does not rewrite storage');
+  ytcv._set('currentBaseLoudnessDb', -6);
   mockStorage['channelVolumes'] = {
     'UCrepeat': { name: 'Repeat Ch', gainVideo: 0.55, gainVideoPlain: true }
   };
@@ -1839,6 +1878,7 @@ async function runTests() {
   await ytcv.saveChannelGain('UCrepeat', 'Repeat Ch', 0.55, 'video', '');
   assert(channelVolumeWrites === 2, `and then left alone (${channelVolumeWrites})`);
   chrome.storage.local.set = storageSetBeforeRepeat;
+  ytcv._set('currentBaseLoudnessDb', null);
 
   section('Auto LUFS: early bridge for next video clears stale loudness');
   const oldVideoId = 'AAAAAAAAAAA';
@@ -7236,7 +7276,11 @@ async function runTests() {
         targetLufs: -20, displayUnit: 'dB', showGainOverlay: true,
         autoApplyLoudnessVideoDefault: true, autoApplyLoudnessLiveDefault: false
       },
-      channels: { UC1: { name: 'Alpha', gainVideo: 2, url: 'https://www.youtube.com/channel/UC1' } }
+      channels: {
+        UC1: { name: 'Alpha', gainVideo: 2, url: 'https://www.youtube.com/channel/UC1' },
+        UC2: { name: 'Beta', gainLive: 2, gainLivePlain: true, autoApplyLoudnessLive: false, url: 'https://www.youtube.com/channel/UC2' },
+        UC3: { name: 'Gamma', gainLive: 2, autoApplyLoudnessLive: false, url: 'https://www.youtube.com/channel/UC3' }
+      }
     });
     await options.settle();
 
@@ -7250,6 +7294,9 @@ async function runTests() {
     assert(options.i18nNodes.every((el) => el.textContent === el.dataset.i18n),
       'every node carrying a key is given its message');
     assert(options.listMarkup().includes('Alpha'), 'the stored channels are drawn');
+    assert(options.listMarkup().includes('Beta') && options.listMarkup().includes('Gamma') &&
+      (options.listMarkup().match(/6\.0 dB/g) || []).length === 3,
+      'a gain is listed as stored, marked or not');
     assert(options.node('targetSlider').disabled === false, 'the controls are offered once the load lands');
     assert(options.unitButtons.every((b) => b.disabled === false), 'the unit buttons with them');
     assert(options.body.classList.contains('initializing') === false, 'and the page is shown');
