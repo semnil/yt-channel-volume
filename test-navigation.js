@@ -1639,6 +1639,8 @@ async function runTests() {
       `the archive plays at the stable rendition's gain (${ytcv.state.currentGain})`);
     assert(closeTo(mockStorage['channelVolumes']['UCrendition'].gainLive, calcGain(PLAIN_DB, -18)),
       `and stores the plain rendition's (${mockStorage['channelVolumes']['UCrendition'].gainLive})`);
+    assert(mockStorage['channelVolumes']['UCrendition'].gainLivePlain === true,
+      'marked as held against it');
 
     // On air there is neither a level nor a stable rendition.
     setURL('/watch', 'ONAIRSTB001');
@@ -1652,7 +1654,7 @@ async function runTests() {
 
   section('Stable volume: a stored gain is carried to the rendition playing');
   {
-    enterVideo('UCcarried', 'CARRIEDVID1', 'video', { name: 'Carried Ch', gainVideo: 2.0, autoApplyLoudnessVideo: false });
+    enterVideo('UCcarried', 'CARRIEDVID1', 'video', { name: 'Carried Ch', gainVideo: 2.0, gainVideoPlain: true, autoApplyLoudnessVideo: false });
     await bridgeSays('UCcarried', 'CARRIEDVID1', { loudnessDb: STABLE_DB, baseLoudnessDb: PLAIN_DB });
     const ratio = renditionGainRatio(STABLE_DB, PLAIN_DB);
     assert(closeTo(ytcv.state.currentGain, 2.0 * ratio),
@@ -1667,15 +1669,40 @@ async function runTests() {
     // Stored from another tab, it is carried the same way.
     await bridgeSays('UCcarried', 'CARRIEDVID1', { loudnessDb: STABLE_DB, baseLoudnessDb: PLAIN_DB, source: 'audio-change' });
     simulateStorageChange({
-      channelVolumes: { newValue: { UCcarried: { name: 'Carried Ch', gainVideo: 3.0, autoApplyLoudnessVideo: false } } }
+      channelVolumes: { newValue: { UCcarried: { name: 'Carried Ch', gainVideo: 3.0, gainVideoPlain: true, autoApplyLoudnessVideo: false } } }
     });
     assert(closeTo(ytcv.state.currentGain, 3.0 * ratio),
       `a gain another tab stored is carried too (${ytcv.state.currentGain})`);
+    simulateStorageChange({
+      channelVolumes: { newValue: { UCcarried: { name: 'Carried Ch', gainVideo: 3.0, autoApplyLoudnessVideo: false } } }
+    });
+    assert(ytcv.state.currentGain === 3.0,
+      `and one stored without the mark plays as it is (${ytcv.state.currentGain})`);
+  }
+
+  section('Stable volume: a gain stored before the mark plays as it did');
+  {
+    enterVideo('UCunmarked', 'UNMARKEDVD1', 'video', { name: 'Unmarked Ch', gainVideo: 2.0, autoApplyLoudnessVideo: false });
+    await bridgeSays('UCunmarked', 'UNMARKEDVD1', { loudnessDb: STABLE_DB, baseLoudnessDb: PLAIN_DB });
+    assert(ytcv.state.currentGain === 2.0,
+      `the stable rendition plays it unchanged (${ytcv.state.currentGain})`);
+    await bridgeSays('UCunmarked', 'UNMARKEDVD1', { loudnessDb: PLAIN_DB, baseLoudnessDb: PLAIN_DB, source: 'audio-change' });
+    assert(ytcv.state.currentGain === 2.0, `and so does the plain one (${ytcv.state.currentGain})`);
+
+    // Chosen again on the stable rendition, it is stored marked from then on.
+    await bridgeSays('UCunmarked', 'UNMARKEDVD1', { loudnessDb: STABLE_DB, baseLoudnessDb: PLAIN_DB, source: 'audio-change' });
+    const set = await popupGesture({ type: 'setGain', channelId: 'UCunmarked', gain: 0.5 });
+    const stored = mockStorage['channelVolumes']['UCunmarked'];
+    assert(set?.ok === true && stored.gainVideoPlain === true &&
+      closeTo(stored.gainVideo, 0.5 / renditionGainRatio(STABLE_DB, PLAIN_DB)),
+      `a manual save stores it marked, against the plain rendition (${JSON.stringify(stored)})`);
+    assert(ytcv.state.currentGain === 0.5, `and plays the level chosen (${ytcv.state.currentGain})`);
+    assert(!('gainLivePlain' in stored), 'the other type is left as it was');
   }
 
   section('Stable volume: a manual gain is stored against the plain rendition');
   {
-    enterVideo('UCmanualStb', 'MANUALSTB01', 'video', { name: 'Manual Stable Ch', gainVideo: 1.5, autoApplyLoudnessVideo: false });
+    enterVideo('UCmanualStb', 'MANUALSTB01', 'video', { name: 'Manual Stable Ch', gainVideo: 1.5, gainVideoPlain: true, autoApplyLoudnessVideo: false });
     await bridgeSays('UCmanualStb', 'MANUALSTB01', { loudnessDb: STABLE_DB, baseLoudnessDb: PLAIN_DB });
     const ratio = renditionGainRatio(STABLE_DB, PLAIN_DB);
 
@@ -1693,6 +1720,7 @@ async function runTests() {
       `"Apply to channel" plays the stable rendition's gain (${JSON.stringify(applied)})`);
     assert(closeTo(mockStorage['channelVolumes']['UCmanualStb'].gainVideo, calcGain(PLAIN_DB, -18)),
       `and stores the plain rendition's (${mockStorage['channelVolumes']['UCmanualStb'].gainVideo})`);
+    assert(mockStorage['channelVolumes']['UCmanualStb'].gainVideoPlain === true, 'marked');
   }
 
   section('Stable volume: a channel with no stored gain is left alone');
@@ -1789,7 +1817,7 @@ async function runTests() {
 
   section('Auto LUFS: re-applying the same gain does not rewrite storage');
   mockStorage['channelVolumes'] = {
-    'UCrepeat': { name: 'Repeat Ch', gainVideo: 0.55 }
+    'UCrepeat': { name: 'Repeat Ch', gainVideo: 0.55, gainVideoPlain: true }
   };
   const storageSetBeforeRepeat = chrome.storage.local.set;
   let channelVolumeWrites = 0;
@@ -1801,6 +1829,13 @@ async function runTests() {
   assert(channelVolumeWrites === 0, 'an unchanged gain is not written again');
   await ytcv.saveChannelGain('UCrepeat', 'Repeat Ch', 0.6, 'video', '');
   assert(channelVolumeWrites === 1, 'a changed gain is written');
+  // A gain stored before the mark existed is written once, to carry it.
+  mockStorage['channelVolumes'] = { 'UCrepeat': { name: 'Repeat Ch', gainVideo: 0.55 } };
+  await ytcv.saveChannelGain('UCrepeat', 'Repeat Ch', 0.55, 'video', '');
+  assert(channelVolumeWrites === 2 && mockStorage['channelVolumes']['UCrepeat'].gainVideoPlain === true,
+    `an unmarked gain is written once, marked (${channelVolumeWrites})`);
+  await ytcv.saveChannelGain('UCrepeat', 'Repeat Ch', 0.55, 'video', '');
+  assert(channelVolumeWrites === 2, `and then left alone (${channelVolumeWrites})`);
   chrome.storage.local.set = storageSetBeforeRepeat;
 
   section('Auto LUFS: early bridge for next video clears stale loudness');

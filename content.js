@@ -145,8 +145,9 @@
   // writes its own gain without it and keeps following the default.
   function saveChannelGain(channelId, name, gain, videoType, url, autoApply) {
     if (!channelId) return Promise.resolve();
+    // Every gain this tab stores is held against the plain rendition.
     return requestChannelWrite('saveChannelGain', {
-      channelId, name, gain, videoType, url, autoApply
+      channelId, name, gain, videoType, url, autoApply, heldAgainstPlain: true
     });
   }
 
@@ -304,15 +305,15 @@
     return calcGain(loudnessDb, targetLufs);
   }
 
-  // A stored gain is held against the base rendition and played on the
-  // rendition playing. Where the base level is not known, the level playing
-  // stands in for it.
+  // Where the base level is not known, the level playing stands in for it.
   function currentRenditionRatio() {
     return renditionGainRatio(currentLoudnessDb, currentBaseLoudnessDb ?? currentLoudnessDb);
   }
 
-  function storedGainToPlaying(gain) {
-    return gain * currentRenditionRatio();
+  // A gain held against the plain rendition plays carried to the rendition
+  // playing; a gain stored without that mark plays as it is.
+  function storedGainToPlaying(entry, videoType, gain) {
+    return isGainHeldAgainstPlain(entry, videoType) ? gain * currentRenditionRatio() : gain;
   }
 
   function playingGainToStored(gain) {
@@ -366,7 +367,7 @@
     const stored = getChannelGain(entry, requestedVideoType);
     const gain = autoEnabled && hasLoudness
       ? calcGainFromLoudness(currentLoudnessDb)
-      : (stored != null ? storedGainToPlaying(stored) : 1.0);
+      : (stored != null ? storedGainToPlaying(entry, requestedVideoType, stored) : 1.0);
     commitGain(gain);
     if (autoEnabled && hasLoudness && storageMigrated) {
       // The gain is already playing. A failed write must not abort the caller —
@@ -770,7 +771,7 @@
         const stored = entry ? getChannelGain(entry, currentVideoType) : 1.0;
         const gain = currentAutoApply && currentLoudnessDb !== null
           ? calcGainFromLoudness(currentLoudnessDb)
-          : (entry && stored != null ? storedGainToPlaying(stored) : stored);
+          : (stored != null ? storedGainToPlaying(entry, currentVideoType, stored) : stored);
         if (gain == null && !currentTypeAutoApplyChanged) {
           if (anyAutoApplyChanged) notifyPopup();
           return;
