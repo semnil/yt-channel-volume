@@ -24,6 +24,14 @@
     }, '*');
   }
 
+  // loudnessDb is a level against the response's loudness target; an absolute
+  // level (LKFS) is put on that footing by taking the target off it. Without a
+  // target there is nothing to put it against.
+  function relativeToTarget(lkfs, data) {
+    const target = data?.playerConfig?.audioConfig?.loudnessTargetLkfs;
+    return typeof lkfs === 'number' && typeof target === 'number' ? lkfs - target : null;
+  }
+
   function extractFromPlayerResponse(data) {
     let db = null;
     let isLiveContent = false;
@@ -34,8 +42,7 @@
     try {
       db = data?.playerConfig?.audioConfig?.loudnessDb;
       if (typeof db !== 'number') {
-        db = data?.playerConfig?.audioConfig?.perceptualLoudnessDb;
-        if (typeof db !== 'number') db = null;
+        db = relativeToTarget(data?.playerConfig?.audioConfig?.perceptualLoudnessDb, data);
       }
       isLiveContent = !!data?.videoDetails?.isLiveContent;
       isLiveNow = !!data?.videoDetails?.isLive;

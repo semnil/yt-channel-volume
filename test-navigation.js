@@ -506,7 +506,13 @@ function createBridge({ pathname = '/watch', videoId = 'urlVideoIdA', preassigne
 }
 
 const playerResponse = (over = {}) => ({
-  playerConfig: { audioConfig: { loudnessDb: over.loudnessDb ?? -7.5 } },
+  playerConfig: {
+    audioConfig: {
+      ...('loudnessDb' in over && over.loudnessDb === undefined ? {} : { loudnessDb: over.loudnessDb ?? -7.5 }),
+      ...(over.perceptualLoudnessDb !== undefined ? { perceptualLoudnessDb: over.perceptualLoudnessDb } : {}),
+      ...(over.loudnessTargetLkfs === null ? {} : { loudnessTargetLkfs: over.loudnessTargetLkfs ?? -14 })
+    }
+  },
   videoDetails: {
     videoId: over.videoId ?? 'urlVideoIdA',
     channelId: over.channelId ?? 'UCbridge',
@@ -3437,12 +3443,20 @@ async function runTests() {
   section('Bridge: the level it reads when the first field is absent');
   {
     const bridge = createBridge();
+    // perceptualLoudnessDb is read as an absolute level, put against the target.
     const perceptual = playerResponse();
     delete perceptual.playerConfig.audioConfig.loudnessDb;
-    perceptual.playerConfig.audioConfig.perceptualLoudnessDb = -11.5;
+    perceptual.playerConfig.audioConfig.perceptualLoudnessDb = -26.5;
     bridge.assign(perceptual);
-    assert(bridge.last()?.loudnessDb === -11.5,
-      `the second field stands in for the first (${bridge.last()?.loudnessDb})`);
+    assert(bridge.last()?.loudnessDb === -12.5,
+      `the second field stands in for the first, against the target (${bridge.last()?.loudnessDb})`);
+
+    const untargeted = playerResponse({ loudnessTargetLkfs: null });
+    delete untargeted.playerConfig.audioConfig.loudnessDb;
+    untargeted.playerConfig.audioConfig.perceptualLoudnessDb = -26.5;
+    bridge.assign(untargeted);
+    assert(bridge.last()?.loudnessDb === null,
+      `and with no target to put it against, there is no level (${bridge.last()?.loudnessDb})`);
 
     const neither = playerResponse();
     neither.playerConfig.audioConfig = {};
