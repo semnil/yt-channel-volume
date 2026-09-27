@@ -184,6 +184,24 @@ assert(hasExplicitAutoApply({ autoApplyLoudness: false }, 'live') === true,
 assert(hasExplicitAutoApply({ gainLive: 0.7 }, 'live') === false,
   'a stored gain is not an explicit Auto choice');
 
+section('setChannelGain — the mark of a gain held against the plain rendition');
+const markedEntry = { gainVideo: 0.5, gainLive: 0.7 };
+setChannelGain(markedEntry, 'video', 0.4, true);
+assert(markedEntry.gainVideoPlain === true && isGainHeldAgainstPlain(markedEntry, 'video'),
+  'a gain set held against the plain rendition carries the mark');
+assert(!('gainLivePlain' in markedEntry) && !isGainHeldAgainstPlain(markedEntry, 'live'),
+  'the other type is left unmarked');
+setChannelGain(markedEntry, 'video', 0.6);
+assert(!('gainVideoPlain' in markedEntry) && !isGainHeldAgainstPlain(markedEntry, 'video'),
+  'a gain set without it loses the mark');
+const markedLegacy = { gain: 0.6 };
+setChannelGain(markedLegacy, 'live', 0.3, true);
+assert(markedLegacy.gainLivePlain === true && !('gainVideoPlain' in markedLegacy) && markedLegacy.gainVideo === 0.6,
+  'a legacy single gain expands unmarked, and only the type written is marked');
+assert(isGainHeldAgainstPlain(null, 'video') === false, 'no entry: not held against it');
+assert(isGainHeldAgainstPlain({ gainVideo: 1, gainVideoPlain: 'true' }, 'video') === false,
+  'only true is the mark');
+
 section('getChannelGain');
 assert(getChannelGain({ gainVideo: 0.5, gainLive: 0.7 }, 'video') === 0.5,
   'typed Video gain is selected');
@@ -2741,6 +2759,29 @@ assert(calcGain(0, -18) === calcGain(-0.001, -18) || true, 'boundary at 0: non-p
 // Verify 0 takes the non-positive path (effectiveLufs = -14 + 0 = -14)
 assertClose(calcGain(0, -18), Math.pow(10, (-18 - (-14))/20), 0.001, 'loudnessDb=0 uses non-positive path');
 
+section('renditionGainRatio — a stored gain carried to the rendition playing');
+
+// Stable volume raising a quiet video from -26.39 to -14.33 LUFS: a gain held
+// against the plain rendition comes down by the 12.06 dB the player added.
+assertClose(renditionGainRatio(-0.33, -12.39), Math.pow(10, -12.06 / 20), 1e-9,
+  'the stable rendition takes the stored gain down by what it raised the level');
+assertClose(renditionGainRatio(-12.39, -0.33), Math.pow(10, 12.06 / 20), 1e-9,
+  'and a quieter rendition takes it up');
+assertClose(calcGain(-12.39, -18) * renditionGainRatio(-0.33, -12.39), calcGain(-0.33, -18), 1e-9,
+  'the base rendition\'s Auto gain, carried over, is the playing rendition\'s Auto gain');
+assert(renditionGainRatio(-4, -4) === 1, 'one rendition: the gain as it is');
+
+// Both above -14 LUFS: YouTube brings both down to -14 before any gain.
+assertClose(renditionGainRatio(0.4, 6.96), 1, 1e-9, 'two renditions YouTube attenuates are one level');
+assertClose(renditionGainRatio(0.4, -3), Math.pow(10, -3 / 20), 1e-9,
+  'an attenuated rendition counts at -14 against a quieter one');
+
+assert(renditionGainRatio(null, -12.39) === 1, 'no level playing: the gain as it is');
+assert(renditionGainRatio(-0.33, null) === 1, 'no base level: the gain as it is');
+assert(renditionGainRatio(undefined, undefined) === 1, 'neither: the gain as it is');
+assert(renditionGainRatio(NaN, -12.39) === 1, 'NaN → 1');
+assert(renditionGainRatio(-Infinity, -12.39) === 1, 'a level that is not finite → 1');
+
 // ── Constants ────────────────────────────────────────────────────────
 
 section('Constants');
@@ -2925,6 +2966,27 @@ async function runMigrationTests() {
       `the handle entry whose name matches is adopted (${JSON.stringify(mockStorage.channelVolumes['UCnew'])})`);
     assert(mockStorage.channelVolumes['@handle'] === undefined, 'and moved rather than copied');
 
+    mockStorage = { channelVolumes: { '@marked': { name: 'Marked Name', gainVideo: 0.4, gainVideoPlain: true } } };
+    await CHANNEL_WRITES.adoptHandleEntry({
+      channelId: 'UCmarked', authorName: 'Marked Name', url: 'https://www.youtube.com/channel/UCmarked'
+    });
+    assert(mockStorage.channelVolumes['UCmarked']?.gainVideoPlain === true,
+      'an adopted entry keeps the mark its gain carried');
+
+    mockStorage = priorStorage;
+  }
+
+  section('saveChannelGain — the mark goes with the write that asks for it');
+  {
+    const priorStorage = mockStorage;
+    mockStorage = { channelVolumes: { UCmark: { name: 'Mark', gainVideo: 0.5, gainVideoPlain: true } } };
+    await CHANNEL_WRITES.saveChannelGain({ channelId: 'UCmark', name: 'Mark', gain: 0.8, videoType: 'live', url: '', heldAgainstPlain: true });
+    assert(mockStorage.channelVolumes.UCmark.gainLive === 0.8 && mockStorage.channelVolumes.UCmark.gainLivePlain === true,
+      'a write held against the plain rendition stores the mark');
+    await CHANNEL_WRITES.saveChannelGain({ channelId: 'UCmark', name: 'Mark', gain: 0.9, videoType: 'video', url: '' });
+    assert(mockStorage.channelVolumes.UCmark.gainVideo === 0.9 && !('gainVideoPlain' in mockStorage.channelVolumes.UCmark),
+      'a write without it stores the gain unmarked');
+    assert(mockStorage.channelVolumes.UCmark.gainLivePlain === true, 'and leaves the other type as it was');
     mockStorage = priorStorage;
   }
 

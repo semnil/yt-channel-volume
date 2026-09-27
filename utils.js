@@ -88,6 +88,17 @@ function autoApplyKeyFor(videoType) {
   return videoType === 'live' ? 'autoApplyLoudnessLive' : 'autoApplyLoudnessVideo';
 }
 
+// Set beside a type's gain when that gain is held against the plain rendition
+// (the audio the player response describes, before stable volume). A gain
+// stored without it plays as it is.
+function plainMarkKeyFor(videoType) {
+  return gainKeyFor(videoType) + 'Plain';
+}
+
+function isGainHeldAgainstPlain(entry, videoType) {
+  return !!entry && entry[plainMarkKeyFor(videoType)] === true;
+}
+
 function getChannelGain(entry, videoType) {
   if (!entry) return null;
   if ('gain' in entry && !('gainLive' in entry) && !('gainVideo' in entry)) {
@@ -97,13 +108,17 @@ function getChannelGain(entry, videoType) {
 }
 
 // Expands the legacy single-gain format so both types stay independent.
-function setChannelGain(entry, videoType, gain) {
+// `heldAgainstPlain` marks the gain as held against the plain rendition; a
+// gain set without it loses any mark the type had.
+function setChannelGain(entry, videoType, gain, heldAgainstPlain = false) {
   if ('gain' in entry && !('gainLive' in entry) && !('gainVideo' in entry)) {
     entry.gainLive = entry.gain;
     entry.gainVideo = entry.gain;
     delete entry.gain;
   }
   entry[gainKeyFor(videoType)] = gain;
+  if (heldAgainstPlain) entry[plainMarkKeyFor(videoType)] = true;
+  else delete entry[plainMarkKeyFor(videoType)];
 }
 
 // Expands the legacy all-types flag so one type can be set on its own.
@@ -129,7 +144,7 @@ const CHANNEL_WRITES = {
     return updateChannelVolumes(all => {
       const entry = all[msg.channelId] || {};
       applyChannelIdentity(entry, msg.channelId, msg.name, msg.url);
-      setChannelGain(entry, msg.videoType, msg.gain);
+      setChannelGain(entry, msg.videoType, msg.gain, msg.heldAgainstPlain === true);
       if (msg.autoApply !== undefined) {
         setChannelAutoApply(entry, msg.videoType, msg.autoApply);
       }
@@ -272,14 +287,28 @@ function isManualGainLocked(autoApplyEnabled, hasLoudness) {
   return !!autoApplyEnabled && !!hasLoudness;
 }
 
-function calcGain(loudnessDb, targetLufs) {
-  const effectiveLufs = loudnessDb > 0
+// The level YouTube plays a rendition at, after its own normalization.
+function effectiveLufs(loudnessDb) {
+  return loudnessDb > 0
     ? YT_REFERENCE_LUFS
     : YT_REFERENCE_LUFS + loudnessDb;
-  const compensationDb = targetLufs - effectiveLufs;
+}
+
+function calcGain(loudnessDb, targetLufs) {
+  const compensationDb = targetLufs - effectiveLufs(loudnessDb);
   const gain = Math.pow(10, compensationDb / 20);
   if (!isFinite(gain)) return 1.0;
   return Math.max(0, Math.min(6, gain));
+}
+
+// A gain held against the base rendition (the plain audio the player
+// response describes), multiplied by this, is the gain for the rendition
+// playing, so that both come out at the same level. Where either level is not
+// known the two are taken as one.
+function renditionGainRatio(playingDb, baseDb) {
+  if (typeof playingDb !== 'number' || typeof baseDb !== 'number') return 1;
+  const ratio = Math.pow(10, (effectiveLufs(baseDb) - effectiveLufs(playingDb)) / 20);
+  return Number.isFinite(ratio) ? ratio : 1;
 }
 
 function esc(s) {
