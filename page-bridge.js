@@ -150,7 +150,7 @@
       set(val) {
         _capturedResp = val;
         if (val && isWatchPage() && isCurrentVideo(val)) {
-          postResult(extractFromPlayerResponse(val), 'define');
+          postResult(preferPlayingLevel(extractFromPlayerResponse(val), val), 'define');
         }
       },
       configurable: true,
@@ -183,7 +183,7 @@
     if (url.includes('/youtubei/v1/player')) {
       result.then(resp => resp.clone().json()).then(data => {
         if (isWatchPage() && isCurrentVideo(data)) {
-          postResult(extractFromPlayerResponse(data), 'fetch');
+          postResult(preferPlayingLevel(extractFromPlayerResponse(data), data), 'fetch');
         }
       }).catch(() => {});
     }
@@ -273,18 +273,23 @@
       : (resp && isCurrentVideo(resp) ? resp : null);
     result.isLiveNow = !!newest?.videoDetails?.isLive;
 
-    // The level of what the player is playing takes over from the one the
-    // response describes. Until the player names what it plays, the answer
-    // above stands, and the player is looked at again until it does.
+    postResult(preferPlayingLevel(result, newest), source);
+  }
+
+  // Whichever route an answer takes, the level of what the player is playing
+  // takes over from the one the response describes, and answering with it ends
+  // the looking below. Until the player names what it plays, the response's
+  // level stands, and the player is looked at again until it does.
+  function preferPlayingLevel(result, data) {
     const lkfs = playingLoudnessLkfs();
-    const playing = relativeToTarget(lkfs, newest);
+    const playing = relativeToTarget(lkfs, data);
     if (playing !== null) {
       result.db = playing;
-    } else if (lkfs === null) {
+      stopFollowing();
+    } else if (lkfs === null && isWatchPage()) {
       followPlaying();
     }
-
-    postResult(result, source);
+    return result;
   }
 
   // Looked at every FOLLOW_INTERVAL_MS, FOLLOW_ATTEMPTS times at most, and
@@ -306,6 +311,11 @@
       if (attempts < FOLLOW_ATTEMPTS) followTimer = setTimeout(look, FOLLOW_INTERVAL_MS);
     };
     followTimer = setTimeout(look, FOLLOW_INTERVAL_MS);
+  }
+
+  function stopFollowing() {
+    clearTimeout(followTimer);
+    followTimer = null;
   }
 
   // ── Diagnostic dump (MAIN-world visibility for popup-open) ─────────

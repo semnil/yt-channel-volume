@@ -415,9 +415,11 @@ function createBridge({ pathname = '/watch', videoId = 'urlVideoIdA', preassigne
     // The page's timers, left out of what keeps this run alive — or, for a
     // case that counts them, held until the case runs them.
     setTimeout: manualTimers
-      ? (fn, ms) => { pendingTimers.push({ fn, ms }); return pendingTimers.length; }
+      ? (fn, ms) => { const t = { fn, ms }; pendingTimers.push(t); return t; }
       : (fn, ms) => { const t = setTimeout(fn, ms); t.unref?.(); return t; },
-    clearTimeout,
+    clearTimeout: manualTimers
+      ? (t) => { const at = pendingTimers.indexOf(t); if (at > -1) pendingTimers.splice(at, 1); }
+      : clearTimeout,
     document: {
       querySelector: (selector) => (selector.includes('ytd-watch-flexy') ? flexy : null),
       getElementById: (id) => (id === 'movie_player' ? moviePlayer : null)
@@ -4054,8 +4056,12 @@ async function runTests() {
     await untargeted.request();
     assert(untargeted.last()?.loudnessDb === -0.33,
       `a level with no target to put it against is not taken (${untargeted.last()?.loudnessDb})`);
-    assert(untargeted.pendingTimers() === 0,
-      `and not waited for either, since the player has named it (${untargeted.pendingTimers()})`);
+    // The look the load started finds a level named and answers once more,
+    // with the response's level, and looks no further.
+    const before = untargeted.posted.length;
+    await untargeted.runTimers();
+    assert(untargeted.posted.length - before <= 1 && untargeted.last()?.loudnessDb === -0.33 && untargeted.pendingTimers() === 0,
+      `and it is not waited for any further (${untargeted.posted.length - before} / ${untargeted.pendingTimers()})`);
   }
 
   section('Playing level: answered again once the player names it');
@@ -4081,6 +4087,71 @@ async function runTests() {
     assert(near(bridge.last()?.loudnessDb, 0.4) && bridge.last()?.source === 'playing',
       `with the player's level, saying why (${bridge.last()?.loudnessDb} / ${bridge.last()?.source})`);
     assert(bridge.pendingTimers() === 0, `and the looking stops (${bridge.pendingTimers()})`);
+  }
+
+  section('Playing level: no route answers the response over the player');
+  {
+    // The player has named what it plays; a response that arrives after that,
+    // by any route and in any order, is answered with the player's level.
+    const pr = playerResponse({ loudnessDb: -12.39, drcLoudnessDb: -0.33 });
+    const routes = {
+      define: (b) => b.assign(pr),
+      fetch: (b) => b.fetchPlayer(pr),
+      request: (b) => b.request(),
+      'audio-change': (b) => b.playerAnnounces('onPlaybackAudioChange')
+    };
+    const orders = [
+      ['request', 'fetch', 'define', 'audio-change'],
+      ['audio-change', 'define', 'fetch', 'request'],
+      ['fetch', 'audio-change', 'request', 'define'],
+      ['define', 'request', 'audio-change', 'fetch']
+    ];
+    for (const order of orders) {
+      const bridge = createBridge({ manualTimers: true });
+      bridge.setMoviePlayer(pr, {
+        getDrcUserPreference: () => 0,
+        getStatsForNerds: () => statsFor('100%/95% (cont.-13.6dB tgt.-14.0dB)')
+      });
+      await bridge.request();
+      const from = bridge.posted.length;
+      for (const route of order) await routes[route](bridge);
+      const answered = bridge.posted.slice(from);
+      assert(answered.length === 4 && answered.every((m) => near(m.loudnessDb, 0.4) && m.baseLoudnessDb === -12.39),
+        `${order.join(' → ')}: every answer is the player's level (${answered.map((m) => m.source + ' ' + m.loudnessDb).join(', ')})`);
+    }
+
+    // Turned over mid-video, a response that comes after the change is
+    // answered with what the player plays after it.
+    const bridge = createBridge({ manualTimers: true });
+    bridge.assign(pr);
+    let stats = statsFor('100%/100% DRC (cont.-14.3dB tgt.-14.0dB)');
+    let preference = 1;
+    bridge.setMoviePlayer(pr, { getDrcUserPreference: () => preference, getStatsForNerds: () => stats });
+    await bridge.request();
+    preference = 0;
+    stats = statsFor('100%/100% (cont.-26.4dB tgt.-14.0dB)');
+    await bridge.playerAnnounces('onPlaybackAudioChange');
+    await bridge.fetchPlayer(playerResponse({ loudnessDb: -12.39, drcLoudnessDb: -0.33 }));
+    assert(bridge.last()?.source === 'fetch' && near(bridge.last()?.loudnessDb, -12.4),
+      `a player request answered after the change carries the plain level (${bridge.last()?.source} ${bridge.last()?.loudnessDb})`);
+    preference = 1;
+    stats = statsFor('100%/100% DRC (cont.-14.3dB tgt.-14.0dB)');
+    await bridge.playerAnnounces('onPlaybackAudioChange');
+    await bridge.fetchPlayer(playerResponse({ loudnessDb: -12.39, drcLoudnessDb: -0.33 }));
+    assert(near(bridge.last()?.loudnessDb, -0.3),
+      `and turned back, the stable level (${bridge.last()?.loudnessDb})`);
+    assert(bridge.pendingTimers() === 0, `with nothing left looking (${bridge.pendingTimers()})`);
+  }
+
+  section('Playing level: the looking a load starts ends when the player is read');
+  {
+    const bridge = createBridge({ manualTimers: true });
+    const pr = playerResponse({ loudnessDb: -12.39, drcLoudnessDb: -0.33 });
+    bridge.assign(pr);
+    assert(bridge.pendingTimers() === 1, `the load, with no player yet, starts looking (${bridge.pendingTimers()})`);
+    bridge.setMoviePlayer(pr, { getStatsForNerds: () => statsFor('100%/100% DRC (cont.-14.3dB tgt.-14.0dB)') });
+    await bridge.request();
+    assert(bridge.pendingTimers() === 0, `an answer with the player's level stops it (${bridge.pendingTimers()})`);
   }
 
   section('Playing level: the looking gives up, and stops off a watch page');
