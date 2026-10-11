@@ -526,7 +526,7 @@ const heldInZip = (dir, archive) => {
     + '    print(name, hashlib.sha256(held.read(name)).hexdigest())',
     archive], { cwd: dir, encoding: 'utf8' });
   assert(read.status === 0, `reading ${archive} — ${(read.stderr || '').trim()}`);
-  return (read.stdout || '').trim().split('\n').filter(Boolean)
+  return (read.stdout || '').trim().split(/\r?\n/).filter(Boolean)
     .map(line => line.split(' '));
 };
 // pack.py selects by reference rather than by name, so what it leaves out is
@@ -719,7 +719,7 @@ function namesOnWindows(cwd, where) {
   assert(run.status === 0,
     `the windows path harness runs on ${where} — ${(run.stderr || '').trim()}`);
   if (run.status !== 0) { return null; }
-  const names = (run.stdout || '').trim().split('\n').filter(Boolean);
+  const names = (run.stdout || '').trim().split(/\r?\n/).filter(Boolean);
   const backslashed = names.filter(name => name.includes('\\'));
   assert(backslashed.length === 0,
     `every name inside ${where}'s package stays POSIX on Windows — ${backslashed.join(', ')}`);
@@ -758,7 +758,7 @@ function namesOnWindows(cwd, where) {
     console.log(`  (drive-letter check skipped: ${run.error.message})`);
   } else {
     assert(run.status === 0, `the drive-letter probe runs — ${(run.stderr || '').trim()}`);
-    const answers = Object.fromEntries((run.stdout || '').trim().split('\n')
+    const answers = Object.fromEntries((run.stdout || '').trim().split(/\r?\n/)
       .filter(Boolean).map(line => line.split(' ')));
     assert(answers['content.js'] === 'True',
       'a path inside the package still resolves under Windows path semantics');
@@ -2824,7 +2824,7 @@ assert(!packaged.includes('.DS_Store'),
         + ' oct(held.external_attr >> 16))',
         'yt-channel-volume-0.0.0.zip'], { cwd: box, encoding: 'utf8' });
       assert(read.status === 0, `reading the entries — ${(read.stderr || '').trim()}`);
-      const entries = (read.stdout || '').trim().split('\n').filter(Boolean);
+      const entries = (read.stdout || '').trim().split(/\r?\n/).filter(Boolean);
       assert(entries.length > 0, 'the package has entries to read');
       for (const entry of entries) {
         assert(/ \(1980, 1, 1, 0, 0, 0\) 3 0o100644$/.test(entry),
@@ -2856,7 +2856,7 @@ assert(!packaged.includes('.DS_Store'),
       } else {
         assert(asWindows.status === 0,
           `the packer runs with the host read as Windows — ${(asWindows.stderr || '').trim()}`);
-        const hosts = (asWindows.stdout || '').split('\n')
+        const hosts = (asWindows.stdout || '').split(/\r?\n/)
           .map(line => line.match(/^entry (.+) (\d+)$/)).filter(Boolean);
         assert(hosts.length > 0, 'the package has entries to read');
         for (const [, name, host] of hosts) {
@@ -2874,7 +2874,7 @@ assert(!packaged.includes('.DS_Store'),
       const box = buildMinimal();
       const built = runPack(box, []);
       assert(built.status === 0, `pack.py runs on the whole tree — ${(built.stderr || '').trim()}`);
-      const named = (built.stdout || '').split('\n')
+      const named = (built.stdout || '').split(/\r?\n/)
         .map(line => line.match(/^\s*\+ (.+)$/)).filter(Boolean).map(match => match[1]);
       const listed = runPack(box, ['--list']);
       assert(listed.status === 0, `pack.py --list runs — ${(listed.stderr || '').trim()}`);

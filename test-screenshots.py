@@ -16,6 +16,9 @@ import zlib
 # beside the module it reads, and that module is here.
 sys.dont_write_bytecode = True
 
+# What this prints is UTF-8 whatever code page the host gives a pipe or a file.
+sys.stdout.reconfigure(encoding='utf-8')
+
 # gen_screenshots first: it keeps what it could not read, and these tests
 # answer 3 the same way it does. Reaching for PIL before that turns "cannot
 # draw here" into a traceback, and test.js reads the 3 to know to skip.
