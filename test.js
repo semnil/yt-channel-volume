@@ -57,6 +57,19 @@ globalThis.document = {
   })
 };
 const fs = require('fs');
+// Why a case that makes a symbolic link does not run here, or false where it
+// runs. A link is made once to find out, as test-screenshots.py does.
+const SYMLINK_SKIP = (() => {
+  const box = fs.mkdtempSync(require('path').join(require('os').tmpdir(), 'ytcv-link-'));
+  try {
+    fs.symlinkSync('nowhere', require('path').join(box, 'link'));
+    return false;
+  } catch (err) {
+    return `symlinks cannot be made here (${err.code})`;
+  } finally {
+    fs.rmSync(box, { recursive: true, force: true });
+  }
+})();
 // Replace const/let with var so eval exposes to global scope
 const src = fs.readFileSync('./utils.js', 'utf8').replace(/^(const|let) /gm, 'var ');
 eval(src);
@@ -513,7 +526,7 @@ const heldInZip = (dir, archive) => {
     + '    print(name, hashlib.sha256(held.read(name)).hexdigest())',
     archive], { cwd: dir, encoding: 'utf8' });
   assert(read.status === 0, `reading ${archive} — ${(read.stderr || '').trim()}`);
-  return (read.stdout || '').trim().split('\n').filter(Boolean)
+  return (read.stdout || '').trim().split(/\r?\n/).filter(Boolean)
     .map(line => line.split(' '));
 };
 // pack.py selects by reference rather than by name, so what it leaves out is
@@ -706,7 +719,7 @@ function namesOnWindows(cwd, where) {
   assert(run.status === 0,
     `the windows path harness runs on ${where} — ${(run.stderr || '').trim()}`);
   if (run.status !== 0) { return null; }
-  const names = (run.stdout || '').trim().split('\n').filter(Boolean);
+  const names = (run.stdout || '').trim().split(/\r?\n/).filter(Boolean);
   const backslashed = names.filter(name => name.includes('\\'));
   assert(backslashed.length === 0,
     `every name inside ${where}'s package stays POSIX on Windows — ${backslashed.join(', ')}`);
@@ -745,7 +758,7 @@ function namesOnWindows(cwd, where) {
     console.log(`  (drive-letter check skipped: ${run.error.message})`);
   } else {
     assert(run.status === 0, `the drive-letter probe runs — ${(run.stderr || '').trim()}`);
-    const answers = Object.fromEntries((run.stdout || '').trim().split('\n')
+    const answers = Object.fromEntries((run.stdout || '').trim().split(/\r?\n/)
       .filter(Boolean).map(line => line.split(' ')));
     assert(answers['content.js'] === 'True',
       'a path inside the package still resolves under Windows path semantics');
@@ -753,6 +766,49 @@ function namesOnWindows(cwd, where) {
       assert(answers[named] === 'False', `${named} names a drive and is refused`);
     }
   }
+}
+
+// A misspelled reference is named as one where realpath folds case. Windows
+// answers realpath with the spelling the tree holds. This host may not, so
+// realpath is made to answer that way here.
+{
+  const nodeOs = require('os');
+  const nodePath = require('path');
+  const foldingProbe = [
+    'import importlib.util, os',
+    'spec = importlib.util.spec_from_file_location("packmod", "pack.py")',
+    'mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)',
+    'real = os.path.realpath',
+    'def folded(p):',
+    '    drive, rest = os.path.splitdrive(real(p))',
+    '    at = drive + os.sep',
+    '    for part in [name for name in rest.split(os.sep) if name]:',
+    '        held = os.listdir(at) if os.path.isdir(at) else []',
+    '        if part not in held:',
+    '            part = next((n for n in held if n.lower() == part.lower()), part)',
+    '        at = os.path.join(at, part)',
+    '    return at',
+    'os.path.realpath = folded',
+    'assert folded(os.path.join(os.getcwd(), "Content.js")) != os.path.join(os.getcwd(), "Content.js")',
+    'for name in ["content.js", "Content.js"]:',
+    '    try:',
+    '        mod._packaged(os.getcwd(), name)',
+    '        print(name, "packed")',
+    '    except SystemExit as refusal:',
+    '        print(name, refusal)'
+  ].join('\n');
+  const fixture = fs.mkdtempSync(nodePath.join(fs.realpathSync(nodeOs.tmpdir()), 'ytcv-folded-'));
+  fs.copyFileSync('./pack.py', nodePath.join(fixture, 'pack.py'));
+  fs.writeFileSync(nodePath.join(fixture, 'content.js'), '');
+  const run = require('child_process').spawnSync('python3', ['-B', '-c', foldingProbe],
+    { cwd: fixture, encoding: 'utf8' });
+  fs.rmSync(fixture, { recursive: true, force: true });
+  assert(run.status === 0, `the folding probe runs — ${(run.stderr || '').trim()}`);
+  const said = (run.stdout || '').trim().split(/\r?\n/);
+  assert(JSON.stringify(said) === JSON.stringify([
+    'content.js packed',
+    'Content.js the tree spells this another way: Content.js'
+  ]), `a misspelled reference is named as one where realpath folds case — ${said.join(' / ')}`);
 }
 
 {
@@ -1110,13 +1166,6 @@ assert(!packaged.includes('.DS_Store'),
       `the refusal of ${what} names it — got ${(result.stderr || '').trim()}`);
   };
   try {
-    // A symlinked parent directory: only the last name looks local.
-    refused(runEscape(fixture => {
-      fs.writeFileSync(nodePath.join(fixture, 'manifest.json'),
-        escapeManifest(['linked/secret.js']));
-      fs.symlinkSync(outside, nodePath.join(fixture, 'linked'));
-    }), /linked\/secret\.js/, 'a reference through a symlinked parent');
-
     refused(runEscape(fixture => {
       fs.writeFileSync(nodePath.join(fixture, 'manifest.json'),
         escapeManifest(['../secret.js']));
@@ -1134,20 +1183,31 @@ assert(!packaged.includes('.DS_Store'),
         escapeManifest([nodePath.join(outside, 'secret.js')]));
     }), /secret\.js/, 'an absolute reference');
 
-    // The locale directories are listed rather than referenced, and one of
-    // them can be a link just as easily.
-    refused(runEscape(fixture => {
-      fs.writeFileSync(nodePath.join(fixture, 'manifest.json'),
-        escapeManifest([], { default_locale: 'ja' }));
-      fs.mkdirSync(nodePath.join(fixture, '_locales'));
-      fs.symlinkSync(outside, nodePath.join(fixture, '_locales', 'ja'));
-    }), /_locales\/ja\/messages\.json/, 'a symlinked locale directory');
+    if (SYMLINK_SKIP) {
+      console.log(`  (links that leave the package skipped: ${SYMLINK_SKIP})`);
+    } else {
+      // A symlinked parent directory: only the last name looks local.
+      refused(runEscape(fixture => {
+        fs.writeFileSync(nodePath.join(fixture, 'manifest.json'),
+          escapeManifest(['linked/secret.js']));
+        fs.symlinkSync(outside, nodePath.join(fixture, 'linked'));
+      }), /linked\/secret\.js/, 'a reference through a symlinked parent');
 
-    refused(runEscape(fixture => {
-      fs.writeFileSync(nodePath.join(fixture, 'manifest.json'),
-        escapeManifest([], { default_locale: 'ja' }));
-      fs.symlinkSync(outside, nodePath.join(fixture, '_locales'));
-    }), /_locales\//, 'a symlinked _locales');
+      // The locale directories are listed rather than referenced, and one of
+      // them can be a link just as easily.
+      refused(runEscape(fixture => {
+        fs.writeFileSync(nodePath.join(fixture, 'manifest.json'),
+          escapeManifest([], { default_locale: 'ja' }));
+        fs.mkdirSync(nodePath.join(fixture, '_locales'));
+        fs.symlinkSync(outside, nodePath.join(fixture, '_locales', 'ja'));
+      }), /_locales\/ja\/messages\.json/, 'a symlinked locale directory');
+
+      refused(runEscape(fixture => {
+        fs.writeFileSync(nodePath.join(fixture, 'manifest.json'),
+          escapeManifest([], { default_locale: 'ja' }));
+        fs.symlinkSync(outside, nodePath.join(fixture, '_locales'));
+      }), /_locales\//, 'a symlinked _locales');
+    }
   } finally {
     fs.rmSync(outside, { recursive: true, force: true });
   }
@@ -1172,15 +1232,19 @@ assert(!packaged.includes('.DS_Store'),
   assert(/content\.js/.test(missing.stderr || ''),
     'the refusal names the file it could not find');
 
-  // A referenced symlink resolves outside the package: it is not packed
-  // silently in place of the file it points at.
-  fs.writeFileSync(nodePath.join(fixture, 'elsewhere.js'), '//');
-  fs.symlinkSync(nodePath.join(fixture, 'elsewhere.js'),
-    nodePath.join(fixture, 'content.js'));
-  const linked = spawn('python3', ['-B', 'pack.py', '--list'],
-    { cwd: fixture, encoding: 'utf8' });
-  assert(linked.status !== 0, 'pack.py refuses a reference reaching its file through a link');
-  assert(/content\.js/.test(linked.stderr || ''), 'the refusal names it');
+  if (SYMLINK_SKIP) {
+    console.log(`  (a referenced link skipped: ${SYMLINK_SKIP})`);
+  } else {
+    // A referenced symlink resolves outside the package: it is not packed
+    // silently in place of the file it points at.
+    fs.writeFileSync(nodePath.join(fixture, 'elsewhere.js'), '//');
+    fs.symlinkSync(nodePath.join(fixture, 'elsewhere.js'),
+      nodePath.join(fixture, 'content.js'));
+    const linked = spawn('python3', ['-B', 'pack.py', '--list'],
+      { cwd: fixture, encoding: 'utf8' });
+    assert(linked.status !== 0, 'pack.py refuses a reference reaching its file through a link');
+    assert(/content\.js/.test(linked.stderr || ''), 'the refusal names it');
+  }
   fs.rmSync(fixture, { recursive: true, force: true });
 }
 
@@ -2229,12 +2293,13 @@ assert(!packaged.includes('.DS_Store'),
           m.content_scripts = [{ js: ['/content.js'] }];
         }),
         /reference leaves the package: \/content\.js/],
-      // A backslash is an ordinary character in a name on this host and a
-      // separator on the one the package is written for. The file is on disk
-      // under that very name, so what refuses it is the rule and not its
-      // absence.
+      // A backslash is an ordinary character in a name on a POSIX host and a
+      // separator on Windows. The file is on disk under that very name — one
+      // name beside sub, or content.js inside it where the backslash separates —
+      // so what refuses it is the rule and not its absence.
       ['a reference spelled with a backslash',
         box => {
+          fs.mkdirSync(`${box}/sub`);
           fs.writeFileSync(`${box}/sub\\content.js`, '');
           editManifest(box, m => {
             m.content_scripts = [{ js: ['content.js', 'sub\\content.js'] }];
@@ -2760,7 +2825,7 @@ assert(!packaged.includes('.DS_Store'),
         + ' oct(held.external_attr >> 16))',
         'yt-channel-volume-0.0.0.zip'], { cwd: box, encoding: 'utf8' });
       assert(read.status === 0, `reading the entries — ${(read.stderr || '').trim()}`);
-      const entries = (read.stdout || '').trim().split('\n').filter(Boolean);
+      const entries = (read.stdout || '').trim().split(/\r?\n/).filter(Boolean);
       assert(entries.length > 0, 'the package has entries to read');
       for (const entry of entries) {
         assert(/ \(1980, 1, 1, 0, 0, 0\) 3 0o100644$/.test(entry),
@@ -2792,7 +2857,7 @@ assert(!packaged.includes('.DS_Store'),
       } else {
         assert(asWindows.status === 0,
           `the packer runs with the host read as Windows — ${(asWindows.stderr || '').trim()}`);
-        const hosts = (asWindows.stdout || '').split('\n')
+        const hosts = (asWindows.stdout || '').split(/\r?\n/)
           .map(line => line.match(/^entry (.+) (\d+)$/)).filter(Boolean);
         assert(hosts.length > 0, 'the package has entries to read');
         for (const [, name, host] of hosts) {
@@ -2810,7 +2875,7 @@ assert(!packaged.includes('.DS_Store'),
       const box = buildMinimal();
       const built = runPack(box, []);
       assert(built.status === 0, `pack.py runs on the whole tree — ${(built.stderr || '').trim()}`);
-      const named = (built.stdout || '').split('\n')
+      const named = (built.stdout || '').split(/\r?\n/)
         .map(line => line.match(/^\s*\+ (.+)$/)).filter(Boolean).map(match => match[1]);
       const listed = runPack(box, ['--list']);
       assert(listed.status === 0, `pack.py --list runs — ${(listed.stderr || '').trim()}`);
