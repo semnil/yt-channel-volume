@@ -768,6 +768,49 @@ function namesOnWindows(cwd, where) {
   }
 }
 
+// A misspelled reference is named as one where realpath folds case. Windows
+// answers realpath with the spelling the tree holds. This host may not, so
+// realpath is made to answer that way here.
+{
+  const nodeOs = require('os');
+  const nodePath = require('path');
+  const foldingProbe = [
+    'import importlib.util, os',
+    'spec = importlib.util.spec_from_file_location("packmod", "pack.py")',
+    'mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)',
+    'real = os.path.realpath',
+    'def folded(p):',
+    '    drive, rest = os.path.splitdrive(real(p))',
+    '    at = drive + os.sep',
+    '    for part in [name for name in rest.split(os.sep) if name]:',
+    '        held = os.listdir(at) if os.path.isdir(at) else []',
+    '        if part not in held:',
+    '            part = next((n for n in held if n.lower() == part.lower()), part)',
+    '        at = os.path.join(at, part)',
+    '    return at',
+    'os.path.realpath = folded',
+    'assert folded(os.path.join(os.getcwd(), "Content.js")) != os.path.join(os.getcwd(), "Content.js")',
+    'for name in ["content.js", "Content.js"]:',
+    '    try:',
+    '        mod._packaged(os.getcwd(), name)',
+    '        print(name, "packed")',
+    '    except SystemExit as refusal:',
+    '        print(name, refusal)'
+  ].join('\n');
+  const fixture = fs.mkdtempSync(nodePath.join(fs.realpathSync(nodeOs.tmpdir()), 'ytcv-folded-'));
+  fs.copyFileSync('./pack.py', nodePath.join(fixture, 'pack.py'));
+  fs.writeFileSync(nodePath.join(fixture, 'content.js'), '');
+  const run = require('child_process').spawnSync('python3', ['-B', '-c', foldingProbe],
+    { cwd: fixture, encoding: 'utf8' });
+  fs.rmSync(fixture, { recursive: true, force: true });
+  assert(run.status === 0, `the folding probe runs — ${(run.stderr || '').trim()}`);
+  const said = (run.stdout || '').trim().split(/\r?\n/);
+  assert(JSON.stringify(said) === JSON.stringify([
+    'content.js packed',
+    'Content.js the tree spells this another way: Content.js'
+  ]), `a misspelled reference is named as one where realpath folds case — ${said.join(' / ')}`);
+}
+
 {
   const onWindows = namesOnWindows('.', 'this repository');
   if (onWindows) {
