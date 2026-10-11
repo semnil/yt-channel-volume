@@ -2293,12 +2293,13 @@ assert(!packaged.includes('.DS_Store'),
           m.content_scripts = [{ js: ['/content.js'] }];
         }),
         /reference leaves the package: \/content\.js/],
-      // A backslash is an ordinary character in a name on this host and a
-      // separator on the one the package is written for. The file is on disk
-      // under that very name, so what refuses it is the rule and not its
-      // absence.
+      // A backslash is an ordinary character in a name on a POSIX host and a
+      // separator on Windows. The file is on disk under that very name — one
+      // name beside sub, or content.js inside it where the backslash separates —
+      // so what refuses it is the rule and not its absence.
       ['a reference spelled with a backslash',
         box => {
+          fs.mkdirSync(`${box}/sub`);
           fs.writeFileSync(`${box}/sub\\content.js`, '');
           editManifest(box, m => {
             m.content_scripts = [{ js: ['content.js', 'sub\\content.js'] }];
