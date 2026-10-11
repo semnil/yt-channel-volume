@@ -57,6 +57,19 @@ globalThis.document = {
   })
 };
 const fs = require('fs');
+// Why a case that makes a symbolic link does not run here, or false where it
+// runs. A link is made once to find out, as test-screenshots.py does.
+const SYMLINK_SKIP = (() => {
+  const box = fs.mkdtempSync(require('path').join(require('os').tmpdir(), 'ytcv-link-'));
+  try {
+    fs.symlinkSync('nowhere', require('path').join(box, 'link'));
+    return false;
+  } catch (err) {
+    return `symlinks cannot be made here (${err.code})`;
+  } finally {
+    fs.rmSync(box, { recursive: true, force: true });
+  }
+})();
 // Replace const/let with var so eval exposes to global scope
 const src = fs.readFileSync('./utils.js', 'utf8').replace(/^(const|let) /gm, 'var ');
 eval(src);
@@ -1110,13 +1123,6 @@ assert(!packaged.includes('.DS_Store'),
       `the refusal of ${what} names it — got ${(result.stderr || '').trim()}`);
   };
   try {
-    // A symlinked parent directory: only the last name looks local.
-    refused(runEscape(fixture => {
-      fs.writeFileSync(nodePath.join(fixture, 'manifest.json'),
-        escapeManifest(['linked/secret.js']));
-      fs.symlinkSync(outside, nodePath.join(fixture, 'linked'));
-    }), /linked\/secret\.js/, 'a reference through a symlinked parent');
-
     refused(runEscape(fixture => {
       fs.writeFileSync(nodePath.join(fixture, 'manifest.json'),
         escapeManifest(['../secret.js']));
@@ -1134,20 +1140,31 @@ assert(!packaged.includes('.DS_Store'),
         escapeManifest([nodePath.join(outside, 'secret.js')]));
     }), /secret\.js/, 'an absolute reference');
 
-    // The locale directories are listed rather than referenced, and one of
-    // them can be a link just as easily.
-    refused(runEscape(fixture => {
-      fs.writeFileSync(nodePath.join(fixture, 'manifest.json'),
-        escapeManifest([], { default_locale: 'ja' }));
-      fs.mkdirSync(nodePath.join(fixture, '_locales'));
-      fs.symlinkSync(outside, nodePath.join(fixture, '_locales', 'ja'));
-    }), /_locales\/ja\/messages\.json/, 'a symlinked locale directory');
+    if (SYMLINK_SKIP) {
+      console.log(`  (links that leave the package skipped: ${SYMLINK_SKIP})`);
+    } else {
+      // A symlinked parent directory: only the last name looks local.
+      refused(runEscape(fixture => {
+        fs.writeFileSync(nodePath.join(fixture, 'manifest.json'),
+          escapeManifest(['linked/secret.js']));
+        fs.symlinkSync(outside, nodePath.join(fixture, 'linked'));
+      }), /linked\/secret\.js/, 'a reference through a symlinked parent');
 
-    refused(runEscape(fixture => {
-      fs.writeFileSync(nodePath.join(fixture, 'manifest.json'),
-        escapeManifest([], { default_locale: 'ja' }));
-      fs.symlinkSync(outside, nodePath.join(fixture, '_locales'));
-    }), /_locales\//, 'a symlinked _locales');
+      // The locale directories are listed rather than referenced, and one of
+      // them can be a link just as easily.
+      refused(runEscape(fixture => {
+        fs.writeFileSync(nodePath.join(fixture, 'manifest.json'),
+          escapeManifest([], { default_locale: 'ja' }));
+        fs.mkdirSync(nodePath.join(fixture, '_locales'));
+        fs.symlinkSync(outside, nodePath.join(fixture, '_locales', 'ja'));
+      }), /_locales\/ja\/messages\.json/, 'a symlinked locale directory');
+
+      refused(runEscape(fixture => {
+        fs.writeFileSync(nodePath.join(fixture, 'manifest.json'),
+          escapeManifest([], { default_locale: 'ja' }));
+        fs.symlinkSync(outside, nodePath.join(fixture, '_locales'));
+      }), /_locales\//, 'a symlinked _locales');
+    }
   } finally {
     fs.rmSync(outside, { recursive: true, force: true });
   }
@@ -1172,15 +1189,19 @@ assert(!packaged.includes('.DS_Store'),
   assert(/content\.js/.test(missing.stderr || ''),
     'the refusal names the file it could not find');
 
-  // A referenced symlink resolves outside the package: it is not packed
-  // silently in place of the file it points at.
-  fs.writeFileSync(nodePath.join(fixture, 'elsewhere.js'), '//');
-  fs.symlinkSync(nodePath.join(fixture, 'elsewhere.js'),
-    nodePath.join(fixture, 'content.js'));
-  const linked = spawn('python3', ['-B', 'pack.py', '--list'],
-    { cwd: fixture, encoding: 'utf8' });
-  assert(linked.status !== 0, 'pack.py refuses a reference reaching its file through a link');
-  assert(/content\.js/.test(linked.stderr || ''), 'the refusal names it');
+  if (SYMLINK_SKIP) {
+    console.log(`  (a referenced link skipped: ${SYMLINK_SKIP})`);
+  } else {
+    // A referenced symlink resolves outside the package: it is not packed
+    // silently in place of the file it points at.
+    fs.writeFileSync(nodePath.join(fixture, 'elsewhere.js'), '//');
+    fs.symlinkSync(nodePath.join(fixture, 'elsewhere.js'),
+      nodePath.join(fixture, 'content.js'));
+    const linked = spawn('python3', ['-B', 'pack.py', '--list'],
+      { cwd: fixture, encoding: 'utf8' });
+    assert(linked.status !== 0, 'pack.py refuses a reference reaching its file through a link');
+    assert(/content\.js/.test(linked.stderr || ''), 'the refusal names it');
+  }
   fs.rmSync(fixture, { recursive: true, force: true });
 }
 
