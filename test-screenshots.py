@@ -30,6 +30,11 @@ from PIL import Image
 passed = failed = 0
 
 
+# The tracked directory as the generator names it: joined with this host's
+# separator.
+TRACKED = os.path.join('docs', 'screenshots')
+
+
 def check(condition, msg):
     global passed, failed
     if condition:
@@ -290,9 +295,9 @@ try:
     shutil.copy2(shot(box, 'popup_ja.png'), shot(box, 'popup_de.png'))
     orphan = run(box, '--check')
     check(orphan.returncode == 1, f'an image nothing draws is reported (exit {orphan.returncode})')
-    check('docs/screenshots/popup_de.png: drawn by nothing' in orphan.stderr,
+    check(f"{os.path.join(TRACKED, 'popup_de.png')}: drawn by nothing" in orphan.stderr,
           'and the line names the file and what is wrong with it')
-    check('Delete: docs/screenshots/popup_de.png' in orphan.stderr,
+    check(f"Delete: {os.path.join(TRACKED, 'popup_de.png')}" in orphan.stderr,
           'and the way out is the one that works on it')
 
     # An image by any other spelling is still one nothing draws.
@@ -529,7 +534,7 @@ try:
               f'a link in place of an image is reported (exit {linked.returncode})')
         check('popup_ja.png: a symbolic link (points at popup_ja.source)' in linked.stderr,
               'and the line says what it is')
-        check('docs/screenshots/popup_de.png: drawn by nothing' in linked.stderr,
+        check(f"{os.path.join(TRACKED, 'popup_de.png')}: drawn by nothing" in linked.stderr,
               'and a link that points nowhere is still a file nothing draws')
 finally:
     if box is not None:
@@ -540,7 +545,7 @@ for label, breakage, expected in (
      lambda box: (shutil.move(os.path.join(box, 'docs', 'screenshots'),
                               os.path.join(box, 'docs', 'screenshots.source')),
                   os.symlink('screenshots.source', os.path.join(box, 'docs', 'screenshots'))),
-     'docs/screenshots: a symbolic link (points at screenshots.source)'),
+     f'{TRACKED}: a symbolic link (points at screenshots.source)'),
     ('a directory on the way as a link',
      lambda box: (shutil.move(os.path.join(box, 'docs'), os.path.join(box, 'docs.source')),
                   os.symlink('docs.source', os.path.join(box, 'docs'))),
@@ -548,7 +553,7 @@ for label, breakage, expected in (
     ('the tracked directory as a link pointing nowhere',
      lambda box: (shutil.rmtree(os.path.join(box, 'docs', 'screenshots')),
                   os.symlink('nowhere', os.path.join(box, 'docs', 'screenshots'))),
-     'docs/screenshots: a symbolic link (points at nowhere)'),
+     f'{TRACKED}: a symbolic link (points at nowhere)'),
 ) if LINKS else ():
     box = sandbox()
     try:
@@ -575,7 +580,7 @@ try:
     check(spelled.returncode == 1, f'a spelling is reported (exit {spelled.returncode})')
     check('popup_ja.PNG: spelled differently (the code draws popup_ja.png)' in spelled.stderr,
           'and it is named as a spelling')
-    check('Rename: docs/screenshots/popup_ja.PNG -> popup_ja.png' in spelled.stderr,
+    check(f"Rename: {os.path.join(TRACKED, 'popup_ja.PNG')} -> popup_ja.png" in spelled.stderr,
           'and renaming is what it asks for')
     check('Delete' not in spelled.stderr, 'not deleting')
 
@@ -973,7 +978,7 @@ try:
               f'a tracked directory that cannot be read is reported '
               f'(exit {unreadable.returncode})')
         check('Traceback' not in unreadable.stderr, 'and says so without a traceback')
-        check('docs/screenshots cannot be read' in unreadable.stderr, 'and names it')
+        check(f'{TRACKED} cannot be read' in unreadable.stderr, 'and names it')
 finally:
     if box is not None:
         os.chmod(tracked, 0o755)
