@@ -6,76 +6,102 @@ It leaves the YouTube player's volume slider alone and controls the level with a
 
 ## Architecture
 
+```mermaid
+flowchart LR
+  bridge["page-bridge.js<br>MAIN world, document_start"]
+  content["utils.js + content.js<br>ISOLATED world, document_idle"]
+  bg["background.js<br>service worker"]
+  popup["popup.html / popup.js"]
+  options["options.html / options.js"]
+  store[("chrome.storage.local")]
+  audio["video element, MediaElementSource, GainNode, destination"]
+
+  bridge -- "postMessage: loudnessDb, baseLoudnessDb, isLiveContent, channelId, author" --> content
+  content -- "postMessage: request" --> bridge
+  popup -- "forceDetect, getState, gestures" --> content
+  content -- "stateChanged" --> popup
+  content -- "store:op" --> bg
+  options -- "store:op" --> bg
+  bg -- "writes channelVolumes" --> store
+  options -- "writes autoLoudnessSettings" --> store
+  store -- "get, storage.onChanged" --> content
+  store -- "get, storage.onChanged" --> options
+  store -- "get autoLoudnessSettings" --> popup
+  content -- "gain" --> audio
 ```
-page-bridge.js (MAIN world content script, document_start)
-├── Object.defineProperty: hooks the assignment of ytInitialPlayerResponse
-├── Fetch hook: intercepts /youtubei/v1/player responses (covers SPA navigation)
-├── unhandledrejection listener: prevents the default only for the `TypeError: Failed to fetch` that a request made through the fetch hook on a watch page failed with
-├── extractFromYtPlayer: reads from ytd-watch-flexy / movie_player (covers SPA navigation)
-├── isLiveContent: extracts videoDetails.isLiveContent
-├── Playing level: every answer to content.js (define / fetch / request / audio-change) takes the `cont.` level of movie_player.getStatsForNerds() less the response's loudnessTargetLkfs; until the player names it, the player is looked at again every 250 ms (source `playing`)
-├── Stable volume: where the playing level is not there, with the player's DRC setting on, the level is the `isDrc` adaptive format's loudnessDb
-├── onPlaybackAudioChange listener on movie_player: answers again when the rendition changes (source `audio-change`)
-└── postMessage → relays loudnessDb (the rendition played) + baseLoudnessDb (the plain rendition `audioConfig` describes) + isLiveContent + channelId + author to content.js
 
-background.js (service worker)
-├── importScripts('utils.js')
-└── the only context that writes channelVolumes, on a `store:<op>` message
-    (saveChannelGain / saveChannelAutoApply / deleteChannel / clearChannels /
-     adoptHandleEntry / migrateLegacyGains)
+**page-bridge.js (MAIN world content script, document_start)**
 
-utils.js → content.js (ISOLATED world content scripts, document_idle)
-├── postMessage listener: receives loudnessDb and baseLoudnessDb from page-bridge.js. An answer naming a video other than the one the URL names (`?v=`, or the `/live/` path segment) was queued for a page this tab has left, and is dropped; where the URL names no video the answer is taken as it comes
-├── requestLoudnessWithRetry: asks page-bridge.js again on demand
-├── Gain calculation (manual apply / per-channel automatic LUFS apply. Both store into the same per-type gain, held against the base rendition)
-│   ├── contentLUFS = -14 + loudnessDb (YouTube reference = -14 LUFS)
-│   ├── compensationDb = targetLUFS - contentLUFS
-│   └── gain = 10^(compensationDb / 20), clamped [0, 6], NaN/Inf → 1.0
-├── Web Audio API: <video> → MediaElementSource → GainNode → destination (connected lazily)
-├── Gain overlay: shows the gain value in .ytp-volume-area (switched on and off in the options)
-├── Channel detection (UC only): canonical / #owner a[href*="/channel/"] / meta tag → page-bridge channelId (UC form)
-│   ├── @handle links go stale during SPA navigation and are rejected outright. Waits for the bridge when the DOM carries no UC
-│   └── Display name: page-bridge author (videoDetails.author, authoritative source) → DOM (#owner #channel-name a, fallback)
-├── Navigation: triggerApply (async mutex) runs applyVideoVolume directly (no debounce)
-│   ├── Triggers: yt-navigate-finish, popstate, visibilitychange, MutationObserver, first load
-│   ├── Observer: watches video element changes + URL video ID changes alone (a null guard suppresses the first fire)
-│   ├── _applyRunning mutex prevents concurrent runs. forceDetect also goes through triggerApply
-│   └── Clears currentChannel when the videoId changes, so stale channel information does not leak
-├── videoType: 'live' (stream/archive) or 'video' (video/Shorts) hold separate gains
-├── Cross-tab sync: chrome.storage.onChanged delivers channelVolumes changes and the gain for the current channel × videoType is applied at once (no polling, self-tab dedup by currentGain comparison)
-└── Storage
-    ├── autoLoudnessSettings: { targetLufs, displayUnit, showGainOverlay, autoApplyLoudnessVideoDefault, autoApplyLoudnessLiveDefault }
-    ├── channelVolumes: { [channelId]: { name, gainLive, gainVideo, gainLivePlain, gainVideoPlain, autoApplyLoudnessLive, autoApplyLoudnessVideo, url } }
-    └── unifiedGains: the migration-done marker (top-level key)
+- Object.defineProperty: hooks the assignment of ytInitialPlayerResponse
+- Fetch hook: intercepts /youtubei/v1/player responses (covers SPA navigation)
+- unhandledrejection listener: prevents the default only for the `TypeError: Failed to fetch` that a request made through the fetch hook on a watch page failed with
+- extractFromYtPlayer: reads from ytd-watch-flexy / movie_player (covers SPA navigation)
+- isLiveContent: extracts videoDetails.isLiveContent
+- Playing level: every answer to content.js (define / fetch / request / audio-change) takes the `cont.` level of movie_player.getStatsForNerds() less the response's loudnessTargetLkfs; until the player names it, the player is looked at again every 250 ms (source `playing`)
+- Stable volume: where the playing level is not there, with the player's DRC setting on, the level is the `isDrc` adaptive format's loudnessDb
+- onPlaybackAudioChange listener on movie_player: answers again when the rendition changes (source `audio-change`)
+- postMessage → relays loudnessDb (the rendition played) + baseLoudnessDb (the plain rendition `audioConfig` describes) + isLiveContent + channelId + author to content.js
 
-utils.js (shared, loaded by content / popup / options / background + tests)
-├── Constants: storage keys, YT_REFERENCE_LUFS, DEFAULT_TARGET_LUFS
-├── Gain utilities: gainToPercent, percentToGain, gainToDb, formatGain, formatAutoGain, calcGain
-├── Storage utilities: isContextValid, updateChannelVolumes, CHANNEL_WRITES, getChannelGain, setChannelGain, applyChannelIdentity, normalizeStoredGain, migrateLegacyAutoGains
-├── Auto state: resolveAutoApplySetting, setChannelAutoApply, hasExplicitAutoApply, isManualGainLocked
-├── i18n: msg()
-└── HTML escape: esc()
+**background.js (service worker)**
 
-popup.html / popup.js
-├── Loudness / Suggested / Current display (read-only)
-├── Fallback badge on Current while Auto is on and no LUFS was detected (the value is the saved gain itself)
-├── LIVE badge, shown only while a live stream is playing
-├── "Apply to channel" button (computes the gain from loudnessDb and saves it per type)
-├── Per-channel × Video/Live "Auto-apply LUFS" toggle, showing only the type being watched
-├── Manual Volume: slider (0–600%) + presets. Disabled while Auto is on and LUFS was detected; used for fallback adjustment when no LUFS was detected. Every gesture carries the `appliesTo` of the state the popup was drawn from
-├── UI hidden on pages other than watch
-└── retryGetState: polling fallback while the loudness has not arrived
+- importScripts('utils.js')
+- the only context that writes channelVolumes, on a `store:<op>` message (saveChannelGain / saveChannelAutoApply / deleteChannel / clearChannels / adoptHandleEntry / migrateLegacyGains)
 
-options.html / options.js (settings screen, opened in its own tab)
-├── Target LUFS slider (-30 to -6 LUFS, default -18)
-├── Auto-apply LUFS for all channels (Video / Live separately, default OFF, inherited by a type with no individual Auto flag)
-├── Display unit toggle (% / dB)
-├── Gain overlay toggle (shown next to the player's volume bar, default OFF)
-├── Saved Channels table (Video / Live in two columns. Under Auto it reads `Auto (saved gain)`, with a channel link, deletable)
-├── Ships with the screen hidden until the load finishes and with the settings controls and the deletions (clear all, the × on a row) disabled
-├── The first read takes 2 keys in one get and loses to a newer change notification through a per-type revision
-└── Real-time sync through storage.onChanged (renders the list the notification carried, as it is)
-```
+**utils.js → content.js (ISOLATED world content scripts, document_idle)**
+
+- postMessage listener: receives loudnessDb and baseLoudnessDb from page-bridge.js. An answer naming a video other than the one the URL names (`?v=`, or the `/live/` path segment) was queued for a page this tab has left, and is dropped; where the URL names no video the answer is taken as it comes
+- requestLoudnessWithRetry: asks page-bridge.js again on demand
+- Gain calculation (manual apply / per-channel automatic LUFS apply. Both store into the same per-type gain, held against the base rendition)
+  - contentLUFS = -14 + loudnessDb (YouTube reference = -14 LUFS)
+  - compensationDb = targetLUFS - contentLUFS
+  - gain = 10^(compensationDb / 20), clamped `[0, 6]`, NaN/Inf → 1.0
+- Web Audio API: `<video>` → MediaElementSource → GainNode → destination (connected lazily)
+- Gain overlay: shows the gain value in .ytp-volume-area (switched on and off in the options)
+- Channel detection (UC only): canonical / `#owner a[href*="/channel/"]` / meta tag → page-bridge channelId (UC form)
+  - `@handle` links go stale during SPA navigation and are rejected outright. Waits for the bridge when the DOM carries no UC
+  - Display name: page-bridge author (videoDetails.author, authoritative source) → DOM (`#owner #channel-name a`, fallback)
+- Navigation: triggerApply (async mutex) runs applyVideoVolume directly (no debounce)
+  - Triggers: yt-navigate-finish, popstate, visibilitychange, MutationObserver, first load
+  - Observer: watches video element changes + URL video ID changes alone (a null guard suppresses the first fire)
+  - `_applyRunning` mutex prevents concurrent runs. forceDetect also goes through triggerApply
+  - Clears currentChannel when the videoId changes, so stale channel information does not leak
+- videoType: 'live' (stream/archive) or 'video' (video/Shorts) hold separate gains
+- Cross-tab sync: chrome.storage.onChanged delivers channelVolumes changes and the gain for the current channel × videoType is applied at once (no polling, self-tab dedup by currentGain comparison)
+- Storage
+  - autoLoudnessSettings: `{ targetLufs, displayUnit, showGainOverlay, autoApplyLoudnessVideoDefault, autoApplyLoudnessLiveDefault }`
+  - channelVolumes: `{ [channelId]: { name, gainLive, gainVideo, gainLivePlain, gainVideoPlain, autoApplyLoudnessLive, autoApplyLoudnessVideo, url } }`
+  - unifiedGains: the migration-done marker (top-level key)
+
+**utils.js (shared, loaded by content / popup / options / background + tests)**
+
+- Constants: storage keys, YT_REFERENCE_LUFS, DEFAULT_TARGET_LUFS
+- Gain utilities: gainToPercent, percentToGain, gainToDb, formatGain, formatAutoGain, calcGain
+- Storage utilities: isContextValid, updateChannelVolumes, CHANNEL_WRITES, getChannelGain, setChannelGain, applyChannelIdentity, normalizeStoredGain, migrateLegacyAutoGains
+- Auto state: resolveAutoApplySetting, setChannelAutoApply, hasExplicitAutoApply, isManualGainLocked
+- i18n: msg()
+- HTML escape: esc()
+
+**popup.html / popup.js**
+
+- Loudness / Suggested / Current display (read-only)
+- Fallback badge on Current while Auto is on and no LUFS was detected (the value is the saved gain itself)
+- LIVE badge, shown only while a live stream is playing
+- "Apply to channel" button (computes the gain from loudnessDb and saves it per type)
+- Per-channel × Video/Live "Auto-apply LUFS" toggle, showing only the type being watched
+- Manual Volume: slider (0–600%) + presets. Disabled while Auto is on and LUFS was detected; used for fallback adjustment when no LUFS was detected. Every gesture carries the `appliesTo` of the state the popup was drawn from
+- UI hidden on pages other than watch
+- retryGetState: polling fallback while the loudness has not arrived
+
+**options.html / options.js (settings screen, opened in its own tab)**
+
+- Target LUFS slider (-30 to -6 LUFS, default -18)
+- Auto-apply LUFS for all channels (Video / Live separately, default OFF, inherited by a type with no individual Auto flag)
+- Display unit toggle (% / dB)
+- Gain overlay toggle (shown next to the player's volume bar, default OFF)
+- Saved Channels table (Video / Live in two columns. Under Auto it reads `Auto (saved gain)`, with a channel link, deletable)
+- Ships with the screen hidden until the load finishes and with the settings controls and the deletions (clear all, the × on a row) disabled
+- The first read takes 2 keys in one get and loses to a newer change notification through a per-type revision
+- Real-time sync through storage.onChanged (renders the list the notification carried, as it is)
 
 ## i18n
 
@@ -207,11 +233,10 @@ python3 pack.py
 
 ## Conventions
 
-- Documentation is maintained in English and Japanese, English first: `README.md` / `README.ja.md`. Both members of a pair carry the same headings in the same order. This overrides the global CLAUDE.md default of writing documentation in Japanese
+- Documentation is maintained in English and Japanese, English first: `README.md` / `README.ja.md`. This overrides the global CLAUDE.md default of writing documentation in Japanese
 - `PRIVACY_POLICY.md` keeps its name because the Chrome Web Store listing links to it by path. `PRIVACY_POLICY_JA.md` keeps its name because the README pair and the English policy point at it
 - `CLAUDE.md` is English only and has no Japanese counterpart
-- Commit subjects and bodies are English, as Conventional Commits. Pull request titles and bodies are English too
-- Issue templates are one English set, with a note at the top saying Japanese is welcome
+- Commit messages follow Conventional Commits
 
 ## Development notes
 
