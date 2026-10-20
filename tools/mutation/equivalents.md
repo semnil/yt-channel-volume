@@ -69,26 +69,26 @@ listener returns, and a second one is dropped rather than delivered or thrown.
 `setCardValue`'s unit check. Every one of the five calls passes a unit
 (`' LUFS'`, `' dB'`, `'%'`), so there is no call it refuses.
 
-- `popup.js:64` a guard is always taken ×1 — if (unitText) {
+- `popup.js:65` a guard is always taken ×1 — if (unitText) {
 
 `resyncFromContent`'s answer check. The `.catch` beside it runs the same four
 lines the false branch does, and reading a field of `undefined` is what sends it
 there.
 
-- `popup.js:215` a guard is always taken ×1 — if (state) {
+- `popup.js:216` a guard is always taken ×1 — if (state) {
 
 The retry loop. `hasLoudness` is set from the same response the check reads, the
 timer body opens with its own `hasLoudness` check, the recursion is bounded by
 `remaining > 1`, and the `catch (_) {}` takes what reading a field of
 `undefined` throws.
 
-- `popup.js:361` === becomes !== ×1 — ===
-- `popup.js:361` a guard is always taken ×1 — if (resp.contentLufs === null || resp.contentLufs === undefined) {
-- `popup.js:379` a guard is dropped ×1 — if (remaining <= 0 || hasLoudness) return;
-- `popup.js:379` || becomes && ×1 — ||
-- `popup.js:384` a guard is always taken ×1 — if (resp) {
-- `popup.js:386` && becomes || ×1 — &&
-- `popup.js:386` a guard is always taken ×1 — if (!hasLoudness && remaining > 1) {
+- `popup.js:362` === becomes !== ×1 — ===
+- `popup.js:362` a guard is always taken ×1 — if (resp.contentLufs === null || resp.contentLufs === undefined) {
+- `popup.js:380` a guard is dropped ×1 — if (remaining <= 0 || hasLoudness) return;
+- `popup.js:380` || becomes && ×1 — ||
+- `popup.js:385` a guard is always taken ×1 — if (resp) {
+- `popup.js:387` && becomes || ×1 — &&
+- `popup.js:387` a guard is always taken ×1 — if (!hasLoudness && remaining > 1) {
 
 ## page-bridge.js
 

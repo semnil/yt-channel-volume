@@ -618,6 +618,7 @@ function makePopup({ tabUrl = 'https://www.youtube.com/watch?v=abc', answer = nu
     requestAnimationFrame: (fn) => fn(),
     document: {
       body: node('body'),
+      documentElement: node('html'),
       getElementById: node,
       createElement: () => node(`made-${nodes.size}`),
       querySelectorAll: (selector) => (selector === '.presets button' ? presets : [])
@@ -6000,6 +6001,8 @@ async function runTests() {
       })
     });
     await popup.ready();
+    assert(popup.node('html').lang === 'pageLanguage',
+      'the page declares the language the catalog answers with');
     const drawn = (el) => popup.node(el).textContent
       + (popup.node(el).children[0] ? popup.node(el).children[0].textContent : '');
     assert(popup.node('channelName').textContent === 'Draw Ch',
@@ -7243,6 +7246,7 @@ async function runTests() {
       confirm(message) { confirms.push(message); return confirmAnswer; },
       document: {
         body,
+        documentElement: node('html'),
         getElementById: node,
         createElement: (tag) => {
           const element = makeNode(`made-${made.length}-${tag}`);
@@ -7362,6 +7366,8 @@ async function runTests() {
       'the stored unit is the active button');
     assert(options.i18nNodes.every((el) => el.textContent === el.dataset.i18n),
       'every node carrying a key is given its message');
+    assert(options.node('html').lang === 'pageLanguage',
+      'and the page declares the language the catalog answers with');
     assert(options.listMarkup().includes('Alpha'), 'the stored channels are drawn');
     assert(options.listMarkup().includes('Beta') && options.listMarkup().includes('Gamma') &&
       (options.listMarkup().match(/6\.0 dB/g) || []).length === 3,

@@ -112,5 +112,8 @@
   },
   "typeVideo": {
     "message": "Video"
+  },
+  "pageLanguage": {
+    "message": "ja"
   }
 }

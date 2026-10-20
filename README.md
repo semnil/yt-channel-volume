@@ -14,7 +14,7 @@ Chrome extension (Manifest V3) that remembers volume per YouTube channel and app
 - **Manual volume**: Set 0–600 % from the slider or the preset buttons, except while Auto is applying a detected LUFS
 - **Gain overlay**: Shows the gain in force next to the player's volume bar (toggled in Settings)
 - **One gain per channel and kind**: Auto and manual both update that single gain, so turning LUFS auto-apply on or off leaves the volume where it was. With no LUFS detected the popup marks Current as Fallback, and Saved Channels shows it in the form `Auto (70%)`
-- **Japanese / English**: Follows the browser's language setting
+- **Japanese / English**: Follows the browser's language setting, and English for any other language
 - **No external dependencies**: No npm packages, no CDN. All code written from scratch
 
 ## Screenshots
