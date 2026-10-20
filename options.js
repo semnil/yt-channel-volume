@@ -3,10 +3,11 @@
 (() => {
   'use strict';
 
-  // Apply data-i18n attributes
+  // Apply data-i18n attributes, and the language of the catalog they came from
   document.querySelectorAll('[data-i18n]').forEach(el => {
     el.textContent = msg(el.dataset.i18n);
   });
+  document.documentElement.lang = msg('pageLanguage');
 
   const targetSlider = document.getElementById('targetSlider');
   const targetValueEl = document.getElementById('targetValue');

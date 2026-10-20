@@ -1683,6 +1683,9 @@ assert(!packaged.includes('.DS_Store'),
       for (const [key, entry] of Object.entries(messages)) {
         const text = entry.message;
         if (!text || text.includes('$')) { continue; }
+        // A catalog's own locale name is what the generator spells to pick
+        // that catalog, not wording it draws.
+        if (text === locale) { continue; }
         if (source.includes(`'${text}'`) || source.includes(`"${text}"`)) {
           wrong.push(`gen_screenshots.py spells out ${locale}'s ${key} instead of reading it`);
         }
@@ -1740,6 +1743,27 @@ assert(!packaged.includes('.DS_Store'),
       `every data-i18n element in ${page} is read here`);
   }
   assert(keys > 10, `the pages ask the catalog for their text — found ${keys}`);
+}
+
+// A page declares the language of the catalog that filled it. Chrome fills it
+// from the catalog of the browser's language, or from default_locale's where it
+// carries none, so the language the markup was written in is not the one shown.
+{
+  for (const locale of localesWithCatalog('./_locales')) {
+    const said = readJson(`_locales/${locale}/messages.json`).pageLanguage?.message;
+    assert(said === locale.replace(/_/g, '-'),
+      `the ${locale} catalog names its own language — it says ${JSON.stringify(said)}`);
+  }
+  for (const [page, html, script] of [
+    ['popup', popupHtml, popupSrc], ['options', optionsHtml, optionsSrc]]) {
+    assert(/document\.documentElement\.lang = msg\('pageLanguage'\);/.test(script),
+      `${page}.js declares the language of the catalog it was filled from`);
+    // The markup's own lang is default_locale's, and stands until the script
+    // sets the catalog's.
+    assert((html.match(/<html lang="([^"]*)">/) || [])[1]
+      === String(manifest.default_locale).replace(/_/g, '-'),
+      `${page}.html is marked up in the language of default_locale`);
+  }
 }
 
 // A job with no timeout of its own runs to GitHub's six hours, so one that
