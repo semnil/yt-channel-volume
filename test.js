@@ -1749,6 +1749,8 @@ assert(!packaged.includes('.DS_Store'),
 // from the catalog of the browser's language, or from default_locale's where it
 // carries none, so the language the markup was written in is not the one shown.
 {
+  assert(manifest.default_locale === 'en',
+    'a browser language the extension carries no catalog for is answered in English');
   for (const locale of localesWithCatalog('./_locales')) {
     const said = readJson(`_locales/${locale}/messages.json`).pageLanguage?.message;
     assert(said === locale.replace(/_/g, '-'),
