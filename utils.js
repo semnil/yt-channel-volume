@@ -136,11 +136,34 @@ function hasExplicitAutoApply(entry, videoType) {
   return autoApplyKeyFor(videoType) in entry || 'autoApplyLoudness' in entry;
 }
 
+// A channel id in the UC form, the form every channel is saved under.
+function isChannelId(value) {
+  return typeof value === 'string' && /^UC[A-Za-z0-9_-]+$/.test(value);
+}
+
+// A channel write whose message does not describe a channel. It is refused
+// before the map is read, and the worker answers it as refused rather than as a
+// storage failure.
+class ChannelWriteRefused extends Error {}
+
+function checkChannelIdentity(msg) {
+  if (!isChannelId(msg.channelId)) {
+    throw new ChannelWriteRefused('channel id is not in the UC form');
+  }
+  for (const key of ['name', 'url']) {
+    if (msg[key] !== undefined && typeof msg[key] !== 'string') {
+      throw new ChannelWriteRefused(`channel ${key} is not text`);
+    }
+  }
+}
+
 // Every channelVolumes mutation the extension performs. The service worker is
 // the only context that runs them, so two tabs cannot read the map and write
 // back over each other's channel.
 const CHANNEL_WRITES = {
   saveChannelGain(msg) {
+    checkChannelIdentity(msg);
+    if (!Number.isFinite(msg.gain)) throw new ChannelWriteRefused('gain is not a finite number');
     return updateChannelVolumes(all => {
       const entry = all[msg.channelId] || {};
       applyChannelIdentity(entry, msg.channelId, msg.name, msg.url);
@@ -152,6 +175,7 @@ const CHANNEL_WRITES = {
     });
   },
   saveChannelAutoApply(msg) {
+    checkChannelIdentity(msg);
     return updateChannelVolumes(all => {
       const entry = all[msg.channelId] || {};
       applyChannelIdentity(entry, msg.channelId, msg.name, msg.url);
@@ -172,6 +196,8 @@ const CHANNEL_WRITES = {
   // Adopts an entry saved under a bare @handle once the player response names
   // the channel. The name match is what prevents adopting another channel's.
   adoptHandleEntry(msg) {
+    checkChannelIdentity(msg);
+    if (typeof msg.authorName !== 'string') throw new ChannelWriteRefused('author name is not text');
     return updateChannelVolumes(all => {
       if (all[msg.channelId]) return;
       const match = Object.entries(all).find(([key, value]) =>

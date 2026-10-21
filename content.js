@@ -192,8 +192,10 @@
     // already changed. It must not mutate channel, loudness, or gain state.
     if (!isBridgeMessageForCurrentVideo(bridgeVideoId)) return;
 
+    // A script in the page's own world can post this message too. Each field is
+    // taken only where it is of the type the bridge sends.
     const db = event.data.loudnessDb;
-    const hasLoudness = db !== null && db !== undefined && !isNaN(db);
+    const hasLoudness = Number.isFinite(db);
     const baseDb = event.data.baseLoudnessDb;
     const hasBase = typeof baseDb === 'number' && !isNaN(baseDb);
     const loudnessVideoChanged = bridgeVideoId &&
@@ -208,19 +210,21 @@
       currentLoudnessDb = db;
       if (hasBase) currentBaseLoudnessDb = baseDb;
     }
-    if (event.data.isLiveContent !== undefined) {
+    const hasLiveContent = typeof event.data.isLiveContent === 'boolean';
+    if (hasLiveContent) {
       currentVideoType = event.data.isLiveContent ? 'live' : 'video';
       currentVideoTypeDetected = true;
       currentIsLiveNow = !!event.data.isLiveNow;
     }
     // Only accept channelId if it came with valid data for current video.
-    // isLiveContent is always boolean from page-bridge.js; undefined only
-    // signals malformed / spoofed messages. Premiere videos report
+    // isLiveContent is always a boolean from page-bridge.js; anything else is
+    // a message the bridge did not send. Premiere videos report
     // isLiveContent=false with db=null, so relying on db alone loses their
     // channelId and leaves saved gain unapplied.
     const bridgeChId = event.data.channelId;
-    const hasValidData = hasLoudness || event.data.isLiveContent !== undefined;
-    if (hasValidData && bridgeChId && bridgeChId.startsWith('UC')) {
+    const author = typeof event.data.author === 'string' ? event.data.author : '';
+    const hasValidData = hasLoudness || hasLiveContent;
+    if (hasValidData && isChannelId(bridgeChId)) {
       if (bridgeVideoId) currentChannelVideoId = bridgeVideoId;
       const oldId = currentChannel.id;
       const idChanged = oldId !== bridgeChId;
@@ -232,11 +236,11 @@
         // Bridge author comes from the current video's player response — it is
         // authoritative for bridgeChId. Prefer it over DOM, which may lag the
         // SPA navigation and still describe the previous channel.
-        currentChannel.name = event.data.author || getChannelDisplayName() || bridgeChId;
+        currentChannel.name = author || getChannelDisplayName() || bridgeChId;
       } else {
         const nameIsStub = !currentChannel.name || currentChannel.name === bridgeChId;
-        if (event.data.author) {
-          currentChannel.name = event.data.author;
+        if (author) {
+          currentChannel.name = author;
         } else if (nameIsStub) {
           currentChannel.name = getChannelDisplayName() || currentChannel.name;
         }
@@ -248,13 +252,12 @@
       // migration purely from id-shape (@handle startsWith), which conflated
       // stale DOM reads with genuine legacy entries and caused silent data
       // corruption on SPA navigation.
-      if (event.data.author && isContextValid()) {
-        const authorName = event.data.author;
+      if (author && isContextValid()) {
         // Sent before Auto's own save for this message, so the worker decides
         // the adoption against a map that does not hold that gain yet.
         nameUnaskedWrite('handle entry not adopted', requestChannelWrite('adoptHandleEntry', {
           channelId: bridgeChId,
-          authorName,
+          authorName: author,
           url: 'https://www.youtube.com/channel/' + bridgeChId
         }));
       }
@@ -441,7 +444,7 @@
     }
 
     const metaChannel = document.querySelector('meta[itemprop="channelId"]');
-    if (metaChannel) {
+    if (metaChannel && isChannelId(metaChannel.content)) {
       const id = metaChannel.content;
       return {
         id,

@@ -2772,6 +2772,9 @@ async function runTests() {
   mockDOMElements['metaChannel'] = { content: 'UCmeta789' };
   const chMeta = ytcv.detectChannel();
   assert(chMeta.id === 'UCmeta789', 'meta tag channelId detected');
+  mockDOMElements['metaChannel'] = { content: '@meta_handle' };
+  const chMetaHandle = ytcv.detectChannel();
+  assert(chMetaHandle.id === '', `a meta tag outside the UC form names no channel (${chMetaHandle.id})`);
   mockDOMElements['metaChannel'] = null;
 
   section('detectChannel: nothing found');
@@ -3099,6 +3102,111 @@ async function runTests() {
   assert(ytcv.state.currentChannel.name === 'DOM Name',
     `the id standing in for a name is replaced (${ytcv.state.currentChannel.name})`);
   mockDOMElements['channelName'] = null;
+
+  // A script in the page's own world can post the bridge's message as well as
+  // the bridge can. What it carries becomes state, and through Auto's save a
+  // stored entry, only where each field is of the type the bridge sends.
+  section('Bridge message: a field of the wrong type is not taken');
+  mockStorage['channelVolumes'] = {
+    '@typed_handle': { name: 'Typed Handle', gainVideo: 0.4 }
+  };
+  setURL('/watch', 'typedVid1');
+  ytcv._set('currentChannel', { id: 'UCtyped', name: 'Typed', url: 'https://www.youtube.com/channel/UCtyped' });
+  ytcv._set('currentChannelVideoId', 'typedVid1');
+  ytcv._set('currentLoudnessDb', null);
+  ytcv._set('currentLoudnessVideoId', '');
+  ytcv._set('currentVideoType', 'video');
+  ytcv._set('currentAutoApplyLoudnessVideo', false);
+  ytcv._set('targetLufs', -18);
+  ytcv._set('defaultAutoApplyLoudnessVideo', true);
+
+  simulateBridgeMessage({
+    videoId: 'typedVid1', loudnessDb: '5', isLiveContent: false, channelId: 'UCtyped', author: 'Typed'
+  });
+  await tick();
+  assert(ytcv.state.currentLoudnessDb === null,
+    `a level that is not a number is not a level (${JSON.stringify(ytcv.state.currentLoudnessDb)})`);
+  assert(ytcv.getState().contentLufs === null,
+    `and the popup is given none (${JSON.stringify(ytcv.getState().contentLufs)})`);
+
+  simulateBridgeMessage({
+    videoId: 'typedVid1', loudnessDb: -6, isLiveContent: false, channelId: 'UCtyped', author: { not: 'text' }
+  });
+  await tick();
+  await tick();
+  assert(typeof ytcv.state.currentChannel.name === 'string',
+    `an author that is not text does not name the channel (${JSON.stringify(ytcv.state.currentChannel.name)})`);
+  assert(typeof mockStorage['channelVolumes']['UCtyped']?.name === 'string',
+    `and Auto's save does not store it as the name (${JSON.stringify(mockStorage['channelVolumes']['UCtyped'])})`);
+
+  simulateBridgeMessage({
+    videoId: 'typedVid1', loudnessDb: -6, isLiveContent: false, channelId: 'UC"><b>', author: 'Typed Handle'
+  });
+  await tick();
+  await tick();
+  assert(ytcv.state.currentChannel.id === 'UCtyped',
+    `a channel id outside the UC form names no channel (${ytcv.state.currentChannel.id})`);
+  assert(!Object.keys(mockStorage['channelVolumes']).some((key) => key.includes('<')),
+    `and nothing is stored under it (${Object.keys(mockStorage['channelVolumes'])})`);
+  assert(mockStorage['channelVolumes']['@typed_handle']?.gainVideo === 0.4,
+    'and no handle entry is moved to it');
+
+  let threwOnChannelId = null;
+  try {
+    simulateBridgeMessage({
+      videoId: 'typedVid1', loudnessDb: -6, isLiveContent: false, channelId: 42, author: 'Typed'
+    });
+  } catch (err) {
+    threwOnChannelId = err;
+  }
+  await tick();
+  assert(threwOnChannelId === null,
+    `a channel id that is not text is turned away rather than thrown on (${threwOnChannelId && threwOnChannelId.message})`);
+
+  ytcv._set('currentLoudnessDb', null);
+  simulateBridgeMessage({
+    videoId: 'typedVid1', loudnessDb: null, isLiveContent: 'yes', channelId: 'UCother_typed', author: 'Other'
+  });
+  await tick();
+  assert(ytcv.state.currentVideoType === 'video',
+    `a live flag that is not a boolean does not set the type (${ytcv.state.currentVideoType})`);
+  assert(ytcv.state.currentChannel.id === 'UCtyped',
+    `and a message carrying nothing else names no channel (${ytcv.state.currentChannel.id})`);
+  ytcv._set('defaultAutoApplyLoudnessVideo', false);
+  ytcv._set('currentLoudnessDb', null);
+
+  // The worker is the one place every channel write passes through, and it
+  // answers a message that does not describe a channel as refused.
+  section('Worker: a channel write that does not describe a channel is refused');
+  mockStorage['channelVolumes'] = {
+    UCkept: { name: 'Kept', gainVideo: 0.5 },
+    '@kept_handle': { name: 'Kept Handle', gainVideo: 0.7 }
+  };
+  const keptBefore = JSON.stringify(mockStorage['channelVolumes']);
+  const refusedWrites = [
+    { type: 'store:saveChannelGain', channelId: 'UCkept', name: { not: 'text' }, gain: 0.9, videoType: 'video', url: '' },
+    { type: 'store:saveChannelGain', channelId: 'UCkept', name: 'Kept', gain: 'loud', videoType: 'video', url: '' },
+    { type: 'store:saveChannelGain', channelId: 'UCkept', name: 'Kept', gain: NaN, videoType: 'video', url: '' },
+    { type: 'store:saveChannelGain', channelId: '__proto__', name: 'Kept', gain: 0.9, videoType: 'video', url: '' },
+    { type: 'store:saveChannelGain', channelId: 'UCkept', name: 'Kept', gain: 0.9, videoType: 'video', url: 7 },
+    { type: 'store:saveChannelAutoApply', channelId: 'UCkept', name: 7, enabled: true, videoType: 'video', url: '' },
+    { type: 'store:saveChannelAutoApply', channelId: '@kept_handle', name: 'Kept', enabled: true, videoType: 'video', url: '' },
+    { type: 'store:adoptHandleEntry', channelId: 'UC"><b>', authorName: 'Kept Handle', url: '' },
+    { type: 'store:adoptHandleEntry', channelId: 'UCadopter', authorName: { not: 'text' }, url: '' }
+  ];
+  for (const write of refusedWrites) {
+    const answer = await chrome.runtime.sendMessage(write);
+    assert(answer?.ok === false && answer?.reason === 'write refused',
+      `${write.type} ${JSON.stringify(write)} is refused (${JSON.stringify(answer)})`);
+  }
+  assert(JSON.stringify(mockStorage['channelVolumes']) === keptBefore,
+    `and none of them touches the map (${JSON.stringify(mockStorage['channelVolumes'])})`);
+  const acceptedWrite = await chrome.runtime.sendMessage({
+    type: 'store:saveChannelGain', channelId: 'UCkept', name: 'Kept', gain: 0.9, videoType: 'video', url: ''
+  });
+  assert(acceptedWrite?.ok === true && mockStorage['channelVolumes']['UCkept'].gainVideo === 0.9,
+    `a write that describes a channel still lands (${JSON.stringify(acceptedWrite)})`);
+  mockStorage['channelVolumes'] = {};
 
   // ── What the popup waits for, and what the observer refuses to act on ──
 
