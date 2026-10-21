@@ -7554,6 +7554,31 @@ async function runTests() {
     assert(!markup.includes('href='), 'a channel with no url is not a link');
   }
 
+  // A stored name that is not text is drawn and sorted as the channel id, so
+  // the row is listed and can be deleted.
+  {
+    const options = makeOptions({
+      channels: {
+        UCobject: { name: { not: 'text' }, gainVideo: 2 },
+        UCbeta: { name: 'Beta', gainVideo: 1 },
+        UCnameless: { gainVideo: 0.5 }
+      }
+    });
+    await options.settle();
+    const markup = options.listMarkup();
+
+    assert(options.node('settingsError').classList.contains('hidden') === true,
+      `a stored name that is not text does not fail the load (${options.errors.map(String).join(' | ')})`);
+    assert(options.node('clearAllBtn').disabled === false, 'and the page is left to be operated');
+    assert(markup.includes('>UCobject<') && !markup.includes('[object Object]'),
+      'the row is drawn under its channel id');
+    assert(markup.includes('>UCnameless<'), 'and so is a row with no name at all');
+    assert(markup.indexOf('Beta') < markup.indexOf('UCnameless')
+      && markup.indexOf('UCnameless') < markup.indexOf('UCobject'),
+      'in the order of what each row shows');
+    assert(options.deleteButton('UCobject')?.disabled === false, 'and it can be deleted');
+  }
+
   {
     const options = makeOptions({
       settings: { autoApplyLoudnessVideoDefault: true },

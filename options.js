@@ -112,6 +112,12 @@
 
   // ── Channel list ───────────────────────────────────────────────────
 
+  // What a row is shown and sorted under: the stored name where it is
+  // non-empty text, the channel id otherwise.
+  function channelLabel(id, entry) {
+    return typeof entry.name === 'string' && entry.name ? entry.name : id;
+  }
+
   // Draws the list the page holds, and nothing else. A read of its own would be
   // a second read racing the one that is already out, and it would land without
   // anything to weigh it against; a page that holds no list yet draws none.
@@ -124,7 +130,7 @@
       return;
     }
 
-    entries.sort((a, b) => a[1].name.localeCompare(b[1].name));
+    entries.sort((a, b) => channelLabel(a[0], a[1]).localeCompare(channelLabel(b[0], b[1])));
 
     const table = document.createElement('table');
     table.className = 'channel-table';
@@ -137,7 +143,7 @@
 
     const tbody = document.createElement('tbody');
     for (const [id, entry] of entries) {
-      const name = entry.name || id;
+      const name = channelLabel(id, entry);
       const url = entry.url;
       // Support old format (single gain) and new format (gainLive/gainVideo)
       const gainLive = getChannelGain(entry, 'live');
