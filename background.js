@@ -21,7 +21,10 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     .then(() => sendResponse({ ok: true }))
     .catch(err => {
       console.error('[YTCV] ' + msg.type + ' failed', err);
-      sendResponse({ ok: false, reason: 'storage write failed' });
+      sendResponse({
+        ok: false,
+        reason: err instanceof ChannelWriteRefused ? 'write refused' : 'storage write failed'
+      });
     });
   return true;
 });
