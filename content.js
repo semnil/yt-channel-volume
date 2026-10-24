@@ -1045,19 +1045,45 @@
       }
       const videoType = currentVideoType;
       fillCurrentChannelNameFromDomFallback();
-      saveChannelAutoApply(
-        currentChannel.id,
-        currentChannel.name,
-        !!msg.enabled,
-        videoType,
-        currentChannel.url
-      ).then(async () => {
+      // Turned on where a level is known, Auto plays its gain at once and that
+      // gain is stored with the flag in one write, as Apply to channel stores
+      // it. Turned off, or on with no level known, the flag is written alone.
+      const live = currentLiveLkfs !== null;
+      const storesGain = !!msg.enabled && (live || currentLoudnessDb !== null);
+      let written;
+      if (storesGain) {
+        const videoId = getUrlVideoId();
+        const gain = live ? calcGainFromLiveLevel() : calcGainFromLoudness(currentLoudnessDb);
+        commitGain(gain);
+        written = (live
+          ? saveLiveChannelGain(currentChannel.id, currentChannel.name, gain, videoType, currentChannel.url, true)
+          : saveChannelGain(currentChannel.id, currentChannel.name, calcStoredGainFromLoudness(), videoType, currentChannel.url, true)
+        ).then(() => {
+          if (live) liveSaveBaseline = { videoId, gain };
+        });
+      } else {
+        written = saveChannelAutoApply(
+          currentChannel.id,
+          currentChannel.name,
+          !!msg.enabled,
+          videoType,
+          currentChannel.url
+        );
+      }
+      written.then(async () => {
         await applyPreferredGain();
         notifyPopup();
         sendResponse({ ok: true, ...getState() });
       }).catch(err => {
         reportFailure('setAutoApplyLoudness failed', err);
-        sendResponse({ ok: false, reason: 'request failed' });
+        if (!storesGain) {
+          sendResponse({ ok: false, reason: 'request failed' });
+          return;
+        }
+        // The gain played went ahead of the write, so the level goes back to
+        // what storage holds before the popup is answered.
+        restoreGainAfterFailedSave().then(() =>
+          sendResponse({ ok: false, reason: 'request failed' }));
       });
       return true;
     }

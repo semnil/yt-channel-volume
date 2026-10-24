@@ -8521,6 +8521,140 @@ async function runTests() {
         `this tab goes on playing its own level (${ytcv.state.currentGain})`);
     }
 
+    section('Auto turned on stores the gain it plays with the flag, whenever the change arrives');
+    {
+      // The harness's storage tells the tab of nothing. Here each channel
+      // write's change is told at a point the case picks: never, as the write
+      // lands, while the apply after it reads the entry, or once it is over.
+      const realGet = chrome.storage.local.get;
+      const realSet = chrome.storage.local.set;
+      const tell = ([oldValue, newValue]) => simulateStorageChange({ channelVolumes: { oldValue, newValue } });
+      const changesTold = (ordering) => {
+        let held = [];
+        chrome.storage.local.set = function (obj) {
+          const before = cloneStorageValue(mockStorage['channelVolumes']);
+          const written = realSet.call(this, obj);
+          if ('channelVolumes' in obj && ordering !== 'none') {
+            const change = [before, cloneStorageValue(mockStorage['channelVolumes'])];
+            if (ordering === 'beforeResponse') tell(change);
+            else held.push(change);
+          }
+          return written;
+        };
+        chrome.storage.local.get = function (key) {
+          if (ordering === 'duringApply' && held.length && key === 'channelVolumes') {
+            const due = held;
+            held = [];
+            due.forEach(tell);
+          }
+          return realGet.call(this, key);
+        };
+        return {
+          async afterApply() {
+            if (ordering !== 'afterApply') return;
+            const due = held;
+            held = [];
+            due.forEach(tell);
+            await settle();
+          },
+          stop() { chrome.storage.local.set = realSet; chrome.storage.local.get = realGet; }
+        };
+      };
+      const toggle = async (changes, enabled) => {
+        const answer = await popupGesture({ type: 'setAutoApplyLoudness', enabled });
+        await settle();
+        await changes.afterApply();
+        return answer;
+      };
+
+      for (const ordering of ['none', 'beforeResponse', 'duringApply', 'afterApply']) {
+        // A stream on air, Auto off, 0.5 stored.
+        onAir({ autoLive: false, entry: { gainLive: 0.5, autoApplyLoudnessLive: false } });
+        liveAnswer(-24.8);
+        await settle();
+        const liveBefore = ytcv.state.currentGain;
+        let changes = changesTold(ordering);
+        const liveOn = await toggle(changes, true);
+        const liveOnEntry = { ...entryNow() };
+        const liveOnGain = ytcv.state.currentGain;
+        const liveSavesOn = liveSaves().length;
+        // The follow that comes next with the same level stores nothing more.
+        const followed = await ytcv.evaluateLiveSave('follow');
+        const liveOff = await toggle(changes, false);
+        changes.stop();
+        assert(liveBefore === 0.5 && liveOn?.ok === true && close(liveOnGain, liveGain(-24.8)),
+          `${ordering}, live: turning Auto on plays its gain (${liveBefore} / ${JSON.stringify(liveOn?.ok)} / ${liveOnGain})`);
+        assert(close(liveOnEntry.gainLive, liveGain(-24.8)) && !('gainLivePlain' in liveOnEntry)
+          && liveOnEntry.autoApplyLoudnessLive === true && liveSavesOn === 1,
+          `${ordering}, live: and stores it unmarked with the flag, in one write (${JSON.stringify(liveOnEntry)} / ${liveSavesOn})`);
+        assert(followed.decision === 'skip' && followed.saved === false && liveSaves().length === 1,
+          `${ordering}, live: the follow after it is a skip, not a second open (${JSON.stringify(followed)})`);
+        assert(liveOff?.ok === true && close(ytcv.state.currentGain, liveGain(-24.8))
+          && entryNow().autoApplyLoudnessLive === false,
+          `${ordering}, live: turning it off again plays what was stored (${ytcv.state.currentGain} / ${JSON.stringify(entryNow())})`);
+
+        // A video whose level is known, Auto off, 0.5 stored.
+        onAir({ type: 'video', autoLive: false, autoVideo: false, entry: { gainVideo: 0.5, autoApplyLoudnessVideo: false } });
+        simulateBridgeMessage({
+          videoId: LIVE_VID, loudnessDb: 4, baseLoudnessDb: 4, isLiveContent: false, isLiveNow: false,
+          channelId: LIVE_CH, author: 'Live Follow', source: 'request'
+        });
+        await settle();
+        const videoBefore = ytcv.state.currentGain;
+        changes = changesTold(ordering);
+        const videoOn = await toggle(changes, true);
+        const videoOnEntry = { ...entryNow() };
+        const videoOnGain = ytcv.state.currentGain;
+        const videoOff = await toggle(changes, false);
+        changes.stop();
+        assert(videoBefore === 0.5 && videoOn?.ok === true && close(videoOnGain, calcGain(4, -18)),
+          `${ordering}, video: turning Auto on plays its gain (${videoBefore} / ${JSON.stringify(videoOn?.ok)} / ${videoOnGain})`);
+        assert(close(videoOnEntry.gainVideo, calcGain(4, -18)) && videoOnEntry.gainVideoPlain === true
+          && videoOnEntry.autoApplyLoudnessVideo === true,
+          `${ordering}, video: and stores it against the plain rendition with the flag (${JSON.stringify(videoOnEntry)})`);
+        assert(videoOff?.ok === true && close(ytcv.state.currentGain, calcGain(4, -18))
+          && entryNow().autoApplyLoudnessVideo === false,
+          `${ordering}, video: turning it off again plays what was stored (${ytcv.state.currentGain} / ${JSON.stringify(entryNow())})`);
+      }
+
+      // With no level known the flag is written alone.
+      onAir({ autoLive: false, entry: { gainLive: 0.5, autoApplyLoudnessLive: false } });
+      liveAnswer(null);
+      await settle();
+      const flagOnly = await popupGesture({ type: 'setAutoApplyLoudness', enabled: true });
+      await settle();
+      assert(flagOnly?.ok === true && ytcv.state.currentGain === 0.5 && entryNow().gainLive === 0.5
+        && entryNow().autoApplyLoudnessLive === true && liveSaves().length === 0
+        && mockSentMessages.some((m) => m?.type === 'store:saveChannelAutoApply'),
+        `with no level known only the flag is written and the gain stays (${ytcv.state.currentGain} / ${JSON.stringify(entryNow())})`);
+
+      // A write that fails puts the stored gain back before it answers.
+      onAir({ autoLive: false, entry: { gainLive: 0.5, autoApplyLoudnessLive: false } });
+      liveAnswer(-24.8);
+      await settle();
+      chrome.storage.local.set = () => Promise.reject(new Error('storage write failed'));
+      const refused = await popupGesture({ type: 'setAutoApplyLoudness', enabled: true });
+      await settle();
+      chrome.storage.local.set = realSet;
+      assert(refused?.ok === false && refused?.reason === 'request failed',
+        `a write that fails is answered as failed (${JSON.stringify(refused)})`);
+      assert(ytcv.state.currentGain === 0.5 && entryNow().gainLive === 0.5 && entryNow().autoApplyLoudnessLive === false,
+        `and the stored gain plays again (${ytcv.state.currentGain} / ${JSON.stringify(entryNow())})`);
+
+      // A flag written alone that fails moves no gain: nothing was played
+      // ahead of it.
+      onAir({ autoLive: false, entry: { gainLive: 0.5, autoApplyLoudnessLive: false } });
+      liveAnswer(null);
+      await settle();
+      ytcv._set('currentGain', 0.9);
+      chrome.storage.local.set = () => Promise.reject(new Error('storage write failed'));
+      const flagRefused = await popupGesture({ type: 'setAutoApplyLoudness', enabled: true });
+      await settle();
+      chrome.storage.local.set = realSet;
+      assert(flagRefused?.ok === false && flagRefused?.reason === 'request failed' && ytcv.state.currentGain === 0.9,
+        `a flag alone that fails is answered as failed, with the gain where it was (${JSON.stringify(flagRefused)} / ${ytcv.state.currentGain})`);
+    }
+
     // Leave nothing following for the cases after these.
     onAir({ autoLive: false });
     ytcv._set('currentIsLiveNow', false);
