@@ -327,6 +327,23 @@ function calcGain(loudnessDb, targetLufs) {
   return Math.max(0, Math.min(6, gain));
 }
 
+// A live stream's own level, as the player names it, is an absolute one
+// YouTube has not normalized, so the gain takes it to the target as it stands.
+function calcLiveGain(liveLkfs, targetLufs) {
+  const compensationDb = targetLufs - liveLkfs;
+  const gain = Math.pow(10, compensationDb / 20);
+  if (!isFinite(compensationDb) || !isFinite(gain)) return 1.0;
+  return Math.max(0, Math.min(6, gain));
+}
+
+// How far apart two gains are, in dB. A gain that is not a positive finite
+// number is taken as infinitely far from any other.
+function gainChangeDb(gain, baselineGain) {
+  const usable = (value) => typeof value === 'number' && Number.isFinite(value) && value > 0;
+  if (!usable(gain) || !usable(baselineGain)) return Infinity;
+  return Math.abs(20 * Math.log10(gain / baselineGain));
+}
+
 // A gain held against the base rendition (the plain audio the player
 // response describes), multiplied by this, is the gain for the rendition
 // playing, so that both come out at the same level. Where either level is not

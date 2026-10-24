@@ -225,6 +225,33 @@ globalThis.AudioContext = class {
   }
 };
 
+// The live follow asks content.js's page for a level every 30 s. Its timer is
+// held here rather than left to fire into whichever case is running half a
+// minute later, and a case runs it when it means to. Every other delay passes
+// through as it is.
+const LIVE_FOLLOW_MS = 30000;
+const heldLiveFollows = [];
+const passedSetTimeout = globalThis.setTimeout;
+const passedClearTimeout = globalThis.clearTimeout;
+globalThis.setTimeout = (fn, ms, ...args) => {
+  if (ms !== LIVE_FOLLOW_MS) return passedSetTimeout(fn, ms, ...args);
+  const held = { fn, ms };
+  heldLiveFollows.push(held);
+  return held;
+};
+globalThis.clearTimeout = (timer) => {
+  const at = heldLiveFollows.indexOf(timer);
+  if (at > -1) { heldLiveFollows.splice(at, 1); return; }
+  passedClearTimeout(timer);
+};
+// Runs the follows held now (not ones they set) and hands back how many ran.
+async function runLiveFollows() {
+  const due = heldLiveFollows.splice(0);
+  for (const timer of due) timer.fn();
+  await tick();
+  return due.length;
+}
+
 // ── Load content.js ──────────────────────────────────────────────────
 
 globalThis.__TEST_YTCV__ = true;
@@ -624,7 +651,8 @@ function makePopup({ tabUrl = 'https://www.youtube.com/watch?v=abc', answer = nu
       querySelectorAll: (selector) => (selector === '.presets button' ? presets : [])
     },
     chrome: {
-      i18n: { getMessage: (key) => key },
+      // The key, followed by what it was handed to put into the message.
+      i18n: { getMessage: (key, substitutions) => [key].concat(substitutions ?? []).join(' ') },
       tabs: {
         query: async () => (tabUrl === null ? [] : [{ id: 9, url: tabUrl }]),
         // Chrome refuses a message addressed to no tab rather than delivering
@@ -4434,6 +4462,76 @@ async function runTests() {
     assert(none.last()?.baseLoudnessDb === null, `asked, still none (${none.last()?.baseLoudnessDb})`);
   }
 
+  section('Live level: the level the player names on air goes with the answer');
+  {
+    // A stream on air: the response describes no level of its own.
+    const onAirResponse = () => playerResponse({ loudnessDb: undefined, isLiveContent: true, isLive: true });
+    const answerFor = async (stats) => {
+      const bridge = createBridge({ manualTimers: true });
+      const pr = onAirResponse();
+      bridge.setMoviePlayer(pr, { getStatsForNerds: () => stats });
+      bridge.assign(pr);
+      const defined = bridge.last();
+      await bridge.fetchPlayer(pr);
+      const fetched = bridge.last();
+      await bridge.request();
+      return { defined, fetched, asked: bridge.last(), bridge };
+    };
+
+    const onAir = await answerFor(statsFor('100%/100% (live.-24.8dB)'));
+    for (const [route, answer] of [['define', onAir.defined], ['fetch', onAir.fetched], ['request', onAir.asked]]) {
+      assert(answer?.source === route && answer?.liveLkfs === -24.8,
+        `${route}: the live level is answered as named (${answer?.source} / ${answer?.liveLkfs})`);
+      assert(answer?.loudnessDb === null,
+        `${route}: and the level the response describes is left as it was (${answer?.loudnessDb})`);
+    }
+    assert(onAir.bridge.pendingTimers() === 0,
+      `with the live level in hand nothing is looked at again (${onAir.bridge.pendingTimers()})`);
+    const whole = await answerFor(statsFor('100%/100% (live.-16dB)'));
+    assert(whole.asked?.liveLkfs === -16, `a level with no decimals is read too (${whole.asked?.liveLkfs})`);
+
+    for (const [what, stats] of [
+      ['during an ad, which names another video', statsFor('100%/100% (live.-24.8dB)', { id: 'someOtherId' })],
+      ['before the player names its formats', statsFor('100%/100% (live.-24.8dB)', { codecs: '' })],
+      ['on a line that names no live level', statsFor('100%/100%')]
+    ]) {
+      const answered = await answerFor(stats);
+      assert(answered.asked?.liveLkfs === null && answered.defined?.liveLkfs === null,
+        `${what}, no live level is answered (${answered.asked?.liveLkfs})`);
+    }
+
+    // A video's own level is not a live one.
+    const vod = await answerFor(statsFor('100%/95% (cont.-13.6dB tgt.-14.0dB)'));
+    assert(vod.asked?.liveLkfs === null && near(vod.asked?.loudnessDb, 0.4),
+      `a cont. level is the rendition's, and not a live level (${vod.asked?.liveLkfs} / ${vod.asked?.loudnessDb})`);
+  }
+
+  section('Live level: the looking answers again once the player names it, and stops');
+  {
+    const bridge = createBridge({ manualTimers: true });
+    const pr = playerResponse({ loudnessDb: undefined, isLiveContent: true, isLive: true });
+    bridge.assign(pr);
+    let stats = statsFor('100%/100%', { codecs: '' });
+    bridge.setMoviePlayer(pr, { getStatsForNerds: () => stats });
+    await bridge.request();
+    assert(bridge.pendingTimers() === 1, `a look is pending (${bridge.pendingTimers()})`);
+    const before = bridge.posted.length;
+    await bridge.runTimers();
+    assert(bridge.posted.length === before, `nothing is answered before the level is named (${bridge.posted.length - before})`);
+
+    stats = statsFor('100%/100% (live.-16.0dB)');
+    await bridge.runTimers();
+    assert(bridge.posted.length === before + 1 && bridge.last()?.source === 'playing' && bridge.last()?.liveLkfs === -16,
+      `answered once the live level is named, saying why (${bridge.posted.length - before} / ${bridge.last()?.source} / ${bridge.last()?.liveLkfs})`);
+    assert(bridge.pendingTimers() === 0, `and the looking stops (${bridge.pendingTimers()})`);
+
+    // The live level gone again: an answer without it looks once more.
+    stats = statsFor('100%/100%');
+    await bridge.request();
+    assert(bridge.last()?.liveLkfs === null && bridge.pendingTimers() === 1,
+      `a line that lost it is answered with none, and looked at again (${bridge.last()?.liveLkfs} / ${bridge.pendingTimers()})`);
+  }
+
   section('Stable volume: what the popup-open dump reports');
   {
     const bridge = createBridge({ stored: { [DRC_PREF]: storedPref(0) } });
@@ -7020,7 +7118,8 @@ async function runTests() {
   {
     // Every tab's saves and the popup's own broadcasts share one channel. The
     // worker answers the saves; a message it does not own has to be left for
-    // whoever does, unclaimed and unanswered.
+    // whoever does, unclaimed and unanswered. Chrome keeps the port open where
+    // any one listener claims the message, so each listener is asked.
     const notMine = [
       { type: 'stateChanged', gain: 1 },
       { type: 'store:noSuchWrite' },
@@ -7029,9 +7128,10 @@ async function runTests() {
     ];
     for (const message of notMine) {
       let answered = 'nothing';
-      let claimed = null;
+      let claimed = false;
       for (const fn of mockWorkerListeners) {
-        claimed = fn(message, {}, (payload) => { answered = payload; });
+        const kept = fn(message, {}, (payload) => { answered = payload; });
+        if (kept !== false) claimed = kept;
       }
       assert(claimed === false,
         `${JSON.stringify(message)} is not claimed by the worker (${claimed})`);
@@ -7043,7 +7143,7 @@ async function runTests() {
     let ownAnswer;
     let ownClaimed = null;
     for (const fn of mockWorkerListeners) {
-      ownClaimed = fn({ type: 'store:clearChannels' }, {}, (payload) => { ownAnswer = payload; });
+      if (fn({ type: 'store:clearChannels' }, {}, (payload) => { ownAnswer = payload; }) === true) ownClaimed = true;
     }
     assert(ownClaimed === true, 'a write it owns is claimed');
     for (let turn = 0; turn < 6; turn++) await tick();
@@ -7955,6 +8055,476 @@ async function runTests() {
       `no message carries the new level beside the gain from before it (${JSON.stringify(told.map((m) => [m.loudnessDb, m.gain]))})`);
     assert(told.some((m) => m.loudnessDb === -6),
       `and the level does reach the popup (${JSON.stringify(told.map((m) => [m.loudnessDb, m.gain]))})`);
+  }
+
+  // ── A live stream's own level, followed while it is on air ───────────
+  {
+    const LIVE_CH = 'UCliveFollow';
+    const LIVE_URL = 'https://www.youtube.com/channel/' + LIVE_CH;
+    const LIVE_VID = 'liveFollowVid';
+    const close = (a, b) => typeof a === 'number' && Math.abs(a - b) < 1e-9;
+    const liveGain = (lkfs, target = -18) => Math.max(0, Math.min(6, Math.pow(10, (target - lkfs) / 20)));
+    const settle = async () => { for (let turn = 0; turn < 3; turn++) await tick(); };
+    const entryNow = () => mockStorage['channelVolumes'][LIVE_CH];
+    const liveSaves = () => mockSentMessages.filter((m) => m?.type === 'store:saveChannelGain' && m.channelId === LIVE_CH);
+    // A tab on a stream, with the follow from any case before this one ended.
+    const onAir = ({ type = 'live', isLiveNow = true, autoLive = true, autoVideo = false, entry = {} } = {}) => {
+      ytcv._set('currentAutoApplyLoudnessVideo', false);
+      ytcv._set('currentAutoApplyLoudnessLive', false);
+      ytcv._set('currentLiveLkfs', null);
+      ytcv._set('currentIsLiveNow', false);
+      ytcv.syncLiveFollow();
+      mockStorage['channelVolumes'] = { [LIVE_CH]: { name: 'Live Follow', url: LIVE_URL, ...entry } };
+      setURL('/watch', LIVE_VID);
+      mockPostMessageHandler = null;
+      ytcv._set('storageReady', Promise.resolve());
+      ytcv._set('storageMigrated', true);
+      ytcv._set('storageSettled', true);
+      ytcv._set('_lastVideoId', LIVE_VID);
+      ytcv._set('_lastProcessedVideo', mockVideoEl);
+      ytcv._set('_applyRunning', false);
+      ytcv._set('currentChannel', { id: LIVE_CH, name: 'Live Follow', url: LIVE_URL });
+      ytcv._set('currentChannelVideoId', LIVE_VID);
+      ytcv._set('currentLoudnessVideoId', LIVE_VID);
+      ytcv._set('currentLoudnessDb', null);
+      ytcv._set('currentBaseLoudnessDb', null);
+      ytcv._set('liveSaveBaseline', null);
+      ytcv._set('currentVideoType', type);
+      ytcv._set('currentVideoTypeDetected', true);
+      ytcv._set('currentIsLiveNow', isLiveNow);
+      ytcv._set('currentAutoApplyLoudnessLive', autoLive);
+      ytcv._set('currentAutoApplyLoudnessVideo', autoVideo);
+      ytcv._set('defaultAutoApplyLoudnessLive', false);
+      ytcv._set('defaultAutoApplyLoudnessVideo', false);
+      ytcv._set('targetLufs', -18);
+      ytcv._set('currentGain', 1.0);
+      mockSentMessages.length = 0;
+    };
+    // What the bridge sends for the stream: no level of the response's own,
+    // and the live level the player names, if it names one.
+    const liveAnswer = (liveLkfs, over = {}) => simulateBridgeMessage({
+      videoId: LIVE_VID, loudnessDb: null, baseLoudnessDb: null,
+      isLiveContent: true, isLiveNow: true, channelId: LIVE_CH, author: 'Live Follow',
+      liveLkfs, source: 'request', ...over
+    });
+
+    section('Live level: Auto plays the level the player names on air, as it stands');
+    {
+      onAir({ entry: { autoApplyLoudnessLive: true } });
+      liveAnswer(-10);
+      await settle();
+      assert(close(ytcv.state.currentGain, Math.pow(10, -8 / 20)),
+        `live -10 against -18 is 8 dB down (${ytcv.state.currentGain})`);
+      assert(!close(ytcv.state.currentGain, calcGain(-10 - YT_REFERENCE_LUFS, -18)),
+        `and not where YouTube's normalization would put it (${ytcv.state.currentGain})`);
+      assert(ytcv.state.currentLiveLkfs === -10, `the level is held (${ytcv.state.currentLiveLkfs})`);
+
+      liveAnswer(-24.8, { loudnessDb: -6, baseLoudnessDb: -6 });
+      await settle();
+      assert(close(ytcv.state.currentGain, liveGain(-24.8)),
+        `a live level goes before a level the response describes (${ytcv.state.currentGain})`);
+
+      // A field of another type counts as absent.
+      for (const odd of ['-20', NaN, Infinity, true]) {
+        liveAnswer(odd);
+        await settle();
+        assert(ytcv.state.currentLiveLkfs === null, `a live level of ${String(odd)} is not taken (${ytcv.state.currentLiveLkfs})`);
+      }
+    }
+
+    section('Live level: followed every 30 s while it is on air');
+    {
+      onAir({ entry: { autoApplyLoudnessLive: true } });
+      liveAnswer(-24.8);
+      await settle();
+      assert(heldLiveFollows.length === 1 && heldLiveFollows[0].ms === LIVE_FOLLOW_MS,
+        `one follow waits 30 s (${heldLiveFollows.map((t) => t.ms)})`);
+
+      let next = -23.0;
+      mockPostMessageHandler = (data) => {
+        if (data?.type === '__yt_channel_volume_request__') liveAnswer(next);
+      };
+      mockPostMessages.length = 0;
+      const ran = await runLiveFollows();
+      await settle();
+      assert(ran === 1 && mockPostMessages.filter((m) => m?.type === '__yt_channel_volume_request__').length === 1,
+        `the follow asks the bridge once (${ran} / ${mockPostMessages.length})`);
+      assert(close(ytcv.state.currentGain, liveGain(-23)),
+        `and the level it answers with is played (${ytcv.state.currentGain})`);
+      assert(heldLiveFollows.length === 1, `with the next follow set (${heldLiveFollows.length})`);
+
+      next = -21.5;
+      await runLiveFollows();
+      await settle();
+      assert(close(ytcv.state.currentGain, liveGain(-21.5)) && heldLiveFollows.length === 1,
+        `and again 30 s on (${ytcv.state.currentGain} / ${heldLiveFollows.length})`);
+
+      // A follow the bridge does not answer still sets the next one.
+      mockPostMessageHandler = null;
+      await runLiveFollows();
+      assert(heldLiveFollows.length === 1, `an unanswered follow sets the next (${heldLiveFollows.length})`);
+    }
+
+    section('Live level: what the follow runs for, and what ends it');
+    {
+      // An archive: not on air, and no live level.
+      onAir({ isLiveNow: false, entry: { autoApplyLoudnessLive: true } });
+      liveAnswer(null, { isLiveNow: false });
+      await settle();
+      assert(heldLiveFollows.length === 0, `an archive is not followed (${heldLiveFollows.length})`);
+
+      // On air before the player names a level.
+      liveAnswer(null);
+      await settle();
+      assert(heldLiveFollows.length === 1, `a stream on air is followed before it names a level (${heldLiveFollows.length})`);
+
+      // A live level with the stream not said to be on air.
+      onAir({ isLiveNow: false, entry: { autoApplyLoudnessLive: true } });
+      liveAnswer(-20, { isLiveNow: false });
+      await settle();
+      assert(heldLiveFollows.length === 1, `a live level is followed on its own (${heldLiveFollows.length})`);
+
+      // Leaving the watch page.
+      setURL('/results', '');
+      fireNavigateFinish();
+      await settle();
+      assert(heldLiveFollows.length === 0, `leaving the watch page ends it (${heldLiveFollows.length})`);
+
+      // Auto going off in another tab.
+      onAir({ entry: { autoApplyLoudnessLive: true } });
+      liveAnswer(-20);
+      await settle();
+      assert(heldLiveFollows.length === 1, `followed again (${heldLiveFollows.length})`);
+      const offEntry = { name: 'Live Follow', url: LIVE_URL, gainLive: 0.5, autoApplyLoudnessLive: false };
+      mockStorage['channelVolumes'] = { [LIVE_CH]: offEntry };
+      simulateStorageChange({
+        channelVolumes: {
+          oldValue: { [LIVE_CH]: { name: 'Live Follow', url: LIVE_URL, autoApplyLoudnessLive: true } },
+          newValue: { [LIVE_CH]: offEntry }
+        }
+      });
+      await settle();
+      assert(heldLiveFollows.length === 0 && ytcv.state.currentGain === 0.5,
+        `Auto going off ends it and the saved gain plays (${heldLiveFollows.length} / ${ytcv.state.currentGain})`);
+
+      // Auto going off from this tab's popup.
+      onAir({ entry: { autoApplyLoudnessLive: true } });
+      liveAnswer(-20);
+      await settle();
+      const toggled = await popupGesture({ type: 'setAutoApplyLoudness', enabled: false });
+      await settle();
+      assert(toggled?.ok === true && heldLiveFollows.length === 0,
+        `and so does the popup's toggle (${JSON.stringify(toggled?.ok)} / ${heldLiveFollows.length})`);
+    }
+
+    section('Live level: what is stored, and when');
+    {
+      // Auto inherited from the all-channel default, over a gain held against
+      // the plain rendition.
+      onAir({ autoLive: true, entry: { gainLive: 0.3, gainLivePlain: true } });
+      ytcv._set('defaultAutoApplyLoudnessLive', true);
+      liveAnswer(-24.8);
+      await settle();
+      assert(liveSaves().length === 1, `the first level is stored (${liveSaves().length})`);
+      assert(close(entryNow().gainLive, liveGain(-24.8)), `as the live gain (${entryNow().gainLive})`);
+      assert(!('gainLivePlain' in entryNow()), 'to play as it is, with the mark it had taken off');
+      assert(!('autoApplyLoudnessLive' in entryNow()) && !('autoApplyLoudnessVideo' in entryNow()),
+        `with no Auto flag written, so the channel goes on following the default (${JSON.stringify(entryNow())})`);
+      assert(entryNow().name === 'Live Follow' && entryNow().url === LIVE_URL, 'under the channel being watched');
+
+      liveAnswer(-24.0);
+      await settle();
+      assert(liveSaves().length === 1 && close(ytcv.state.currentGain, liveGain(-24.0)),
+        `0.8 dB is played and not stored (${liveSaves().length} / ${ytcv.state.currentGain})`);
+      assert(close(entryNow().gainLive, liveGain(-24.8)), `the stored gain stays (${entryNow().gainLive})`);
+
+      // Measured from what was stored, not from the last level played.
+      liveAnswer(-23.7);
+      await settle();
+      assert(liveSaves().length === 2 && close(entryNow().gainLive, liveGain(-23.7)),
+        `1.1 dB from the stored gain is stored, though 0.3 dB from the last (${liveSaves().length} / ${entryNow().gainLive})`);
+      liveAnswer(-24.8);
+      await settle();
+      assert(liveSaves().length === 3 && close(entryNow().gainLive, liveGain(-24.8)),
+        `and 1.1 dB the other way (${liveSaves().length} / ${entryNow().gainLive})`);
+
+      // The target moving moves the gain with it.
+      simulateStorageChange({
+        autoLoudnessSettings: { newValue: { targetLufs: -20, autoApplyLoudnessLiveDefault: true } }
+      });
+      await settle();
+      assert(liveSaves().length === 4 && close(entryNow().gainLive, liveGain(-24.8, -20)),
+        `a new target is stored (${liveSaves().length} / ${entryNow().gainLive})`);
+
+      // A write that fails is tried again by the next evaluation.
+      const setBefore = chrome.storage.local.set;
+      chrome.storage.local.set = () => Promise.reject(new Error('storage write failed'));
+      liveAnswer(-21);
+      await settle();
+      assert(liveSaves().length === 5 && close(entryNow().gainLive, liveGain(-24.8, -20)),
+        `a write that fails leaves the stored gain (${liveSaves().length} / ${entryNow().gainLive})`);
+      assert(close(ytcv.state.currentGain, liveGain(-21, -20)), `and the level still plays (${ytcv.state.currentGain})`);
+      chrome.storage.local.set = setBefore;
+      liveAnswer(-21);
+      await settle();
+      assert(liveSaves().length === 6 && close(entryNow().gainLive, liveGain(-21, -20)),
+        `the next one tries again, and lands (${liveSaves().length} / ${entryNow().gainLive})`);
+
+      // Before the fold has landed nothing is stored.
+      ytcv._set('storageMigrated', false);
+      liveAnswer(-17);
+      await settle();
+      assert(liveSaves().length === 6 && close(ytcv.state.currentGain, liveGain(-17, -20)),
+        `before the fold the level plays and is not stored (${liveSaves().length} / ${ytcv.state.currentGain})`);
+      const beforeFold = await ytcv.evaluateLiveSave('check');
+      assert(beforeFold.decision === 'delta' && beforeFold.saved === false && beforeFold.reason === 'before fold',
+        `and the evaluation says why (${JSON.stringify(beforeFold)})`);
+      ytcv._set('storageMigrated', true);
+
+      // One write at a time.
+      const holdSet = chrome.storage.local.set;
+      let releaseSet = null;
+      chrome.storage.local.set = (obj) => new Promise((resolve) => { releaseSet = () => resolve(holdSet(obj)); });
+      ytcv._set('currentLiveLkfs', -15);
+      const first = ytcv.evaluateLiveSave('first');
+      await settle();
+      const second = await ytcv.evaluateLiveSave('second');
+      assert(second.saved === false && second.reason === 'save in flight' && liveSaves().length === 7,
+        `a second write is not sent while one is out (${JSON.stringify(second)} / ${liveSaves().length})`);
+      chrome.storage.local.set = holdSet;
+      releaseSet();
+      const firstDone = await first;
+      assert(firstDone.decision === 'delta' && firstDone.saved === true && firstDone.ok === true && firstDone.source === 'first',
+        `the one that was out lands (${JSON.stringify(firstDone)})`);
+      assert(close(firstDone.gain, liveGain(-15, -20)) && close(firstDone.baselineGain, liveGain(-21, -20))
+        && close(firstDone.deltaDb, 6),
+        `and says what it compared (${firstDone.gain} / ${firstDone.baselineGain} / ${firstDone.deltaDb})`);
+      const under = await ytcv.evaluateLiveSave('under');
+      assert(under.decision === 'skip' && under.saved === false && under.ok === null && close(under.deltaDb, 0),
+        `the same level again is a skip (${JSON.stringify(under)})`);
+
+      // Another video is a first level again.
+      setURL('/watch', 'liveFollowVid2');
+      const opened = await ytcv.evaluateLiveSave('open');
+      assert(opened.decision === 'open' && opened.saved === true && opened.ok === true && opened.baselineGain === null,
+        `another video's first level is stored whatever it is (${JSON.stringify(opened)})`);
+      setURL('/watch', LIVE_VID);
+
+      // A level lost falls back to the gain stored.
+      ytcv._set('liveSaveBaseline', { videoId: LIVE_VID, gain: liveGain(-21, -20) });
+      ytcv._set('currentLiveLkfs', -21);
+      liveAnswer(-20.5);
+      await settle();
+      assert(close(ytcv.state.currentGain, liveGain(-20.5, -20)), `a level close by plays (${ytcv.state.currentGain})`);
+      const storedBeforeLoss = entryNow().gainLive;
+      liveAnswer(null);
+      await settle();
+      assert(ytcv.state.currentLiveLkfs === null && close(ytcv.state.currentGain, storedBeforeLoss)
+        && !close(storedBeforeLoss, liveGain(-20.5, -20)),
+        `an answer without a live level plays the stored gain (${ytcv.state.currentLiveLkfs} / ${ytcv.state.currentGain} / ${storedBeforeLoss})`);
+      assert(heldLiveFollows.length === 1, `and the stream is still followed (${heldLiveFollows.length})`);
+      ytcv._set('targetLufs', -18);
+
+      // A navigation to another video forgets what was stored for this one.
+      ytcv._set('liveSaveBaseline', { videoId: LIVE_VID, gain: 1 });
+      setURL('/watch', 'liveFollowVid3');
+      await ytcv.applyVideoVolume();
+      assert(ytcv.state.liveSaveBaseline === null && ytcv.state.currentLiveLkfs === null,
+        `a new video starts with nothing stored and no live level (${JSON.stringify(ytcv.state.liveSaveBaseline)} / ${ytcv.state.currentLiveLkfs})`);
+      // The apply goes on asking the bridge until it answers.
+      simulateBridgeMessage({ videoId: 'liveFollowVid3', isLiveContent: true, isLiveNow: false, channelId: LIVE_CH });
+      await settle();
+    }
+
+    section('Live level: a change is measured to the 0.1 dB the player names');
+    {
+      onAir({ entry: { autoApplyLoudnessLive: true } });
+      ytcv._set('targetLufs', -30);
+      liveAnswer(-45.5);
+      await settle();
+      assert(liveSaves().length === 1, `the first level is stored (${liveSaves().length})`);
+      // The two gains are 1.0 dB apart as the player names them, and a hair
+      // under it as the arithmetic comes out.
+      const exact = gainChangeDb(liveGain(-44.5, -30), liveGain(-45.5, -30));
+      assert(exact < 1 && exact > 0.999, `the exact change falls just short of 1 dB (${exact})`);
+      liveAnswer(-44.5);
+      await settle();
+      assert(liveSaves().length === 2 && close(entryNow().gainLive, liveGain(-44.5, -30)),
+        `a change the player names as 1.0 dB is stored (${liveSaves().length} / ${entryNow().gainLive})`);
+
+      // Measured from -44.5 stored, whether or not the line above stored it.
+      ytcv._set('liveSaveBaseline', { videoId: LIVE_VID, gain: liveGain(-44.5, -30) });
+      const savesBefore = liveSaves().length;
+      ytcv._set('currentLiveLkfs', -43.6);
+      const under = await ytcv.evaluateLiveSave('check');
+      assert(under.decision === 'skip' && under.deltaDb === 0.9 && under.saved === false && liveSaves().length === savesBefore,
+        `0.9 dB is a skip, and says 0.9 (${JSON.stringify(under)} / ${liveSaves().length})`);
+      // And a 0.9 dB change whose arithmetic comes out a hair over it.
+      ytcv._set('liveSaveBaseline', { videoId: LIVE_VID, gain: liveGain(-45.2, -30) });
+      ytcv._set('currentLiveLkfs', -44.3);
+      const over = gainChangeDb(liveGain(-44.3, -30), liveGain(-45.2, -30));
+      const nearly = await ytcv.evaluateLiveSave('check');
+      assert(over > 0.9 && nearly.decision === 'skip' && nearly.deltaDb === 0.9 && liveSaves().length === savesBefore,
+        `0.9 dB a hair over is a skip too (${over} / ${JSON.stringify(nearly)})`);
+      ytcv._set('liveSaveBaseline', { videoId: LIVE_VID, gain: liveGain(-44.5, -30) });
+      ytcv._set('currentLiveLkfs', -43.5);
+      const at = await ytcv.evaluateLiveSave('check');
+      assert(at.decision === 'delta' && at.deltaDb === 1 && at.saved === true && at.ok === true,
+        `1.0 dB is a delta, and says 1 (${JSON.stringify(at)})`);
+      ytcv._set('targetLufs', -18);
+    }
+
+    section('Live level: an evaluation stores nothing it is not following');
+    {
+      onAir({ entry: { autoApplyLoudnessLive: true } });
+      ytcv._set('currentLiveLkfs', -20);
+      const watched = { id: LIVE_CH, name: 'Live Follow', url: LIVE_URL };
+      const idBefore = chrome.runtime.id;
+      for (const [what, take, give] of [
+        ['with no channel', () => ytcv._set('currentChannel', { id: '', name: '', url: '' }), () => ytcv._set('currentChannel', watched)],
+        ['with Auto off', () => ytcv._set('currentAutoApplyLoudnessLive', false), () => ytcv._set('currentAutoApplyLoudnessLive', true)],
+        ['with no live level', () => ytcv._set('currentLiveLkfs', null), () => ytcv._set('currentLiveLkfs', -20)],
+        ['with the extension reloaded', () => { chrome.runtime.id = undefined; }, () => { chrome.runtime.id = idBefore; }]
+      ]) {
+        take();
+        const result = await ytcv.evaluateLiveSave(what);
+        give();
+        await settle();
+        assert(result.saved === false && result.reason === 'not following' && liveSaves().length === 0,
+          `${what} nothing is stored (${JSON.stringify(result)} / ${liveSaves().length})`);
+      }
+      // With all four in place it is.
+      const control = await ytcv.evaluateLiveSave('control');
+      assert(control.saved === true && control.ok === true && liveSaves().length === 1,
+        `with all of them in place it is stored (${JSON.stringify(control)} / ${liveSaves().length})`);
+
+      // The apply is over once what it stores has landed.
+      onAir({ entry: { autoApplyLoudnessLive: true } });
+      ytcv._set('currentLiveLkfs', -22);
+      await ytcv.applyPreferredGain();
+      assert(close(entryNow().gainLive, liveGain(-22)),
+        `the apply returns with the live gain stored (${entryNow().gainLive})`);
+    }
+
+    section('Live level: with Auto off it is shown, not followed or stored');
+    {
+      onAir({ autoLive: false, entry: { gainLive: 0.5, gainLivePlain: true, autoApplyLoudnessLive: false } });
+      liveAnswer(-24.8, { loudnessDb: -6, baseLoudnessDb: -6 });
+      await settle();
+      assert(ytcv.state.currentGain === 0.5, `the saved gain plays (${ytcv.state.currentGain})`);
+      assert(liveSaves().length === 0 && heldLiveFollows.length === 0,
+        `nothing is stored or followed (${liveSaves().length} / ${heldLiveFollows.length})`);
+      const shown = ytcv.getState();
+      assert(shown.liveLkfs === -24.8 && shown.contentLufs === -24.8,
+        `the popup is given the live level as the Loudness (${shown.liveLkfs} / ${shown.contentLufs})`);
+      const preview = await popupGesture({ type: 'setGainLive', gain: 0.6 });
+      assert(preview?.ok === true, `the manual controls are free (${JSON.stringify(preview)})`);
+
+      const applied = await popupGesture({ type: 'applyLoudness' });
+      await settle();
+      assert(applied?.ok === true && close(applied.gain, liveGain(-24.8)),
+        `Apply to channel takes the live level over the response's (${JSON.stringify(applied)})`);
+      assert(close(entryNow().gainLive, liveGain(-24.8)) && !('gainLivePlain' in entryNow()),
+        `and stores it to play as it is (${JSON.stringify(entryNow())})`);
+      assert(entryNow().autoApplyLoudnessLive === false,
+        `as a manual choice, with the Auto state written (${entryNow().autoApplyLoudnessLive})`);
+      assert(close(ytcv.state.currentGain, liveGain(-24.8)), `and plays it (${ytcv.state.currentGain})`);
+    }
+
+    section('Live level: it takes the manual controls while Auto applies it');
+    {
+      onAir({ entry: { autoApplyLoudnessLive: true } });
+      liveAnswer(-24.8);
+      await settle();
+      const preview = await popupGesture({ type: 'setGainLive', gain: 2 });
+      const save = await popupGesture({ type: 'setGain', gain: 2 });
+      assert(preview?.ok === false && preview?.reason === 'auto apply controls current gain'
+        && save?.ok === false && save?.reason === 'auto apply controls current gain',
+        `the slider and the presets are refused (${JSON.stringify(preview)} / ${JSON.stringify(save)})`);
+      assert(close(ytcv.state.currentGain, liveGain(-24.8)), `and the live gain stays (${ytcv.state.currentGain})`);
+    }
+
+    section('Live level: the popup is shown it, and told when it moves');
+    {
+      onAir({ entry: { autoApplyLoudnessLive: true } });
+      ytcv._set('targetLufs', -6);
+      liveAnswer(-40);
+      await settle();
+      mockSentMessages.length = 0;
+      liveAnswer(-41);
+      await settle();
+      const told = mockSentMessages.filter((m) => m?.type === 'stateChanged');
+      assert(ytcv.state.currentGain === 6 && told.some((m) => m.liveLkfs === -41 && m.contentLufs === -41),
+        `a level that moves under a gain held at its limit still reaches the popup (${JSON.stringify(told.map((m) => [m.liveLkfs, m.gain]))})`);
+      ytcv._set('targetLufs', -18);
+
+      const drawnIn = (popup, id) => popup.node(id).textContent
+        + (popup.node(id).children[0] ? popup.node(id).children[0].textContent : '');
+      const popup = makePopup({
+        answer: async () => ({
+          isWatchPage: true,
+          channel: { id: LIVE_CH, name: 'Live Follow', url: '' },
+          appliesTo: LIVE_CH + '|live|' + LIVE_VID,
+          loudnessDb: -6, liveLkfs: -24.8, contentLufs: -24.8, gain: 1.0,
+          targetLufs: -18, videoType: 'live', isLiveNow: true,
+          autoApplyLoudnessVideo: false, autoApplyLoudnessLive: false
+        })
+      });
+      await popup.ready();
+      const suggested = String(gainToPercent(calcLiveGain(-24.8, -18))) + '%';
+      assert(drawnIn(popup, 'contentLufs') === '-24.8 LUFS', `the Loudness is the live level (${drawnIn(popup, 'contentLufs')})`);
+      assert(drawnIn(popup, 'suggestedVol') === suggested,
+        `the suggestion is worked out from it (${drawnIn(popup, 'suggestedVol')} / ${suggested})`);
+      assert(popup.node('applyBtn').disabled === false
+        && popup.node('applyBtn').textContent.startsWith('applyToChannelWithValue ' + suggested),
+        `and Apply to channel offers it (${popup.node('applyBtn').textContent})`);
+      assert(popup.node('fallbackBadge').style.display === 'none', 'a live level is a level detected');
+    }
+
+    section('Live level: the popup on open does not wait for a level in hand');
+    {
+      onAir({ autoLive: false, entry: { autoApplyLoudnessLive: false } });
+      ytcv._set('currentLiveLkfs', -24.8);
+      let asks = 0;
+      mockPostMessageHandler = (data) => {
+        if (data?.type === '__yt_channel_volume_request__') asks += 1;
+      };
+      const answer = await simulateRuntimeMessage({ type: 'forceDetect' });
+      mockPostMessageHandler = null;
+      assert(answer?.liveLkfs === -24.8 && asks === 1,
+        `the live level in hand is answered after one ask (${answer?.liveLkfs} / ${asks})`);
+    }
+
+    section('Live level: a premiere names one too, and Auto for videos follows it');
+    {
+      onAir({ type: 'video', autoLive: false, autoVideo: true, entry: { gainLive: 0.5, autoApplyLoudnessVideo: true } });
+      liveAnswer(-20, { isLiveContent: false });
+      await settle();
+      assert(ytcv.state.currentVideoType === 'video' && close(ytcv.state.currentGain, liveGain(-20)),
+        `it plays as a video, at the live level (${ytcv.state.currentVideoType} / ${ytcv.state.currentGain})`);
+      assert(close(entryNow().gainVideo, liveGain(-20)) && entryNow().gainLive === 0.5,
+        `and is stored as the video gain (${JSON.stringify(entryNow())})`);
+      assert(heldLiveFollows.length === 1, `and followed (${heldLiveFollows.length})`);
+    }
+
+    section('Live level: a gain another tab stored does not displace this tab\'s level');
+    {
+      onAir({ entry: { autoApplyLoudnessLive: true } });
+      liveAnswer(-24.8);
+      await settle();
+      const elsewhere = { name: 'Live Follow', url: LIVE_URL, gainLive: 0.2, autoApplyLoudnessLive: true };
+      simulateStorageChange({
+        channelVolumes: { oldValue: { [LIVE_CH]: entryNow() }, newValue: { [LIVE_CH]: elsewhere } }
+      });
+      await settle();
+      assert(close(ytcv.state.currentGain, liveGain(-24.8)),
+        `this tab goes on playing its own level (${ytcv.state.currentGain})`);
+    }
+
+    // Leave nothing following for the cases after these.
+    onAir({ autoLive: false });
+    ytcv._set('currentIsLiveNow', false);
+    ytcv.syncLiveFollow();
   }
 
   section('The mutation sweep\'s own record');

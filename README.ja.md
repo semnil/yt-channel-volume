@@ -8,7 +8,7 @@ YouTube チャンネルごとに音量を記憶し、動画を開いた時に自
 
 - **チャンネル単位の音量記憶**: 一度設定すれば、同じチャンネルの動画を開くたびに保存済みの音量が自動適用
 - **Content Loudness からの最適音量算出**: YouTube が動画ごとに測定した Content Loudness を読み取り、ターゲット LUFS に基づいて最適なボリュームを算出。ワンクリックでチャンネルに保存
-- **チャンネル別 LUFS 自動適用**: ポップアップには現在視聴中のVideo / Liveに対応するスイッチだけを表示し、チャンネル・種別別にON/OFF。ONの種別ではLUFSを検出できた動画をTarget LUFSに自動調整
+- **チャンネル別 LUFS 自動適用**: ポップアップには現在視聴中のVideo / Liveに対応するスイッチだけを表示し、チャンネル・種別別にON/OFF。ONの種別ではLUFSを検出できた動画をTarget LUFSに自動調整。配信中のライブでは、プレーヤーの詳細統計情報が示すその配信の loudness に合わせ、30 秒ごとに読み直す
 - **全チャンネル既定値**: オプション画面でVideo / Live別にLUFS自動適用の既定値を設定可能。個別Auto設定のないチャンネル・種別が継承
 - **ライブ / 動画で別音量**: 同じチャンネルでもライブ配信 (アーカイブ含む) と通常の動画で異なる音量を設定可能
 - **手動ボリューム調整**: Autoが検出済みLUFSを適用している場合を除き、0〜600% の範囲でスライダーまたはプリセットボタンから設定
@@ -46,7 +46,7 @@ YouTube チャンネルごとに音量を記憶し、動画を開いた時に自
 1. チャンネルの動画を開く
 2. ポップアップに表示された現在のVideo / Live用「LUFS 自動適用」をONにする
 3. LUFS を検出できる動画では Target LUFS に合わせたゲインが自動適用される
-4. LUFS のないライブ配信などでは、保存済みのチャンネル音量が引き続き適用される
+4. 配信中のライブでは、その配信の loudness に合わせ、30 秒ごとに読み直す。loudness を読み取れない場合は、保存済みのチャンネル音量が引き続き適用される
 
 ### 3. 設定
 
@@ -63,7 +63,7 @@ YouTube チャンネルごとに音量を記憶し、動画を開いた時に自
 ```
 page-bridge.js (MAIN world, document_start)
   → ytInitialPlayerResponse / fetch hook / YouTube player DOM
-  → loudnessDb + isLiveContent + channelId を取得
+  → loudnessDb + ライブ配信の loudness + isLiveContent + channelId を取得
   → postMessage で content.js に中継
 
 content.js (ISOLATED world, document_idle)
@@ -82,7 +82,8 @@ background.js (service worker)
 - ゲインが 1.0 (パススルー) の場合はオーディオチェーンを接続しない → Live Caption のちらつきを回避
 - YouTube の CSP が inline script を禁止するため、loudnessDb 抽出は MAIN world の `page-bridge.js` で実行
 - Loudness は、プレーヤーが実際に再生している音声 (音声トラック・「一定音量」・「音声ブースト」を含む。詳細統計情報が示すもの) の値を使う。再生中にプレーヤーが音声を切り替えると読み直す
-- このバージョン以降に保存するチャンネルの音量は動画の通常の音声を基準に持ち、再生中の音声に合わせて換算して適用する。Loudness も「一定音量」もない配信中のライブでは、保存した値をそのまま適用する。配信中のライブや以前のバージョンで保存した音量は、Loudness が分かる動画で保存し直すまで、どの動画にもそのまま適用する
+- 配信中のライブの Loudness は、プレーヤーの詳細統計情報が示すその配信の値を使う。YouTube の正規化を受けていない値なので、そのまま Target LUFS に合わせる。LUFS 自動適用が ON の間は 30 秒ごとに読み直し、1 dB 以上変わったときにチャンネル音量を保存し直す
+- このバージョン以降に保存するチャンネルの音量は動画の通常の音声を基準に持ち、再生中の音声に合わせて換算して適用する。Content Loudness も「一定音量」もない配信中のライブでは、保存した値をそのまま適用する。配信中のライブや以前のバージョンで保存した音量は、Loudness が分かる動画で保存し直すまで、どの動画にもそのまま適用する
 
 ## ビルド
 
@@ -146,7 +147,7 @@ yt-channel-volume/
 
 - **createMediaElementSource**: `<video>` 要素あたり 1 回のみ呼び出し可能。Volume Master 等の他の音量拡張と競合する場合がある
 - **Shorts**: `/shorts/` パスの動画は対象外
-- **ライブ配信の Content Loudness**: 配信中のライブには Content Loudness データがないため、「チャンネルに適用」は使用できない (アーカイブの Loudness から設定するか、手動ボリュームで設定)
+- **ライブ配信の Content Loudness**: 配信中のライブには Content Loudness データがない。代わりにプレーヤーの詳細統計情報から loudness を読むが、そこに表示されない場合は LUFS 自動適用も「チャンネルに適用」も使えない (アーカイブの Loudness から設定するか、手動ボリュームで設定)
 
 ## ライセンス
 

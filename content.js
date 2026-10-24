@@ -55,6 +55,13 @@
   // stable volume. Stored gains are held against it.
   let currentBaseLoudnessDb = null;
   let currentLoudnessVideoId = '';
+  // A live stream's own level (LKFS) as the player names it on air, from the
+  // latest bridge message; null where that message carried none.
+  let currentLiveLkfs = null;
+  // The live gain this page last stored, and for which video. A live gain is
+  // stored again only when it has moved far enough from this one.
+  let liveSaveBaseline = null;
+  let liveSaveInFlight = false;
   let currentGain = 1.0;
   let targetLufs = DEFAULT_TARGET_LUFS;
   let defaultAutoApplyLoudnessVideo = DEFAULT_AUTO_APPLY_LOUDNESS;
@@ -116,7 +123,7 @@
   function isCurrentManualGainLocked() {
     return isManualGainLocked(
       isCurrentAutoApplyEnabled(),
-      currentLoudnessDb !== null
+      currentLoudnessDb !== null || currentLiveLkfs !== null
     );
   }
 
@@ -157,6 +164,15 @@
     return saveChannelGain(
       channelId, name, gain, videoType, url, isCurrentAutoApplyEnabled(videoType)
     );
+  }
+
+  // A gain from a live stream's own level is the gain for what is being
+  // played, so it is stored to play as it is, with any mark the type had taken
+  // off. `autoApply` as above. Its callers hold a channel id already.
+  function saveLiveChannelGain(channelId, name, gain, videoType, url, autoApply) {
+    return requestChannelWrite('saveChannelGain', {
+      channelId, name, gain, videoType, url, autoApply, heldAgainstPlain: false
+    });
   }
 
   function saveChannelAutoApply(channelId, name, enabled, videoType, url) {
@@ -210,6 +226,9 @@
       currentLoudnessDb = db;
       if (hasBase) currentBaseLoudnessDb = baseDb;
     }
+    // Every message says what the player names now, so one without a live
+    // level takes the last one away.
+    currentLiveLkfs = Number.isFinite(event.data.liveLkfs) ? event.data.liveLkfs : null;
     const hasLiveContent = typeof event.data.isLiveContent === 'boolean';
     if (hasLiveContent) {
       currentVideoType = event.data.isLiveContent ? 'live' : 'video';
@@ -262,11 +281,13 @@
         }));
       }
     }
-    if (applyAutomaticLoudnessGain()) {
+    const source = typeof event.data.source === 'string' ? event.data.source : '';
+    if (applyAutomaticLoudnessGain(source)) {
       notifyPopup();
     } else {
-      applyPreferredGain().then(notifyPopup);
+      applyPreferredGain(source).then(notifyPopup);
     }
+    syncLiveFollow();
     const waiters = loudnessWaiters;
     loudnessWaiters = [];
     for (const resolve of waiters) resolve(db);
@@ -284,7 +305,7 @@
         const timer = setTimeout(() => {
           const idx = loudnessWaiters.indexOf(waiterFn);
           if (idx >= 0) loudnessWaiters.splice(idx, 1);
-          if (currentLoudnessDb !== null) {
+          if (currentLoudnessDb !== null || currentLiveLkfs !== null) {
             resolve(currentLoudnessDb);
           } else if (attempts < maxAttempts) {
             attempt();
@@ -302,6 +323,35 @@
       }
       attempt();
     });
+  }
+
+  // While Auto is on for the type being watched and the video is a stream on
+  // air, or the player names a live level for it, the bridge is asked again
+  // every LIVE_FOLLOW_INTERVAL_MS. Its answer goes through the message handler
+  // above, which applies the level and decides whether to store it.
+  const LIVE_FOLLOW_INTERVAL_MS = 30000;
+  let liveFollowTimer = null;
+
+  function shouldFollowLive() {
+    return isWatchPage() && isCurrentAutoApplyEnabled() &&
+      (currentIsLiveNow || currentLiveLkfs !== null);
+  }
+
+  function syncLiveFollow() {
+    if (!shouldFollowLive()) {
+      clearTimeout(liveFollowTimer);
+      liveFollowTimer = null;
+      return;
+    }
+    if (liveFollowTimer === null) {
+      liveFollowTimer = setTimeout(followLive, LIVE_FOLLOW_INTERVAL_MS);
+    }
+  }
+
+  function followLive() {
+    liveFollowTimer = null;
+    requestLoudness();
+    syncLiveFollow();
   }
 
   // ── Gain calculation ───────────────────────────────────────────────
@@ -330,9 +380,20 @@
     return calcGainFromLoudness(currentBaseLoudnessDb ?? currentLoudnessDb);
   }
 
-  function applyAutomaticLoudnessGain() {
+  function calcGainFromLiveLevel() {
+    return calcLiveGain(currentLiveLkfs, targetLufs);
+  }
+
+  function applyAutomaticLoudnessGain(source) {
     // Before the fold, fall through to applyPreferredGain, which waits for it.
     if (!storageSettled) return false;
+    // A live level is what is being played now, and goes before the response's.
+    // What it stores is decided apart from the apply.
+    if (isCurrentAutoApplyEnabled() && currentLiveLkfs !== null) {
+      commitGain(calcGainFromLiveLevel());
+      evaluateLiveSave(source);
+      return true;
+    }
     if (!isCurrentAutoApplyEnabled() || currentLoudnessDb === null) return false;
     const gain = calcGainFromLoudness(currentLoudnessDb);
     const storedGain = calcStoredGainFromLoudness();
@@ -351,7 +412,7 @@
     return true;
   }
 
-  async function applyPreferredGain() {
+  async function applyPreferredGain(source = 'apply') {
     await storageReady;
     const requestedVideoId = getUrlVideoId();
     const requestedChannelId = currentChannel.id;
@@ -368,6 +429,12 @@
 
     setCurrentAutoApplyFromEntry(entry);
     const autoEnabled = isCurrentAutoApplyEnabled(requestedVideoType);
+    syncLiveFollow();
+    if (autoEnabled && currentLiveLkfs !== null) {
+      commitGain(calcGainFromLiveLevel());
+      await evaluateLiveSave(source);
+      return;
+    }
     const hasLoudness = currentLoudnessDb !== null;
     const stored = getChannelGain(entry, requestedVideoType);
     const gain = autoEnabled && hasLoudness
@@ -382,6 +449,54 @@
         requestedVideoType, currentChannel.url
       ));
     }
+  }
+
+  // A live gain moves with the stream, so it is not stored on every apply: the
+  // first one for a video is stored, and after that one that has moved
+  // LIVE_SAVE_STEP_DB or more from the last gain stored, the move taken to the
+  // 0.1 dB the player names levels in. What was decided is handed back as it
+  // stands.
+  const LIVE_SAVE_STEP_DB = 1;
+
+  async function evaluateLiveSave(source) {
+    const videoId = getUrlVideoId();
+    const gain = calcGainFromLiveLevel();
+    const baseline = liveSaveBaseline && liveSaveBaseline.videoId === videoId
+      ? liveSaveBaseline
+      : null;
+    const deltaDb = baseline ? Math.round(gainChangeDb(gain, baseline.gain) * 10) / 10 : null;
+    const result = {
+      decision: !baseline ? 'open' : (deltaDb >= LIVE_SAVE_STEP_DB ? 'delta' : 'skip'),
+      source,
+      gain,
+      baselineGain: baseline ? baseline.gain : null,
+      deltaDb,
+      saved: false,
+      ok: null,
+      reason: null
+    };
+    if (!currentChannel.id || !isCurrentAutoApplyEnabled() ||
+        currentLiveLkfs === null || !isContextValid()) {
+      result.reason = 'not following';
+    } else if (result.decision === 'skip') {
+      result.reason = 'under step';
+    } else if (!storageMigrated) {
+      // A flagless gain stored before the fold reads as a manual save to it.
+      result.reason = 'before fold';
+    } else if (liveSaveInFlight) {
+      result.reason = 'save in flight';
+    } else {
+      liveSaveInFlight = true;
+      result.saved = true;
+      result.ok = false;
+      await nameUnaskedWrite('live gain not stored', saveLiveChannelGain(
+        currentChannel.id, currentChannel.name, gain, currentVideoType, currentChannel.url
+      ).then(() => { result.ok = true; }));
+      liveSaveInFlight = false;
+      if (result.ok) liveSaveBaseline = { videoId, gain };
+      else result.reason = 'write failed';
+    }
+    return result;
   }
 
   // ── Channel detection ──────────────────────────────────────────────
@@ -569,6 +684,7 @@
       currentAutoApplyLoudnessVideo = false;
       currentAutoApplyLoudnessLive = false;
     }
+    if (videoIdChanged) liveSaveBaseline = null;
 
     const ch = detectChannel();
     if (ch.id && !hasEarlyBridgeChannel) currentChannel = ch;
@@ -576,6 +692,7 @@
     if (!hasEarlyBridgeLoudness) {
       currentLoudnessDb = null;
       currentBaseLoudnessDb = null;
+      currentLiveLkfs = null;
       currentLoudnessVideoId = '';
       currentVideoType = 'video';
       currentVideoTypeDetected = false;
@@ -609,14 +726,16 @@
   }
 
   function getState() {
-    const contentLufs = currentLoudnessDb !== null
-      ? YT_REFERENCE_LUFS + currentLoudnessDb
-      : null;
+    // A live level is already an absolute one, and goes before the response's.
+    const contentLufs = currentLiveLkfs !== null
+      ? currentLiveLkfs
+      : (currentLoudnessDb !== null ? YT_REFERENCE_LUFS + currentLoudnessDb : null);
     return {
       appliesTo: currentGestureState(),
       channel: currentChannel,
       gain: currentGain,
       loudnessDb: currentLoudnessDb,
+      liveLkfs: currentLiveLkfs,
       contentLufs,
       targetLufs,
       autoApplyLoudnessVideo: currentAutoApplyLoudnessVideo,
@@ -634,7 +753,7 @@
     // The state a gesture would be made against is part of the key: a video
     // changing under the popup moves nothing else it shows, and the popup has
     // to be given the state that replaced it or its next gesture is refused.
-    const key = state.appliesTo + '|' + state.loudnessDb + '|' + state.gain + '|' + state.channel.id + '|' + state.channel.name + '|' + state.videoType + '|' + state.isLiveNow + '|' + state.autoApplyLoudnessVideo + '|' + state.autoApplyLoudnessLive;
+    const key = state.appliesTo + '|' + state.loudnessDb + '|' + state.liveLkfs + '|' + state.gain + '|' + state.channel.id + '|' + state.channel.name + '|' + state.videoType + '|' + state.isLiveNow + '|' + state.autoApplyLoudnessVideo + '|' + state.autoApplyLoudnessLive;
     if (key === _lastNotifiedState) return;
     _lastNotifiedState = key;
     chrome.runtime.sendMessage({ type: 'stateChanged', ...state }).catch(() => {});
@@ -696,7 +815,12 @@
 
   document.addEventListener('yt-navigate-finish', triggerApply);
   window.addEventListener('popstate', triggerApply);
+  // Leaving a watch page ends the live follow without waiting for an apply,
+  // which a page that is not a watch page does not run.
+  document.addEventListener('yt-navigate-finish', syncLiveFollow);
+  window.addEventListener('popstate', syncLiveFollow);
   document.addEventListener('visibilitychange', () => {
+    syncLiveFollow();
     if (document.visibilityState === 'visible' && isWatchPage() && !_lastProcessedVideo) {
       triggerApply();
     }
@@ -768,15 +892,18 @@
           ? previousAutoApplyLive
           : previousAutoApplyVideo;
         setCurrentAutoApplyFromEntry(entry);
+        syncLiveFollow();
         const currentAutoApply = isCurrentAutoApplyEnabled();
         const currentTypeAutoApplyChanged = previousAutoApply !== currentAutoApply;
         const anyAutoApplyChanged =
           previousAutoApplyVideo !== currentAutoApplyLoudnessVideo ||
           previousAutoApplyLive !== currentAutoApplyLoudnessLive;
         const stored = entry ? getChannelGain(entry, currentVideoType) : 1.0;
-        const gain = currentAutoApply && currentLoudnessDb !== null
-          ? calcGainFromLoudness(currentLoudnessDb)
-          : (stored != null ? storedGainToPlaying(entry, currentVideoType, stored) : stored);
+        // This tab's live level goes before a gain another tab stored.
+        let gain;
+        if (currentAutoApply && currentLiveLkfs !== null) gain = calcGainFromLiveLevel();
+        else if (currentAutoApply && currentLoudnessDb !== null) gain = calcGainFromLoudness(currentLoudnessDb);
+        else gain = stored != null ? storedGainToPlaying(entry, currentVideoType, stored) : stored;
         if (gain == null && !currentTypeAutoApplyChanged) {
           if (anyAutoApplyChanged) notifyPopup();
           return;
@@ -843,16 +970,22 @@
         sendResponse({ ok: false, reason: 'auto apply enabled' });
         return true;
       }
-      if (currentLoudnessDb === null || !currentChannel.id) {
+      if ((currentLoudnessDb === null && currentLiveLkfs === null) || !currentChannel.id) {
         sendResponse({ ok: false, reason: 'no loudness data' });
         return true;
       }
       // The bridge author is authoritative. DOM is only a fallback while the
       // current name is still empty or a channel-ID placeholder.
       fillCurrentChannelNameFromDomFallback();
-      const gain = calcGainFromLoudness(currentLoudnessDb);
+      // A live level goes before the response's, and its gain is stored as it
+      // plays.
+      const live = currentLiveLkfs !== null;
+      const gain = live ? calcGainFromLiveLevel() : calcGainFromLoudness(currentLoudnessDb);
       commitGain(gain);
-      saveManualChannelGain(currentChannel.id, currentChannel.name, calcStoredGainFromLoudness(), currentVideoType, currentChannel.url).then(() => {
+      const saved = live
+        ? saveLiveChannelGain(currentChannel.id, currentChannel.name, gain, currentVideoType, currentChannel.url, isCurrentAutoApplyEnabled(currentVideoType))
+        : saveManualChannelGain(currentChannel.id, currentChannel.name, calcStoredGainFromLoudness(), currentVideoType, currentChannel.url);
+      saved.then(() => {
         notifyPopup();
         sendResponse({ ok: true, gain });
       }).catch(err => {
@@ -1004,6 +1137,7 @@
         return {
           currentChannel, currentChannelVideoId,
           currentGain, currentLoudnessDb, currentBaseLoudnessDb, currentLoudnessVideoId,
+          currentLiveLkfs, liveSaveBaseline, liveSaveInFlight, liveFollowTimer,
           currentVideoType, currentVideoTypeDetected, currentIsLiveNow, showGainOverlay,
           currentAutoApplyLoudnessVideo, currentAutoApplyLoudnessLive,
           storageSettled, storageMigrated,
@@ -1027,6 +1161,8 @@
       saveChannelAutoApply,
       foldLegacyGains,
       applyPreferredGain,
+      evaluateLiveSave,
+      syncLiveFollow,
       notifyPopup,
       // Setters for test setup
       _set(key, val) {
@@ -1050,6 +1186,9 @@
           case 'storageSettled': storageSettled = val; break;
           case 'storageMigrated': storageMigrated = val; break;
           case 'currentLoudnessVideoId': currentLoudnessVideoId = val; break;
+          case 'currentLiveLkfs': currentLiveLkfs = val; break;
+          case 'currentIsLiveNow': currentIsLiveNow = val; break;
+          case 'liveSaveBaseline': liveSaveBaseline = val; break;
           // The audio chain is built once per element and never taken down in
           // production; a case that means to ask what building it does starts
           // from nothing.

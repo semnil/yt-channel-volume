@@ -8,7 +8,7 @@ Chrome extension (Manifest V3) that remembers volume per YouTube channel and app
 
 - **Per-channel volume memory**: Set it once, and the saved volume applies every time you open a video from that channel
 - **Optimal volume from Content Loudness**: Reads the Content Loudness YouTube measures for each video and computes the optimal volume against the target LUFS. One click saves it to the channel
-- **Per-channel LUFS auto-apply**: The popup shows only the switch for the kind you are watching, Video or Live, and it toggles per channel and kind. For a kind that is on, any video whose LUFS is detected is adjusted to Target LUFS
+- **Per-channel LUFS auto-apply**: The popup shows only the switch for the kind you are watching, Video or Live, and it toggles per channel and kind. For a kind that is on, any video whose LUFS is detected is adjusted to Target LUFS. On a live stream on air it follows that stream's own loudness, as the player's stats for nerds show it, and reads it again every 30 seconds
 - **Global defaults**: The settings page sets the LUFS auto-apply default separately for Video and Live. A channel and kind with no individual Auto setting inherits it
 - **Separate volume for Live and Video**: Within one channel, live streams (archives included) and ordinary videos can hold different volumes
 - **Manual volume**: Set 0–600 % from the slider or the preset buttons, except while Auto is applying a detected LUFS
@@ -46,7 +46,7 @@ Install from the [Chrome Web Store](https://chromewebstore.google.com/detail/yt-
 1. Open a video from the channel
 2. Turn on **Auto-apply LUFS** in the popup for the kind you are watching, Video or Live
 3. On a video whose LUFS can be detected, the gain that matches Target LUFS is applied automatically
-4. Where there is no LUFS — a live stream, for instance — the saved channel volume keeps applying
+4. On a live stream on air, the stream's own loudness is followed and read again every 30 seconds. Where no loudness can be read, the saved channel volume keeps applying
 
 ### 3. Settings
 
@@ -63,7 +63,7 @@ Open the settings page from the gear icon in the popup:
 ```
 page-bridge.js (MAIN world, document_start)
   → ytInitialPlayerResponse / fetch hook / YouTube player DOM
-  → reads loudnessDb + isLiveContent + channelId
+  → reads loudnessDb + a live stream's loudness + isLiveContent + channelId
   → relays them to content.js with postMessage
 
 content.js (ISOLATED world, document_idle)
@@ -82,7 +82,8 @@ background.js (service worker)
 - At a gain of 1.0 (passthrough) the audio chain stays disconnected → avoids the Live Caption flicker
 - YouTube's CSP forbids inline script, so loudnessDb extraction runs in the MAIN world from `page-bridge.js`
 - The Loudness is the one of the audio the player is playing — the audio track, **Stable Volume** and **Voice boost** included, as the player's stats for nerds name it — and it is read again when the player switches that audio mid-video
-- A channel volume saved from this version on is kept for the video's regular audio, and adjusted to the audio playing; a live stream on air, which has neither a Loudness nor **Stable Volume**, plays it as it is. A volume saved on a stream on air, or by an earlier version, plays as it is on every video until it is saved again where the video's Loudness is known
+- On a live stream on air, the Loudness is the stream's own, as the player's stats for nerds show it. YouTube has not normalized it, so the gain takes it to Target LUFS as it stands. While LUFS auto-apply is on it is read again every 30 seconds, and the channel volume is saved again when it has moved 1 dB or more
+- A channel volume saved from this version on is kept for the video's regular audio, and adjusted to the audio playing; a live stream on air, which has neither a Content Loudness nor **Stable Volume**, plays it as it is. A volume saved on a stream on air, or by an earlier version, plays as it is on every video until it is saved again where the video's Loudness is known
 
 ## Build
 
@@ -146,7 +147,7 @@ yt-channel-volume/
 
 - **createMediaElementSource**: Callable once per `<video>` element. It can conflict with other volume extensions such as Volume Master
 - **Shorts**: Videos on the `/shorts/` path are not handled
-- **Content Loudness on live streams**: A stream that is on air carries no Content Loudness data, so **Apply to channel** is unavailable there (set it from the archive's Loudness, or with the manual volume)
+- **Content Loudness on live streams**: A stream that is on air carries no Content Loudness data. Its loudness is read from the player's stats for nerds instead, and where the player does not show one, LUFS auto-apply and **Apply to channel** have nothing to work from (set it from the archive's Loudness, or with the manual volume)
 
 ## License
 
