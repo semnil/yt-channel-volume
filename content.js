@@ -486,6 +486,14 @@
     commitGain(liveGainToPlay());
   }
 
+  // Auto's own save, and the live save, are made by a tab that is playing the
+  // video: not paused and not muted. A volume of 0 and a gain of 0 still count
+  // as playing.
+  function isVideoPlaying() {
+    const video = document.querySelector('video.html5-main-video, video');
+    return !!video && !video.paused && !video.muted;
+  }
+
   function applyAutomaticLoudnessGain(source) {
     // Before the fold, fall through to applyPreferredGain, which waits for it.
     if (!storageSettled) return false;
@@ -506,7 +514,7 @@
     // of the same channel without Content Loudness keeps the same level. Not
     // before the fold, though: a flagless gain is what a pre-unification
     // manual save looks like, and the fold would pin this channel Auto-off.
-    if (storageMigrated) {
+    if (storageMigrated && isVideoPlaying()) {
       nameUnaskedWrite('auto gain not stored', saveChannelGain(
         channelId, currentChannel.name, storedGain, videoType, currentChannel.url
       ));
@@ -543,7 +551,7 @@
       ? calcGainFromLoudness(currentLoudnessDb)
       : (stored != null ? storedGainToPlaying(entry, requestedVideoType, stored) : 1.0);
     commitGainFromElsewhere(gain);
-    if (autoEnabled && hasLoudness && storageMigrated) {
+    if (autoEnabled && hasLoudness && storageMigrated && isVideoPlaying()) {
       // The gain is already playing. A failed write must not abort the caller —
       // `forceDetect` answers the popup from this path.
       await nameUnaskedWrite('auto gain not stored', saveChannelGain(
@@ -594,6 +602,8 @@
     } else if (!storageMigrated) {
       // A flagless gain stored before the fold reads as a manual save to it.
       result.reason = 'before fold';
+    } else if (!isVideoPlaying()) {
+      result.reason = 'not playing';
     } else if (liveSaveInFlight) {
       result.reason = 'save in flight';
     } else {

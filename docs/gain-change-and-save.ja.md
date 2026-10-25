@@ -136,7 +136,7 @@ sequenceDiagram
       C->>C: await evaluateLiveSave(source)
     else その種別の Auto が ON で、loudnessDb を持っている
       C->>G: commitGain(calcGain(loudnessDb))
-      opt storageMigrated
+      opt storageMigrated で、動画が再生中
         C->>W: store:saveChannelGain、calcGain(baseLoudnessDb)、autoApply なし (頼まれていない書き込み)
         W-->>C: 返事、失敗は nameUnaskedWrite へ
       end
@@ -150,7 +150,7 @@ sequenceDiagram
 
 - 読み込みのもとになった状態が動いたら、その読み込みの結果は捨てる。動く例: 別の動画への移動、チャンネルや種別を変えたブリッジの返事、保存内容が変わったという知らせ (`storageRevision` は `channelVolumes` か `autoLoudnessSettings` が変わったという知らせのたびに増え、他の場所の `unifiedGains` を取り入れたときにも増える)。
 - Auto 自身の保存は `autoApply` を送らないので、チャンネルは全チャンネル共通の既定値に従い続ける。`baseLoudnessDb` が分かっていれば `heldAgainstPlain: true` を送る。表が変わらない保存は、service worker が `set` しない (「チャンネル書き込みの共通の流れ」を参照)。
-- 旧形式の取り込みが成功するまで (`storageMigrated` が false の間) は保存しない。ゲインの適用はする。
+- 旧形式の取り込みが成功するまで (`storageMigrated` が false の間) は保存しない。`<video>` が止まっているかミュートのタブも保存しない (`isVideoPlaying()`。音量 0 やゲイン 0 は再生中に数える)。ゲインの適用はする。
 - `setCurrentAutoApplyFromEntry` は、中身のライブのゲイン (`storedLiveGain`) も取る。始まりの上限はこれをもとに測る。
 - スライダーの試し聞きが続いている間 (「ポップアップ: スライダーを動かしている間 (`input`)」を参照) は、図のゲインを入れずに取っておき、残りは動かす。
 - 項目の読み出しが reject したとき、または音声のつなぎを作れないときは、適用はそこで止まる。この関数を待たずに動かす呼び出し元 (ブリッジのメッセージ、移動の後の再試行、`autoLoudnessSettings` と `unifiedGains` が変わったという知らせ) は、その失敗を `reportFailure('apply failed')` で記録する。移動そのものの適用を `triggerApply` が記録するのと同じ。
@@ -420,7 +420,7 @@ sequenceDiagram
       C->>C: evaluateLiveSave(source)、終わるのを待たない
     else 取り込みが終わっていて、Auto が ON で、loudnessDb を持っている
       C->>G: commitGain(calcGain(loudnessDb))
-      opt storageMigrated
+      opt storageMigrated で、動画が再生中
         C->>W: store:saveChannelGain、calcGain(baseLoudnessDb)、autoApply なし (頼まれていない書き込み)
       end
     else それ以外
@@ -472,6 +472,8 @@ sequenceDiagram
       Note over C: reason held under the level
     else storageMigrated が false
       Note over C: reason before fold
+    else 動画が止まっているか、ミュート
+      Note over C: reason not playing
     else ライブの保存がまだ終わっていない
       Note over C: reason save in flight
     else この動画の基準が無い、または 1 dB 以上動いた
@@ -491,6 +493,7 @@ sequenceDiagram
 - 動いた量は `gainChangeDb(gain, baseline.gain)` を 0.1 dB に丸めたもの。正の有限の数でないゲインは、限りなく大きく動いたものとして扱う。
 - `liveSaveBaseline` は 1 つの動画 ID と 1 つの種別に結び付く。種別ごとに保存する枠が別なので、`evaluateLiveSave` は両方が同じときだけこれと比べる。`applyVideoVolume` は動画 ID が変わると消し、Auto トグルはライブの書き込みが成功すると設定する。
 - ライブの保存は `autoApply` を送らないので Auto 自身の保存になり、チャンネルは全チャンネル共通の既定値に従い続ける。印を付けずに保存し、保存された値のまま鳴らす。
+- Auto 自身の保存と同じく、`<video>` が止まっておらずミュートでもないタブだけが保存する (`isVideoPlaying()`)。音量 0 やゲイン 0 は再生中に数える。`not playing` の判定では基準をそのままにするので、再生しているタブの次の判定でもう一度試す。
 - 比べて保存するのは、レベルの求めるゲイン (`calcLiveGain(liveLkfs)`) で、`liveGainToPlay` が鳴らしたゲインではない。鳴っているゲインがそれより小さい間 (始まりの上限、上昇の先取り、上げる速さの制限のどれかが抑えている間) は何も保存せず (`held under the level`)、追従は続ける。鳴っているゲインがそこに届くと、それを保存する。手動の操作は、レベルを当てている間と同じく鍵がかかったままで、ポップアップの Current は鳴っているゲインを、Suggested はレベルの求めるゲインを並べて示す。
 
 図のもと: `content.js` の `shouldFollowLive`、`syncLiveFollow`、`followLive`、`requestLoudness`、`applyAutomaticLoudnessGain`、`commitLiveGain`、`liveGainToPlay`、`evaluateLiveSave`、`saveLiveChannelGain`。`utils.js` の `gainChangeDb`、`calcLiveGain`。
@@ -698,7 +701,7 @@ sequenceDiagram
 | 「LUFS 自動適用」を OFF、またはレベルが無いときに ON | 書き込みのあとの `applyPreferredGain` による | される: フラグだけ | `saveChannelAutoApply` |
 | 頼まれた書き込みが失敗 | `applyPreferredGain` が決める値に戻る | されない | `restoreGainAfterFailedSave` |
 | ブリッジの返事、Auto が ON、ライブのレベル | 変わる | `evaluateLiveSave` が決めたとき | `applyAutomaticLoudnessGain`、`evaluateLiveSave` |
-| ブリッジの返事、Auto が ON、`loudnessDb` | 変わる | 取り込み後にされる (表が変わらなければ `set` しない) | `applyAutomaticLoudnessGain` |
+| ブリッジの返事、Auto が ON、`loudnessDb` | 変わる | 取り込み後に、動画が再生中のタブでされる (表が変わらなければ `set` しない) | `applyAutomaticLoudnessGain`、`isVideoPlaying` |
 | ブリッジの返事、Auto が OFF かレベルが無い | 保存ゲイン (印があれば比率を掛ける) か 1.0 | されない | `applyPreferredGain` |
 | 始まりの上限、上昇の先取り、上げる速さの制限で、レベルの求めるゲインより小さく抑えたライブのゲイン | 変わる (`liveGainToPlay` が許すゲインまで) | されない (`held under the level`) | `liveGainToPlay`、`evaluateLiveSave` |
 | ポップアップのライブのレベルの読み取り (`askLiveLevel`、1 秒ごと) | 変わらない | されない | `popup.js` の `askLiveLevelLater`。`content.js` の `__yt_channel_volume_live__` の受け取り側 |

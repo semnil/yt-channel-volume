@@ -9717,6 +9717,9 @@ async function runTests() {
       ytcv._set('currentLoudnessDb', loudnessDb);
       ytcv._set('currentBaseLoudnessDb', loudnessDb);
       ytcv._set('liveSaveBaseline', null);
+      ytcv._set('liveRaiseFrom', null);
+      ytcv._set('liveLevelBefore', null);
+      ytcv._set('liveLevelRise', null);
       ytcv._set('currentVideoType', 'video');
       ytcv._set('currentVideoTypeDetected', true);
       ytcv._set('defaultAutoApplyLoudnessLive', false);
@@ -10020,6 +10023,44 @@ async function runTests() {
         `the new target's gain is stored for the channel (${JSON.stringify(stored.map((m) => m.gain))} / ${mockStorage.channelVolumes[TT_CH].gainVideo})`);
       assert(ytcv.state.currentGain === target, `and it is the one playing (${ytcv.state.currentGain})`);
       ytcv._set('targetLufs', -18);
+    }
+
+    section('Auto\'s own save: made by a tab that is playing the video');
+    for (const [what, element, stores] of [
+      ['paused', { paused: true, muted: false, volume: 1 }, false],
+      ['muted', { paused: false, muted: true, volume: 1 }, false],
+      ['at a volume of 0', { paused: false, muted: false, volume: 0 }, true],
+      ['playing', { paused: false, muted: false, volume: 1 }, true]
+    ]) {
+      await onVideo({ entry: { gainVideo: 0.5, autoApplyLoudnessVideo: true }, loudnessDb: -6 });
+      Object.assign(mockVideoEl, element);
+      // A new level for the video, and a new target: both store Auto's gain.
+      simulateBridgeMessage({ videoId: TT_VID, loudnessDb: -9, baseLoudnessDb: -9, isLiveContent: false, channelId: TT_CH });
+      await settle();
+      simulateStorageChange({ [SETTINGS_KEY]: { newValue: { targetLufs: -20 } } });
+      await settle();
+      const auto = mockSentMessages.filter((m) => m?.type === 'store:saveChannelGain' && m.channelId === TT_CH);
+      assert((auto.length > 0) === stores,
+        `a tab ${what} ${stores ? 'stores' : 'stores nothing'} (${JSON.stringify(auto.map((m) => m.gain))})`);
+      assert(ytcv.state.currentGain === calcGain(-9, -20), `and it plays Auto's gain either way (${ytcv.state.currentGain})`);
+      ytcv._set('targetLufs', -18);
+    }
+    {
+      // The live save.
+      await onVideo({ entry: { gainVideo: 0.5, autoApplyLoudnessVideo: true } });
+      Object.assign(mockVideoEl, { paused: true });
+      simulateBridgeMessage({ videoId: TT_VID, isLiveContent: false, liveLkfs: -20, channelId: TT_CH });
+      await settle();
+      const decided = await ytcv.evaluateLiveSave('apply');
+      assert(decided.reason === 'not playing' && decided.saved === false &&
+        mockSentMessages.filter((m) => m?.type === 'store:saveChannelGain').length === 0,
+        `a paused tab makes no live save (${JSON.stringify(decided)})`);
+      Object.assign(mockVideoEl, { paused: false });
+      const resumed = await ytcv.evaluateLiveSave('apply');
+      assert(resumed.saved === true && resumed.ok === true, `and makes it once it plays (${JSON.stringify(resumed)})`);
+      ytcv._set('currentLiveLkfs', null);
+      ytcv._set('currentAutoApplyLoudnessVideo', false);
+      ytcv.syncLiveFollow();
     }
 
     section('Popup: a drag the popup loses focus during ends there');

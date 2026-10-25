@@ -136,7 +136,7 @@ sequenceDiagram
       C->>C: await evaluateLiveSave(source)
     else Auto on for the type and loudnessDb is held
       C->>G: commitGain(calcGain(loudnessDb))
-      opt storageMigrated
+      opt storageMigrated, and the video is playing
         C->>W: store:saveChannelGain, calcGain(baseLoudnessDb), no autoApply (unasked)
         W-->>C: answer, a failure goes to nameUnaskedWrite
       end
@@ -150,7 +150,7 @@ sequenceDiagram
 
 - The read is dropped when anything it was taken for has moved: another navigation, a bridge answer that changed the channel or the type, or a change notification (`storageRevision` goes up on every `channelVolumes` or `autoLoudnessSettings` change notification, and when `unifiedGains` from another context is taken in).
 - Auto's own save sends no `autoApply`, so the channel keeps following the all-channel default. It sends `heldAgainstPlain: true` when `baseLoudnessDb` is known. A save whose map comes out unchanged is not set by the worker (see "Common path of a channel write").
-- Nothing is saved before the legacy fold has landed (`storageMigrated` false). The gain is still applied.
+- Nothing is saved before the legacy fold has landed (`storageMigrated` false), nor by a tab whose `<video>` is paused or muted (`isVideoPlaying()`; a volume of 0 or a gain of 0 still counts as playing). The gain is still applied.
 - `setCurrentAutoApplyFromEntry` also takes the entry's live gain (`storedLiveGain`), which the start cap is measured from.
 - While a slider preview holds (see "Popup: slider drag (`input`)"), the gain in the diagram is held back rather than committed, and the rest runs.
 - When the entry read rejects or the audio chain cannot be built, the apply stops there. Each caller that starts it without waiting for it (the bridge message, the retry after a navigation, and the `autoLoudnessSettings` and `unifiedGains` change notifications) logs the failure with `reportFailure('apply failed')`, as `triggerApply` does for the navigation's own apply.
@@ -420,7 +420,7 @@ sequenceDiagram
       C->>C: evaluateLiveSave(source), not awaited
     else fold settled, Auto on, loudnessDb held
       C->>G: commitGain(calcGain(loudnessDb))
-      opt storageMigrated
+      opt storageMigrated, and the video is playing
         C->>W: store:saveChannelGain, calcGain(baseLoudnessDb), no autoApply (unasked)
       end
     else otherwise
@@ -472,6 +472,8 @@ sequenceDiagram
       Note over C: reason held under the level
     else storageMigrated is false
       Note over C: reason before fold
+    else the video is paused or muted
+      Note over C: reason not playing
     else a live save is still out
       Note over C: reason save in flight
     else no baseline for this video, or a move of 1 dB or more
@@ -491,6 +493,7 @@ sequenceDiagram
 - The move is `gainChangeDb(gain, baseline.gain)` rounded to 0.1 dB. A gain that is not a positive finite number counts as an infinite move.
 - `liveSaveBaseline` belongs to one video id and one type: `evaluateLiveSave` compares against it only when both match, since each type stores into a slot of its own. `applyVideoVolume` clears it when the video id changes, and the Auto toggle sets it when its live write lands.
 - The live save sends no `autoApply`, so it is Auto's own save and leaves the channel following the all-channel default. It is stored without the mark and plays as stored.
+- Like Auto's own save, it is made only by a tab whose `<video>` is neither paused nor muted (`isVideoPlaying()`); a volume of 0 or a gain of 0 still counts as playing. A decision of `not playing` leaves the baseline where it was, so the next evaluation in a tab that plays tries again.
 - The gain weighed and stored is the one the level asks for (`calcLiveGain(liveLkfs)`), not the one `liveGainToPlay` lets play. While the gain playing is under it (the start cap, the rise cut or the raise limit holding it), nothing is stored (`held under the level`) and the follow goes on; once the gain playing reaches it, it is stored. The manual controls stay locked as while any level is applied, and the popup's Current shows the gain playing beside Suggested, the gain the level asks for.
 
 Drawn from: `content.js` `shouldFollowLive`, `syncLiveFollow`, `followLive`, `requestLoudness`, `applyAutomaticLoudnessGain`, `commitLiveGain`, `liveGainToPlay`, `evaluateLiveSave`, `saveLiveChannelGain`; `utils.js` `gainChangeDb`, `calcLiveGain`.
@@ -698,7 +701,7 @@ Drawn from: `options.js` `renderChannels` (the `.ch-del` click listener), the `c
 | "Auto-apply LUFS" turned off, or on with no level | Through `applyPreferredGain` after the write | Yes: the flag alone | `saveChannelAutoApply` |
 | An asked write failed | Back to what `applyPreferredGain` resolves | No | `restoreGainAfterFailedSave` |
 | Bridge answer, Auto on, live level | Yes | When `evaluateLiveSave` decides so | `applyAutomaticLoudnessGain`, `evaluateLiveSave` |
-| Bridge answer, Auto on, `loudnessDb` | Yes | Yes after the fold (an unchanged map is not set) | `applyAutomaticLoudnessGain` |
+| Bridge answer, Auto on, `loudnessDb` | Yes | Yes after the fold, in a tab whose video is playing (an unchanged map is not set) | `applyAutomaticLoudnessGain`, `isVideoPlaying` |
 | Bridge answer, Auto off or no level | Stored gain (times the ratio when marked) or 1.0 | No | `applyPreferredGain` |
 | Live gain held under the level's by the start cap, the rise cut or the raise limit | Yes, to the gain `liveGainToPlay` allows | No (`held under the level`) | `liveGainToPlay`, `evaluateLiveSave` |
 | Popup's live-level read (`askLiveLevel`, every 1 s) | No | No | `popup.js` `askLiveLevelLater`; `content.js` the `__yt_channel_volume_live__` listener |
