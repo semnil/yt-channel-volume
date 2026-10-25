@@ -9648,6 +9648,106 @@ async function runTests() {
     ytcv.syncLiveFollow();
   }
 
+  // ── Gain state transitions ─────────────────────────────────────────
+  {
+    const TT_CH = 'UCtransit';
+    const TT_URL = 'https://www.youtube.com/channel/' + TT_CH;
+    const TT_VID = 'transitVid';
+    const settle = async () => { for (let turn = 0; turn < 3; turn++) await tick(); };
+    // A tab that has applied a video of one channel, with nothing the cases
+    // before it left behind.
+    const onVideo = async ({ entry = { gainVideo: 0.5, autoApplyLoudnessVideo: false }, loudnessDb = null } = {}) => {
+      ytcv._set('currentAutoApplyLoudnessVideo', false);
+      ytcv._set('currentAutoApplyLoudnessLive', false);
+      ytcv._set('currentLiveLkfs', null);
+      ytcv._set('currentIsLiveNow', false);
+      ytcv.syncLiveFollow();
+      mockSyncStorage = { autoLoudnessSettings: { targetLufs: -18 } };
+      mockStorage = {
+        unifiedGains: true,
+        channelVolumes: { [TT_CH]: { name: 'Transit', url: TT_URL, ...entry } }
+      };
+      mockDOMElements = {};
+      mockVideoEl = { id: 'transit-video' };
+      setURL('/watch', TT_VID);
+      mockPostMessageHandler = null;
+      ytcv._set('storageReady', Promise.resolve());
+      ytcv._set('storageMigrated', true);
+      ytcv._set('storageSettled', true);
+      ytcv._set('_lastVideoId', TT_VID);
+      ytcv._set('_lastProcessedVideo', mockVideoEl);
+      ytcv._set('_applyRunning', false);
+      ytcv._set('currentChannel', { id: TT_CH, name: 'Transit', url: TT_URL });
+      ytcv._set('currentChannelVideoId', TT_VID);
+      ytcv._set('currentLoudnessVideoId', TT_VID);
+      ytcv._set('currentLoudnessDb', loudnessDb);
+      ytcv._set('currentBaseLoudnessDb', loudnessDb);
+      ytcv._set('liveSaveBaseline', null);
+      ytcv._set('currentVideoType', 'video');
+      ytcv._set('currentVideoTypeDetected', true);
+      ytcv._set('defaultAutoApplyLoudnessLive', false);
+      ytcv._set('defaultAutoApplyLoudnessVideo', false);
+      ytcv._set('targetLufs', -18);
+      await ytcv.applyPreferredGain();
+      await settle();
+      mockSentMessages.length = 0;
+    };
+    // The console and Node's report of a rejection nobody handled, taken for
+    // the trigger alone and given back before anything is asserted.
+    const watchFailures = () => {
+      const reported = [];
+      const unhandled = [];
+      const realConsoleError = console.error;
+      const onUnhandled = (reason) => { unhandled.push(String(reason?.message || reason)); };
+      process.on('unhandledRejection', onUnhandled);
+      console.error = (...args) => { reported.push(String(args[0])); };
+      return {
+        reported, unhandled,
+        stop() {
+          console.error = realConsoleError;
+          process.off('unhandledRejection', onUnhandled);
+        }
+      };
+    };
+    const failChannelReads = () => {
+      const realGet = chrome.storage.local.get;
+      chrome.storage.local.get = (key) => (key === CHANNEL_VOLUMES_KEY
+        ? Promise.reject(new Error('channel read failed'))
+        : realGet(key));
+      return () => { chrome.storage.local.get = realGet; };
+    };
+
+    section('Apply failures: an apply that cannot read the channel says so, wherever it was started');
+    for (const [what, trigger, count] of [
+      ['a bridge message', () => simulateBridgeMessage({ videoId: TT_VID, loudnessDb: -6, isLiveContent: false, channelId: TT_CH }), 1],
+      ['a settings change', () => simulateStorageChange({ [SETTINGS_KEY]: { newValue: { targetLufs: -20 } } }), 1],
+      ['the fold mark from another context', () => {
+        ytcv._set('storageMigrated', false);
+        simulateStorageChange({ [UNIFIED_GAINS_KEY]: { newValue: true } });
+      }, 1],
+      // The bridge message ends the wait of the navigation's retry, and both
+      // the message's apply and the retry's read the channel.
+      ['the retry after a navigation', async () => {
+        await ytcv.applyVideoVolume();
+        const restore = failChannelReads();
+        simulateBridgeMessage({ videoId: TT_VID, loudnessDb: -6, isLiveContent: false, channelId: TT_CH });
+        return restore;
+      }, 2]
+    ]) {
+      await onVideo();
+      const watched = watchFailures();
+      let restore = what.startsWith('the retry') ? null : failChannelReads();
+      restore = (await trigger()) || restore;
+      await settle();
+      restore();
+      watched.stop();
+      const named = watched.reported.filter((line) => line.includes('[YTCV] apply failed'));
+      assert(watched.unhandled.length === 0 && named.length === count,
+        `${what}: a failed read is reported as a failed apply (${JSON.stringify(watched)})`);
+    }
+    ytcv._set('targetLufs', -18);
+  }
+
   section('The mutation sweep\'s own record');
   {
     // tools/mutation/equivalents.md says why each surviving mutant is one the

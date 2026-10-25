@@ -152,6 +152,7 @@ sequenceDiagram
 - Auto 自身の保存は `autoApply` を送らないので、チャンネルは全チャンネル共通の既定値に従い続ける。`baseLoudnessDb` が分かっていれば `heldAgainstPlain: true` を送る。表が変わらない保存は、service worker が `set` しない (「チャンネル書き込みの共通の流れ」を参照)。
 - 旧形式の取り込みが成功するまで (`storageMigrated` が false の間) は保存しない。ゲインの適用はする。
 - `setCurrentAutoApplyFromEntry` は、中身のライブのゲイン (`storedLiveGain`) も取る。始まりの上限はこれをもとに測る。
+- 項目の読み出しが reject したとき、または音声のつなぎを作れないときは、適用はそこで止まる。この関数を待たずに動かす呼び出し元 (ブリッジのメッセージ、移動の後の再試行、`autoLoudnessSettings` と `unifiedGains` が変わったという知らせ) は、その失敗を `reportFailure('apply failed')` で記録する。移動そのものの適用を `triggerApply` が記録するのと同じ。
 
 図のもと: `content.js` の `applyPreferredGain`、`loadChannelEntry`、`setCurrentAutoApplyFromEntry`、`resolveAutoApplyForType`、`commitLiveGain`、`liveGainToPlay`、`storedGainToPlaying`、`calcStoredGainFromLoudness`、`calcGainFromLiveLevel`、`evaluateLiveSave`、`nameUnaskedWrite`。`utils.js` の `getChannelGain`、`isGainHeldAgainstPlain`、`renditionGainRatio`、`calcGain`、`calcLiveGain`。
 

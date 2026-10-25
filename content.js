@@ -321,7 +321,8 @@
     if (applyAutomaticLoudnessGain(source)) {
       notifyPopup();
     } else {
-      applyPreferredGain(source).then(notifyPopup);
+      applyPreferredGain(source).then(notifyPopup)
+        .catch(err => reportFailure('apply failed', err));
     }
     syncLiveFollow();
     const waiters = loudnessWaiters;
@@ -810,7 +811,7 @@
     requestLoudnessWithRetry(10, 500).then(async () => {
       await applyPreferredGain();
       notifyPopup();
-    });
+    }).catch(err => reportFailure('apply failed', err));
   }
 
   // What a gesture from the popup was made against. The popup echoes it back
@@ -980,7 +981,7 @@
         applyPreferredGain().then(() => {
           updateGainOverlay();
           notifyPopup();
-        });
+        }).catch(err => reportFailure('apply failed', err));
         return;
       }
       if (area !== 'local') return;
@@ -994,7 +995,8 @@
         foldInFlight = null;
         storageRevision++;
         if (!changes[CHANNEL_VOLUMES_KEY]) {
-          applyPreferredGain().then(notifyPopup);
+          applyPreferredGain().then(notifyPopup)
+            .catch(err => reportFailure('apply failed', err));
         }
       }
       if (changes[CHANNEL_VOLUMES_KEY]) {

@@ -152,6 +152,7 @@ sequenceDiagram
 - Auto's own save sends no `autoApply`, so the channel keeps following the all-channel default. It sends `heldAgainstPlain: true` when `baseLoudnessDb` is known. A save whose map comes out unchanged is not set by the worker (see "Common path of a channel write").
 - Nothing is saved before the legacy fold has landed (`storageMigrated` false). The gain is still applied.
 - `setCurrentAutoApplyFromEntry` also takes the entry's live gain (`storedLiveGain`), which the start cap is measured from.
+- When the entry read rejects or the audio chain cannot be built, the apply stops there. Each caller that starts it without waiting for it (the bridge message, the retry after a navigation, and the `autoLoudnessSettings` and `unifiedGains` change notifications) logs the failure with `reportFailure('apply failed')`, as `triggerApply` does for the navigation's own apply.
 
 Drawn from: `content.js` `applyPreferredGain`, `loadChannelEntry`, `setCurrentAutoApplyFromEntry`, `resolveAutoApplyForType`, `commitLiveGain`, `liveGainToPlay`, `storedGainToPlaying`, `calcStoredGainFromLoudness`, `calcGainFromLiveLevel`, `evaluateLiveSave`, `nameUnaskedWrite`; `utils.js` `getChannelGain`, `isGainHeldAgainstPlain`, `renditionGainRatio`, `calcGain`, `calcLiveGain`.
 
