@@ -9810,6 +9810,56 @@ async function runTests() {
         options.node('settingsError').classList.contains('hidden') === true,
         'a setting that is saved takes the line down');
     }
+
+    section('Audio chain refused: the gain in hand stays the one playing');
+    {
+      // Another owner of the element makes createMediaElementSource throw.
+      // The tab's context exists by then: the stored 0.5 built a chain.
+      let realCreate = null;
+      const refuseChain = () => {
+        const ctx = ytcv.state.audioCtx;
+        realCreate = ctx.createMediaElementSource;
+        ctx.createMediaElementSource = () => {
+          throw new Error('InvalidStateError: already connected');
+        };
+        ytcv._set('gainNode', null);
+        ytcv._set('sourceNode', null);
+        ytcv._set('connectedVideo', null);
+        mockVideoEl = { id: 'owned-elsewhere' };
+      };
+      await onVideo();
+      refuseChain();
+      const watched = watchFailures();
+      const refused = await popupGesture({ type: 'setGain', gain: 2.0 });
+      watched.stop();
+      ytcv.state.audioCtx.createMediaElementSource = realCreate;
+      assert(refused?.ok === false, `the save is refused (${JSON.stringify(refused)})`);
+      assert(ytcv.state.currentGain === 0.5 && ytcv.getState().gain === 0.5,
+        `the gain the tab reports is the one still playing (${ytcv.state.currentGain} / ${ytcv.getState().gain})`);
+      assert(mockStorage.channelVolumes[TT_CH].gainVideo === 0.5, 'and nothing was stored');
+
+      // Auto's own apply of a bridge message, refused the same way.
+      await onVideo({ entry: { gainVideo: 0.5, autoApplyLoudnessVideo: true } });
+      refuseChain();
+      const autoWatched = watchFailures();
+      let escaped = null;
+      try {
+        simulateBridgeMessage({ videoId: TT_VID, loudnessDb: -6, isLiveContent: false, isLiveNow: true, channelId: TT_CH });
+      } catch (err) {
+        escaped = err;
+      }
+      await settle();
+      autoWatched.stop();
+      ytcv.state.audioCtx.createMediaElementSource = realCreate;
+      assert(escaped === null, `the message listener takes the throw (${escaped && escaped.message})`);
+      assert(autoWatched.reported.some((line) => line.includes('[YTCV] apply failed')),
+        `and reports it as a failed apply (${JSON.stringify(autoWatched.reported)})`);
+      assert(ytcv.state.currentGain === 0.5, `the gain in hand is the one still playing (${ytcv.state.currentGain})`);
+      assert(ytcv.state.liveFollowTimer !== null, 'the rest of the message is handled: the follow is set');
+      ytcv._set('currentAutoApplyLoudnessVideo', false);
+      ytcv._set('currentIsLiveNow', false);
+      ytcv.syncLiveFollow();
+    }
   }
 
   section('The mutation sweep\'s own record');

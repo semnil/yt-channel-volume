@@ -318,11 +318,17 @@
       }
     }
     const source = typeof event.data.source === 'string' ? event.data.source : '';
-    if (applyAutomaticLoudnessGain(source)) {
-      notifyPopup();
-    } else {
-      applyPreferredGain(source).then(notifyPopup)
-        .catch(err => reportFailure('apply failed', err));
+    // Applying Auto's gain throws where the audio chain cannot be built; the
+    // follow and the waiters below run either way.
+    try {
+      if (applyAutomaticLoudnessGain(source)) {
+        notifyPopup();
+      } else {
+        applyPreferredGain(source).then(notifyPopup)
+          .catch(err => reportFailure('apply failed', err));
+      }
+    } catch (err) {
+      reportFailure('apply failed', err);
     }
     syncLiveFollow();
     const waiters = loudnessWaiters;
@@ -702,25 +708,23 @@
   }
 
   function applyGainToAudio(value) {
-    if (value === 1.0 && !gainNode) {
-      updateGainOverlay();
-      return;
-    }
+    if (value === 1.0 && !gainNode) return;
     if (!ensureAudioChain()) return;
     gainNode.gain.value = value;
-    updateGainOverlay();
   }
 
   // The only production path that changes gain. Keeping logical state, the
   // GainNode, and popup projection in one commit prevents one surface from
-  // retaining an older value than the others.
+  // retaining an older value than the others. The audio goes first: where the
+  // chain cannot be built, the gain stays what it was everywhere.
   function commitGain(value) {
     const numeric = Number(value);
     const clamped = Number.isFinite(numeric)
       ? Math.max(0, Math.min(6, numeric))
       : 1.0;
-    currentGain = clamped;
     applyGainToAudio(clamped);
+    currentGain = clamped;
+    updateGainOverlay();
     notifyPopup();
     return clamped;
   }

@@ -59,7 +59,7 @@
 
 ### 適用ゲインが変わる場所: `commitGain`
 
-`commitGain(value)` は `Number(value)` を取り、有限の数でなければ 1.0 にし、0 から 6 に切りそろえて `currentGain` に入れ、`applyGainToAudio`、`updateGainOverlay`、`notifyPopup` を呼ぶ。`applyGainToAudio` は、音声のつながりがまだ無いうちはゲイン 1.0 のためにつながりを作らない。それ以外では `ensureAudioChain` がページの `<video>` に向けてつながりを作り (要素が変わっていれば作り直す)、値を `gainNode.gain.value` に入れる。`notifyPopup` は、状態が前回送ったものと違うときに `stateChanged` を送る。
+`commitGain(value)` は `Number(value)` を取り、有限の数でなければ 1.0 にし、0 から 6 に切りそろえて `applyGainToAudio` を呼ぶ。そのあとで `currentGain` に入れ、`updateGainOverlay` と `notifyPopup` を呼ぶ。`applyGainToAudio` は、音声のつながりがまだ無いうちはゲイン 1.0 のためにつながりを作らない。それ以外では `ensureAudioChain` がページの `<video>` に向けてつながりを作り (要素が変わっていれば作り直す)、値を `gainNode.gain.value` に入れる。`ensureAudioChain` が例外を投げたとき (別のところがすでにつないだ要素を `createMediaElementSource` が断ったとき) は、`commitGain` はそこで止まる。`currentGain`、ゲイン表示、ポップアップは、鳴っていたゲインのままになる。`notifyPopup` は、状態が前回送ったものと違うときに `stateChanged` を送る。
 
 `commitGain` を呼ぶのは、`applyPreferredGain` と `applyAutomaticLoudnessGain` (ライブのゲインは、`liveGainToPlay` でゲインを出す `commitLiveGain` を通す)、`chrome.storage.onChanged` の受け取り側、`handleMessage` の `setGainLive` / `setGain` / `applyLoudness` / `setAutoApplyLoudness` の分岐。
 
@@ -435,6 +435,7 @@ sequenceDiagram
 - 新しい動画 ID なら、`loudnessDb` と `baseLoudnessDb` をメッセージから入れる (無ければ `null`)。同じ動画なら、メッセージに有限の `loudnessDb` があるときだけ置き換える。`liveLkfs` はメッセージのたびに置き換えるので、それが無いメッセージはライブのレベルを消す。手元のレベル (`readLiveLkfs`) にも同じ値を入れる。ライブのレベルがあるメッセージは、それをその動画の `liveLevelBefore` として持ち、同じ動画で前に持っていたものより上がった量を 0.1 dB に丸めて `liveLevelRise` に入れる (ライブのレベルが無いメッセージと、別の動画のメッセージでは null)。ライブのレベルが無いメッセージは、`liveRaiseFrom` の `at` を null にする。
 - チャンネルは、メッセージに有限の `loudnessDb` か真偽値の `isLiveContent` があり、UC の `channelId` があるときに受け取る。ID が変わると、`applyPreferredGain()` が保存内容から決め直すまで、両方の種別の Auto を OFF にしておく。名前は `author`、無ければページ、それも無ければ ID から取る。
 - 旧形式の取り込みが終わっていない間 (`storageSettled` が false) は `applyAutomaticLoudnessGain` が false を返し、メッセージは `applyPreferredGain()` に回る。こちらは取り込みが終わるのを待つ。
+- Auto のゲインをかけるところで例外が出たときは、受け取り側がそれを `reportFailure('apply failed')` で記録する。`syncLiveFollow()` とレベルの待ち手は、そのあとでいつもどおり動く。
 - 同じ動画でもう一度届いたとき (音声の版が変わった、プレイヤーがレベルを示した、ライブの追従) も、同じ手順を通る。Auto が ON で `baseLoudnessDb` が同じなら、Auto の保存は同じゲインと同じ印を運び、名前と url も同じなら service worker は何も `set` しない。Auto が OFF なら、保存ゲインに新しい版の比率を掛けて鳴らし直し、何も保存しない。
 
 図のもと: `page-bridge.js` の `ytInitialPlayerResponse` の setter、`window.fetch` の置き換え、問い合わせの受け取り側、`watchAudioChanges`、`answerCurrentVideo`、`preferPlayingLevel`、`playingLevel`、`followPlaying`、`postResult`。`content.js` の `message` の受け取り側、`isBridgeMessageForCurrentVideo`、`applyAutomaticLoudnessGain`、`applyPreferredGain`、`syncLiveFollow`。
