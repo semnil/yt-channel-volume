@@ -152,6 +152,7 @@ sequenceDiagram
 - Auto's own save sends no `autoApply`, so the channel keeps following the all-channel default. It sends `heldAgainstPlain: true` when `baseLoudnessDb` is known. A save whose map comes out unchanged is not set by the worker (see "Common path of a channel write").
 - Nothing is saved before the legacy fold has landed (`storageMigrated` false). The gain is still applied.
 - `setCurrentAutoApplyFromEntry` also takes the entry's live gain (`storedLiveGain`), which the start cap is measured from.
+- While a slider preview holds (see "Popup: slider drag (`input`)"), the gain in the diagram is held back rather than committed, and the rest runs.
 - When the entry read rejects or the audio chain cannot be built, the apply stops there. Each caller that starts it without waiting for it (the bridge message, the retry after a navigation, and the `autoLoudnessSettings` and `unifiedGains` change notifications) logs the failure with `reportFailure('apply failed')`, as `triggerApply` does for the navigation's own apply.
 
 Drawn from: `content.js` `applyPreferredGain`, `loadChannelEntry`, `setCurrentAutoApplyFromEntry`, `resolveAutoApplyForType`, `commitLiveGain`, `liveGainToPlay`, `storedGainToPlaying`, `calcStoredGainFromLoudness`, `calcGainFromLiveLevel`, `evaluateLiveSave`, `nameUnaskedWrite`; `utils.js` `getChannelGain`, `isGainHeldAgainstPlain`, `renditionGainRatio`, `calcGain`, `calcLiveGain`.
@@ -176,6 +177,7 @@ sequenceDiagram
       C-->>P: ok false, auto apply controls current gain
     else accepted
       C->>G: commitGain(gain)
+      Note over C: the preview starts, or lasts longer, for this appliesTo
       C-->>P: ok true
     end
     opt the answer is not ok
@@ -189,8 +191,10 @@ sequenceDiagram
 - An `input` that arrives with no `pointerdown` or `keydown` before it takes the copy of `currentAppliesTo` itself. Every `input` of one drag carries that same copy.
 - "Manual Volume" (the slider and the presets) is disabled in the popup while Auto is on for the type and a Loudness is shown, and `content.js` refuses the same state.
 - Each `input` event sends one `setGainLive`. There is no debounce.
+- While a preview lasts and `currentGestureState()` still equals its `appliesTo`, a gain from anywhere else is held back rather than applied: `applyPreferredGain`, `applyAutomaticLoudnessGain` and the `channelVolumes` change listener commit through `commitGainFromElsewhere`, which leaves the gain as it is and records that one was held back. `commitLiveGain` returns before working a live gain out, so a bridge message leaves `liveRaiseFrom` where it was; the listener works one out with `liveGainToPlay` and holds it back, so another tab's write moves `liveRaiseFrom` on from the gain the preview plays. What else they do (the state they take in, Auto's own save, the live save decision) goes on. A preview whose state has moved holds nothing back.
+- The preview ends when `setGain` arrives (see the next section), or when `PREVIEW_IDLE_MS` (2000 ms) pass after the last accepted `setGainLive`. Ended that way with a gain held back, `applyPreferredGain()` applies what storage holds then, and the popup is notified.
 
-Drawn from: `popup.js` `beginSliderGesture`, the `volumeSlider` `input` listener, `sendManualGain`, `refreshDisplay`; `content.js` `handleMessage` (`setGainLive`), `currentGestureState`, `isCurrentManualGainLocked`, `commitGain`.
+Drawn from: `popup.js` `beginSliderGesture`, the `volumeSlider` `input` listener, `sendManualGain`, `refreshDisplay`; `content.js` `handleMessage` (`setGainLive`), `currentGestureState`, `isCurrentManualGainLocked`, `commitGain`, `startPreview`, `endPreview`, `endIdlePreview`, `commitGainFromElsewhere`.
 
 ## Popup: slider release (`change`) and preset buttons
 
@@ -209,10 +213,14 @@ sequenceDiagram
     Note over P: appliesTo is currentAppliesTo, the slider moves to the preset
   end
   P->>C: setGain, appliesTo, gain
+  Note over C: the slider preview ends
   alt appliesTo differs from currentGestureState()
     C->>C: restoreGainAfterFailedSave() runs applyPreferredGain()
     C-->>P: ok false, state moved
   else Auto on for the type and a level is held
+    opt a preview ran before this setGain
+      C->>C: restoreGainAfterFailedSave() runs applyPreferredGain()
+    end
     C-->>P: ok false, auto apply controls current gain
   else accepted
     C->>G: commitGain(gain)
@@ -233,7 +241,7 @@ sequenceDiagram
 - The preset buttons are "0%", "50%", "100%", "200%", "400%" and "MAX" (`data-vol` 600). The popup sends nothing when it holds no channel id.
 - The stored value is the applied gain (after `commitGain` clamped it) divided by the rendition ratio, so it is held against the plain rendition. Where neither level is known, the ratio is 1 and `heldAgainstPlain` is false.
 - `autoApply` is the Auto state of the type at that moment, written as the channel's own flag. Since the lock refuses Auto on with a level, a save with Auto on is one made where no level is held (the gain Auto falls back to), and it pins Auto on for the channel.
-- `restoreGainAfterFailedSave()` runs `applyPreferredGain()`, so the gain goes back to whatever that function resolves from storage. The popup is answered after it.
+- `restoreGainAfterFailedSave()` ends a preview still running and runs `applyPreferredGain()`, so the gain goes back to whatever that function resolves from storage. The popup is answered after it.
 
 Drawn from: `popup.js` the `volumeSlider` `change` listener, the preset `click` listeners, `sendManualGain`; `content.js` `handleMessage` (`setGain`), `fillCurrentChannelNameFromDomFallback`, `playingGainToStored`, `saveManualChannelGain`, `restoreGainAfterFailedSave`.
 
@@ -435,6 +443,7 @@ The bridge posts under these conditions:
 - For a new video id, `loudnessDb` and `baseLoudnessDb` are set from the message, `null` where it carries none. For the same video they are replaced only when the message carries a finite `loudnessDb`. `liveLkfs` is replaced by every message, so a message without one takes it away; the level in hand (`readLiveLkfs`) is set to it as well. A message with a live level keeps it as `liveLevelBefore` for the video, and how far it rose over the one kept before for the same video, to 0.1 dB, as `liveLevelRise` (null for a message with no live level or for another video). A message without one sets `liveRaiseFrom`'s `at` to null.
 - The channel is taken when the message carries a finite `loudnessDb` or a boolean `isLiveContent`, with a UC `channelId`. When the id changes, both Auto states are set to off until `applyPreferredGain()` resolves them from storage, and the name comes from `author`, then the page, then the id.
 - `applyAutomaticLoudnessGain` returns false while the legacy fold has not finished (`storageSettled` false), and the message goes to `applyPreferredGain()`, which waits for it.
+- While a slider preview holds (see "Popup: slider drag (`input`)"), the gains in the diagram are held back rather than committed.
 - When applying Auto's gain throws, the listener logs it with `reportFailure('apply failed')`, and `syncLiveFollow()` and the loudness waiters run after it as they do otherwise.
 - A re-arrival (rendition change, the player naming its level, the live follow) goes through the same steps. With Auto on and the same `baseLoudnessDb`, Auto's save carries the same gain and mark, and where the name and url are unchanged as well the worker sets nothing. With Auto off, the stored gain is played again with the new rendition ratio, and nothing is saved.
 
@@ -595,7 +604,7 @@ sequenceDiagram
     else nothing is stored for the type
       Note over C: no change, unless Auto for the type changed, then 1.0
     end
-    opt the gain differs from currentGain
+    opt the gain differs from currentGain, and no slider preview holds
       C->>G: commitGain(gain)
     end
   end
@@ -679,7 +688,9 @@ Drawn from: `options.js` `renderChannels` (the `.ch-del` click listener), the `c
 |---|---|---|---|
 | Popup slider `input` | Yes (preview) | No | `popup.js` `volumeSlider` `input` listener; `content.js` `handleMessage` (`setGainLive`), `commitGain` |
 | Popup slider `change`, preset button | Yes | Yes: `saveChannelGain` with the Auto state as the channel's flag | `handleMessage` (`setGain`), `saveManualChannelGain` |
-| `setGain` refused as `state moved` | Back to what `applyPreferredGain` resolves | No | `restoreGainAfterFailedSave` |
+| `setGain` refused as `state moved`, or after a preview as `auto apply controls current gain` | Back to what `applyPreferredGain` resolves | No | `restoreGainAfterFailedSave` |
+| A gain from elsewhere while a slider preview holds | No, until the gesture ends | As the row of that event | `commitGainFromElsewhere` |
+| A preview that ends with no `setGain`, with a gain held back | Back to what `applyPreferredGain` resolves | As the bridge answer rows | `endIdlePreview` |
 | "Apply to channel" with `loudnessDb` | Yes | Yes: `calcGain(baseLoudnessDb)`, flag `false`, mark when the base is known | `handleMessage` (`applyLoudness`), `saveManualChannelGain` |
 | "Apply to channel" with a live level | Yes | Yes: the live gain, flag `false`, no mark | `handleMessage` (`applyLoudness`), `saveLiveChannelGain` |
 | "Auto-apply LUFS" turned on with a level | Yes | Yes: the gain and flag `true` in one write | `handleMessage` (`setAutoApplyLoudness`) |

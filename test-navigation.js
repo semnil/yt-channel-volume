@@ -249,22 +249,35 @@ globalThis.AudioContext = class {
 // through as it is.
 const LIVE_FOLLOW_MS = 10000;
 const heldLiveFollows = [];
+// The end of a slider preview that its input stopped coming for is held the
+// same way, so a preview a case leaves open ends when a case says so.
+const PREVIEW_IDLE_MS = 2000;
+const heldPreviewEnds = [];
 const passedSetTimeout = globalThis.setTimeout;
 const passedClearTimeout = globalThis.clearTimeout;
 globalThis.setTimeout = (fn, ms, ...args) => {
-  if (ms !== LIVE_FOLLOW_MS) return passedSetTimeout(fn, ms, ...args);
+  const list = ms === LIVE_FOLLOW_MS ? heldLiveFollows : ms === PREVIEW_IDLE_MS ? heldPreviewEnds : null;
+  if (!list) return passedSetTimeout(fn, ms, ...args);
   const held = { fn, ms };
-  heldLiveFollows.push(held);
+  list.push(held);
   return held;
 };
 globalThis.clearTimeout = (timer) => {
-  const at = heldLiveFollows.indexOf(timer);
-  if (at > -1) { heldLiveFollows.splice(at, 1); return; }
+  for (const list of [heldLiveFollows, heldPreviewEnds]) {
+    const at = list.indexOf(timer);
+    if (at > -1) { list.splice(at, 1); return; }
+  }
   passedClearTimeout(timer);
 };
 // Runs the follows held now (not ones they set) and hands back how many ran.
 async function runLiveFollows() {
   const due = heldLiveFollows.splice(0);
+  for (const timer of due) timer.fn();
+  await tick();
+  return due.length;
+}
+async function runPreviewEnds() {
+  const due = heldPreviewEnds.splice(0);
   for (const timer of due) timer.fn();
   await tick();
   return due.length;
@@ -9859,6 +9872,117 @@ async function runTests() {
       ytcv._set('currentAutoApplyLoudnessVideo', false);
       ytcv._set('currentIsLiveNow', false);
       ytcv.syncLiveFollow();
+    }
+
+    section('Slider preview: a gain from elsewhere waits for the gesture to end');
+    {
+      await onVideo();
+      const told = () => mockSentMessages.filter((m) => m?.type === 'stateChanged').map((m) => m.gain);
+      await popupGesture({ type: 'setGainLive', gain: 3.0 });
+      assert(ytcv.state.currentGain === 3.0, 'the preview plays');
+      // A rendition change re-applies the stored gain, another tab writes this
+      // channel, and the target moves, all while the slider is held.
+      simulateBridgeMessage({ videoId: TT_VID, loudnessDb: -6, isLiveContent: false, channelId: TT_CH, source: 'audio-change' });
+      await settle();
+      const otherTab = { name: 'Transit', url: TT_URL, gainVideo: 0.62, autoApplyLoudnessVideo: false };
+      simulateStorageChange({ [CHANNEL_VOLUMES_KEY]: {
+        oldValue: { [TT_CH]: mockStorage.channelVolumes[TT_CH] }, newValue: { [TT_CH]: otherTab }
+      } });
+      mockStorage.channelVolumes[TT_CH] = otherTab;
+      simulateStorageChange({ [SETTINGS_KEY]: { newValue: { targetLufs: -20 } } });
+      await settle();
+      assert(ytcv.state.currentGain === 3.0 && ytcv.state.gainNode.gain.value === 3.0,
+        `the preview keeps playing over each of them (${ytcv.state.currentGain})`);
+      assert(told().every((gain) => gain === 3.0),
+        `and the popup is told the gain it is previewing (${JSON.stringify(told())})`);
+      const saved = await popupGesture({ type: 'setGain', gain: 3.0 });
+      await settle();
+      assert(saved?.ok === true && mockStorage.channelVolumes[TT_CH].gainVideo === 3.0 && ytcv.state.currentGain === 3.0,
+        `the release saves the gain the slider was moved to (${JSON.stringify(saved)} / ${mockStorage.channelVolumes[TT_CH].gainVideo})`);
+      ytcv._set('targetLufs', -18);
+
+      // A gesture whose input stops without a save: once it has been quiet for
+      // PREVIEW_IDLE_MS, what storage holds is applied.
+      await onVideo();
+      await popupGesture({ type: 'setGainLive', gain: 3.0 });
+      simulateBridgeMessage({ videoId: TT_VID, loudnessDb: -6, isLiveContent: false, channelId: TT_CH, source: 'audio-change' });
+      await settle();
+      assert(ytcv.state.currentGain === 3.0, `the preview holds (${ytcv.state.currentGain})`);
+      const ended = await runPreviewEnds();
+      await settle();
+      assert(ended === 1 && ytcv.state.currentGain === 0.5 && ytcv.state.gainNode.gain.value === 0.5,
+        `the quiet gesture ends and the stored gain plays (${ended} / ${ytcv.state.currentGain})`);
+      assert(told().at(-1) === 0.5, `and the popup is told so (${JSON.stringify(told())})`);
+
+      // A save refused after a preview puts back what storage holds: here
+      // another tab turned Auto on while the level was known.
+      await onVideo({ loudnessDb: -6 });
+      await popupGesture({ type: 'setGainLive', gain: 3.0 });
+      const autoOn = { name: 'Transit', url: TT_URL, gainVideo: 0.5, autoApplyLoudnessVideo: true };
+      simulateStorageChange({ [CHANNEL_VOLUMES_KEY]: {
+        oldValue: { [TT_CH]: mockStorage.channelVolumes[TT_CH] }, newValue: { [TT_CH]: autoOn }
+      } });
+      mockStorage.channelVolumes[TT_CH] = autoOn;
+      await settle();
+      assert(ytcv.state.currentGain === 3.0, `the preview holds over the Auto gain (${ytcv.state.currentGain})`);
+      const refused = await popupGesture({ type: 'setGain', gain: 3.0 });
+      await settle();
+      const autoGain = calcGain(-6, -18);
+      assert(refused?.ok === false && ytcv.state.currentGain === autoGain && told().at(-1) === autoGain,
+        `the refused save plays and tells what storage now says (${JSON.stringify(refused)} / ${ytcv.state.currentGain})`);
+      assert(heldPreviewEnds.length === 0, 'and nothing is left waiting to end it again');
+
+      // A save refused with nothing previewed is answered at once, and nothing
+      // is applied or stored again.
+      await onVideo({ entry: { gainVideo: 0.5, autoApplyLoudnessVideo: true }, loudnessDb: -6 });
+      const lockedNow = await popupGesture({ type: 'setGain', gain: 3.0 });
+      await settle();
+      assert(lockedNow?.ok === false && lockedNow?.reason === 'auto apply controls current gain' &&
+        mockSentMessages.filter((m) => m?.type === 'store:saveChannelGain').length === 0,
+        `a locked save with nothing previewed stores nothing (${JSON.stringify(mockSentMessages.filter((m) => m?.type?.startsWith('store:')))})`);
+
+      // A live level the bridge names while a preview holds works out no live
+      // gain. Another tab's write during it works one out, held back as any
+      // gain from elsewhere, so the raise count goes on from the gain the
+      // preview plays: once the gesture ends, the live gain rises from there
+      // by no more than the raise limit.
+      const liveEntry = { name: 'Transit', url: TT_URL, gainLive: 0.5, autoApplyLoudnessLive: true };
+      await onVideo({ entry: liveEntry });
+      ytcv._set('liveRaiseFrom', null);
+      ytcv._set('liveLevelBefore', null);
+      ytcv._set('liveLevelRise', null);
+      simulateBridgeMessage({ videoId: TT_VID, isLiveContent: true, isLiveNow: true, channelId: TT_CH });
+      await settle();
+      assert(ytcv.state.currentVideoType === 'live' && ytcv.state.currentGain === 0.5,
+        `the stream plays its stored gain before a level is named (${ytcv.state.currentGain})`);
+      await popupGesture({ type: 'setGainLive', gain: 3.0 });
+      simulateBridgeMessage({ videoId: TT_VID, liveLkfs: -30, isLiveContent: true, isLiveNow: true, channelId: TT_CH });
+      await settle();
+      assert(ytcv.state.currentGain === 3.0 && ytcv.state.liveRaiseFrom === null,
+        `the live level the bridge names is held back and no live gain is worked out (${ytcv.state.currentGain} / ${JSON.stringify(ytcv.state.liveRaiseFrom)})`);
+      simulateStorageChange({ [CHANNEL_VOLUMES_KEY]: {
+        oldValue: { [TT_CH]: liveEntry }, newValue: { [TT_CH]: { ...liveEntry, name: 'Transit Live' } }
+      } });
+      await settle();
+      const raisedFrom = ytcv.state.liveRaiseFrom;
+      assert(ytcv.state.currentGain === 3.0 && raisedFrom?.videoId === TT_VID && Number.isFinite(raisedFrom?.at),
+        `another tab's write works a live gain out, and the preview still plays (${ytcv.state.currentGain} / ${JSON.stringify(raisedFrom)})`);
+      const lockedSave = await popupGesture({ type: 'setGain', gain: 3.0 });
+      await settle();
+      const levelGain = calcLiveGain(-30, -18);
+      const raiseLimit = 3.0 * Math.pow(10, 1.5 * (Date.now() - raisedFrom?.at) / 30000 / 20);
+      assert(lockedSave?.ok === false && ytcv.state.currentGain >= 3.0 &&
+        ytcv.state.currentGain <= raiseLimit && ytcv.state.currentGain < levelGain,
+        `the gesture's end raises the live gain from the preview's by no more than the raise limit (${JSON.stringify(lockedSave)} / ${ytcv.state.currentGain} of ${levelGain})`);
+
+      // A preview whose state has moved holds nothing back.
+      await onVideo();
+      await popupGesture({ type: 'setGainLive', gain: 3.0 });
+      simulateBridgeMessage({ videoId: TT_VID, loudnessDb: -6, isLiveContent: true, channelId: TT_CH });
+      await settle();
+      assert(ytcv.state.currentVideoType === 'live' && ytcv.state.currentGain === 1.0,
+        `the live type's gain plays at once (${ytcv.state.currentGain})`);
+      ytcv.endPreview();
     }
   }
 

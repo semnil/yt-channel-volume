@@ -476,7 +476,10 @@
     return Math.min(gain, currentGain * Math.pow(10, allowedDb / 20));
   }
 
+  // While a slider preview holds gains back, no live gain is worked out, so
+  // liveRaiseFrom stays where it was.
   function commitLiveGain() {
+    if (previewHoldsGain()) return;
     commitGain(liveGainToPlay());
   }
 
@@ -495,7 +498,7 @@
     const storedGain = calcStoredGainFromLoudness();
     const channelId = currentChannel.id;
     const videoType = currentVideoType;
-    commitGain(gain);
+    commitGainFromElsewhere(gain);
     // The calculated gain becomes the channel's stored gain, so a later video
     // of the same channel without Content Loudness keeps the same level. Not
     // before the fold, though: a flagless gain is what a pre-unification
@@ -536,7 +539,7 @@
     const gain = autoEnabled && hasLoudness
       ? calcGainFromLoudness(currentLoudnessDb)
       : (stored != null ? storedGainToPlaying(entry, requestedVideoType, stored) : 1.0);
-    commitGain(gain);
+    commitGainFromElsewhere(gain);
     if (autoEnabled && hasLoudness && storageMigrated) {
       // The gain is already playing. A failed write must not abort the caller —
       // `forceDetect` answers the popup from this path.
@@ -727,6 +730,49 @@
     updateGainOverlay();
     notifyPopup();
     return clamped;
+  }
+
+  // While the popup's slider previews a gain, a gain from anywhere else — a
+  // bridge message, another tab's write, a settings change, the live follow —
+  // is held back rather than applied. The preview lasts until its gesture
+  // ends: the save (setGain) arrives, or PREVIEW_IDLE_MS pass after the last
+  // preview. A gesture that ends with no save and a gain held back, and a save
+  // refused after a preview, apply what storage holds then. A preview whose
+  // state has moved holds nothing back.
+  const PREVIEW_IDLE_MS = 2000;
+  let preview = null;
+
+  function startPreview(appliesTo) {
+    const held = preview?.appliesTo === appliesTo && preview.held;
+    if (preview) clearTimeout(preview.timer);
+    preview = { appliesTo, held, timer: setTimeout(endIdlePreview, PREVIEW_IDLE_MS) };
+  }
+
+  // Hands back whether a gain was held back during the preview.
+  function endPreview() {
+    if (!preview) return false;
+    clearTimeout(preview.timer);
+    const { held } = preview;
+    preview = null;
+    return held;
+  }
+
+  function endIdlePreview() {
+    if (!endPreview()) return;
+    applyPreferredGain().then(notifyPopup)
+      .catch(err => reportFailure('apply failed', err));
+  }
+
+  // Whether a slider preview holds back a gain from elsewhere now; one it holds
+  // is recorded.
+  function previewHoldsGain() {
+    if (!preview || preview.appliesTo !== currentGestureState()) return false;
+    preview.held = true;
+    return true;
+  }
+
+  function commitGainFromElsewhere(value) {
+    return previewHoldsGain() ? currentGain : commitGain(value);
   }
 
   // ── Gain overlay on YouTube player ──────────────────────────────────
@@ -1037,7 +1083,7 @@
         }
         const nextGain = gain ?? 1.0;
         if (nextGain !== currentGain) {
-          commitGain(nextGain);
+          commitGainFromElsewhere(nextGain);
         }
         notifyPopup();
       }
@@ -1057,6 +1103,7 @@
   // next navigation. The slider's live preview has already moved the gain by
   // then, so the level to go back to is the one storage still holds.
   function restoreGainAfterFailedSave() {
+    endPreview();
     return applyPreferredGain().catch(err =>
       reportFailure('gain not restored after a failed save', err));
   }
@@ -1141,11 +1188,15 @@
         return true;
       }
       commitGain(msg.gain);
+      startPreview(msg.appliesTo);
       sendResponse({ ok: true });
       return true;
     }
 
     if (msg.type === 'setGain') {
+      // The save ends the gesture, whatever becomes of it.
+      const previewed = preview !== null;
+      endPreview();
       if (msg.appliesTo !== currentGestureState()) {
         // The preview may have moved the level while the state still held, so
         // the level goes back to what storage has for the state now in hand.
@@ -1154,7 +1205,14 @@
         return true;
       }
       if (isCurrentManualGainLocked()) {
-        sendResponse({ ok: false, reason: 'auto apply controls current gain' });
+        if (!previewed) {
+          sendResponse({ ok: false, reason: 'auto apply controls current gain' });
+          return true;
+        }
+        // A preview went ahead of the lock, so the level goes back to what
+        // storage has for the state in hand.
+        restoreGainAfterFailedSave().then(() =>
+          sendResponse({ ok: false, reason: 'auto apply controls current gain' }));
         return true;
       }
       const { gain } = msg;
@@ -1304,7 +1362,7 @@
         return {
           currentChannel, currentChannelVideoId,
           currentGain, currentLoudnessDb, currentBaseLoudnessDb, currentLoudnessVideoId,
-          currentLiveLkfs, readLiveLkfs, liveSaveBaseline, liveSaveInFlight, liveFollowTimer, liveRaiseFrom,
+          currentLiveLkfs, readLiveLkfs, liveSaveBaseline, liveSaveInFlight, liveFollowTimer, liveRaiseFrom, preview,
           storedLiveGain, liveLevelBefore, liveLevelRise,
           currentVideoType, currentVideoTypeDetected, currentIsLiveNow, showGainOverlay,
           currentAutoApplyLoudnessVideo, currentAutoApplyLoudnessLive,
@@ -1319,6 +1377,7 @@
       detectChannel,
       getChannelDisplayName,
       commitGain,
+      endPreview,
       getState,
       isWatchPage,
       getUrlVideoId,

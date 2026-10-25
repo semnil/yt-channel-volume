@@ -152,6 +152,7 @@ sequenceDiagram
 - Auto 自身の保存は `autoApply` を送らないので、チャンネルは全チャンネル共通の既定値に従い続ける。`baseLoudnessDb` が分かっていれば `heldAgainstPlain: true` を送る。表が変わらない保存は、service worker が `set` しない (「チャンネル書き込みの共通の流れ」を参照)。
 - 旧形式の取り込みが成功するまで (`storageMigrated` が false の間) は保存しない。ゲインの適用はする。
 - `setCurrentAutoApplyFromEntry` は、中身のライブのゲイン (`storedLiveGain`) も取る。始まりの上限はこれをもとに測る。
+- スライダーの試し聞きが続いている間 (「ポップアップ: スライダーを動かしている間 (`input`)」を参照) は、図のゲインを入れずに取っておき、残りは動かす。
 - 項目の読み出しが reject したとき、または音声のつなぎを作れないときは、適用はそこで止まる。この関数を待たずに動かす呼び出し元 (ブリッジのメッセージ、移動の後の再試行、`autoLoudnessSettings` と `unifiedGains` が変わったという知らせ) は、その失敗を `reportFailure('apply failed')` で記録する。移動そのものの適用を `triggerApply` が記録するのと同じ。
 
 図のもと: `content.js` の `applyPreferredGain`、`loadChannelEntry`、`setCurrentAutoApplyFromEntry`、`resolveAutoApplyForType`、`commitLiveGain`、`liveGainToPlay`、`storedGainToPlaying`、`calcStoredGainFromLoudness`、`calcGainFromLiveLevel`、`evaluateLiveSave`、`nameUnaskedWrite`。`utils.js` の `getChannelGain`、`isGainHeldAgainstPlain`、`renditionGainRatio`、`calcGain`、`calcLiveGain`。
@@ -176,6 +177,7 @@ sequenceDiagram
       C-->>P: ok false、auto apply controls current gain
     else 受け付ける
       C->>G: commitGain(gain)
+      Note over C: この appliesTo の試し聞きが始まる、または長くなる
       C-->>P: ok true
     end
     opt 返事が ok でない
@@ -189,8 +191,10 @@ sequenceDiagram
 - `pointerdown` も `keydown` も無いまま来た `input` は、その `input` 自身が `currentAppliesTo` の写しを取る。1 回のドラッグの間の `input` は、すべて同じ写しを運ぶ。
 - 「Manual Volume」(スライダーとプリセット) は、その種別の Auto が ON で Loudness が表示されている間はポップアップ側で操作できなくなり、`content.js` も同じ状態を断る。
 - `input` イベント 1 回ごとに `setGainLive` を 1 回送る。debounce は無い。
+- 試し聞きが続いていて、`currentGestureState()` がまだその `appliesTo` と同じ間は、ほかから来たゲインをかけずに取っておく: `applyPreferredGain`、`applyAutomaticLoudnessGain`、`channelVolumes` の変更の受け取り側は `commitGainFromElsewhere` を通してゲインを入れ、この関数はゲインをそのままにして、取っておいたことを記録する。`commitLiveGain` はライブのゲインを出す前に戻るので、ブリッジのメッセージでは `liveRaiseFrom` はそのまま残る。受け取り側は `liveGainToPlay` でライブのゲインを出してから取っておくので、別のタブの保存が届くと、`liveRaiseFrom` は試し聞きのゲインを基準に進む。それぞれのほかの仕事 (受け取る状態、Auto 自身の保存、ライブの保存の判定) は続ける。状態が動いた試し聞きは、何も取っておかない。
+- 試し聞きは、`setGain` が来たとき (次の節を参照) か、最後に受け付けた `setGainLive` から `PREVIEW_IDLE_MS` (2000 ms) たったときに終わる。後者で終わり、取っておいたゲインがあるときは、`applyPreferredGain()` がその時点の保存内容をかけ、ポップアップに知らせる。
 
-図のもと: `popup.js` の `beginSliderGesture`、`volumeSlider` の `input` の受け取り側、`sendManualGain`、`refreshDisplay`。`content.js` の `handleMessage` (`setGainLive`)、`currentGestureState`、`isCurrentManualGainLocked`、`commitGain`。
+図のもと: `popup.js` の `beginSliderGesture`、`volumeSlider` の `input` の受け取り側、`sendManualGain`、`refreshDisplay`。`content.js` の `handleMessage` (`setGainLive`)、`currentGestureState`、`isCurrentManualGainLocked`、`commitGain`、`startPreview`、`endPreview`、`endIdlePreview`、`commitGainFromElsewhere`。
 
 ## ポップアップ: スライダーを離したとき (`change`) とプリセットボタン
 
@@ -209,10 +213,14 @@ sequenceDiagram
     Note over P: appliesTo は currentAppliesTo、スライダーはプリセットの位置へ動く
   end
   P->>C: setGain、appliesTo、gain
+  Note over C: スライダーの試し聞きが終わる
   alt appliesTo が currentGestureState() と違う
     C->>C: restoreGainAfterFailedSave() が applyPreferredGain() を動かす
     C-->>P: ok false、state moved
   else その種別の Auto が ON で、レベルを持っている
+    opt この setGain の前に試し聞きがあった
+      C->>C: restoreGainAfterFailedSave() が applyPreferredGain() を動かす
+    end
     C-->>P: ok false、auto apply controls current gain
   else 受け付ける
     C->>G: commitGain(gain)
@@ -233,7 +241,7 @@ sequenceDiagram
 - プリセットボタンは「0%」「50%」「100%」「200%」「400%」「MAX」(`data-vol` は 600)。ポップアップがチャンネル ID を持っていなければ、何も送らない。
 - 保存する値は、適用ゲイン (`commitGain` が切りそろえたあとの値) を版の比率で割ったもので、素の音声の版を基準にした値になる。どちらのレベルも分からないときは、比率は 1 で `heldAgainstPlain` は false。
 - `autoApply` はその時点のその種別の Auto の状態で、チャンネル個別のフラグとして書かれる。Auto が ON でレベルがあるときは操作が断られるので、Auto が ON のまま保存されるのはレベルを持っていないとき (Auto が代わりに保存ゲインを使うとき) で、その保存はチャンネルの Auto を ON に固定する。
-- `restoreGainAfterFailedSave()` は `applyPreferredGain()` を動かすので、ゲインはその関数が保存内容から決める値に戻る。ポップアップへの返事はそのあと。
+- `restoreGainAfterFailedSave()` は、続いている試し聞きを終わらせて `applyPreferredGain()` を動かすので、ゲインはその関数が保存内容から決める値に戻る。ポップアップへの返事はそのあと。
 
 図のもと: `popup.js` の `volumeSlider` の `change` の受け取り側、プリセットの `click` の受け取り側、`sendManualGain`。`content.js` の `handleMessage` (`setGain`)、`fillCurrentChannelNameFromDomFallback`、`playingGainToStored`、`saveManualChannelGain`、`restoreGainAfterFailedSave`。
 
@@ -435,6 +443,7 @@ sequenceDiagram
 - 新しい動画 ID なら、`loudnessDb` と `baseLoudnessDb` をメッセージから入れる (無ければ `null`)。同じ動画なら、メッセージに有限の `loudnessDb` があるときだけ置き換える。`liveLkfs` はメッセージのたびに置き換えるので、それが無いメッセージはライブのレベルを消す。手元のレベル (`readLiveLkfs`) にも同じ値を入れる。ライブのレベルがあるメッセージは、それをその動画の `liveLevelBefore` として持ち、同じ動画で前に持っていたものより上がった量を 0.1 dB に丸めて `liveLevelRise` に入れる (ライブのレベルが無いメッセージと、別の動画のメッセージでは null)。ライブのレベルが無いメッセージは、`liveRaiseFrom` の `at` を null にする。
 - チャンネルは、メッセージに有限の `loudnessDb` か真偽値の `isLiveContent` があり、UC の `channelId` があるときに受け取る。ID が変わると、`applyPreferredGain()` が保存内容から決め直すまで、両方の種別の Auto を OFF にしておく。名前は `author`、無ければページ、それも無ければ ID から取る。
 - 旧形式の取り込みが終わっていない間 (`storageSettled` が false) は `applyAutomaticLoudnessGain` が false を返し、メッセージは `applyPreferredGain()` に回る。こちらは取り込みが終わるのを待つ。
+- スライダーの試し聞きが続いている間 (「ポップアップ: スライダーを動かしている間 (`input`)」を参照) は、図のゲインを入れずに取っておく。
 - Auto のゲインをかけるところで例外が出たときは、受け取り側がそれを `reportFailure('apply failed')` で記録する。`syncLiveFollow()` とレベルの待ち手は、そのあとでいつもどおり動く。
 - 同じ動画でもう一度届いたとき (音声の版が変わった、プレイヤーがレベルを示した、ライブの追従) も、同じ手順を通る。Auto が ON で `baseLoudnessDb` が同じなら、Auto の保存は同じゲインと同じ印を運び、名前と url も同じなら service worker は何も `set` しない。Auto が OFF なら、保存ゲインに新しい版の比率を掛けて鳴らし直し、何も保存しない。
 
@@ -595,7 +604,7 @@ sequenceDiagram
     else その種別に何も保存されていない
       Note over C: 変えない。ただしその種別の Auto が変わったときは 1.0
     end
-    opt ゲインが currentGain と違う
+    opt ゲインが currentGain と違い、スライダーの試し聞きが続いていない
       C->>G: commitGain(gain)
     end
   end
@@ -679,7 +688,9 @@ sequenceDiagram
 |---|---|---|---|
 | ポップアップのスライダーの `input` | 変わる (試し聞き) | されない | `popup.js` の `volumeSlider` の `input` の受け取り側。`content.js` の `handleMessage` (`setGainLive`)、`commitGain` |
 | ポップアップのスライダーの `change`、プリセットボタン | 変わる | される: Auto の状態をチャンネル個別のフラグにして `saveChannelGain` | `handleMessage` (`setGain`)、`saveManualChannelGain` |
-| `setGain` が `state moved` で断られた | `applyPreferredGain` が決める値に戻る | されない | `restoreGainAfterFailedSave` |
+| `setGain` が `state moved` で断られた、または試し聞きのあとに `auto apply controls current gain` で断られた | `applyPreferredGain` が決める値に戻る | されない | `restoreGainAfterFailedSave` |
+| スライダーの試し聞きが続いている間に、ほかから来たゲイン | 操作が終わるまで変わらない | その出来事の行と同じ | `commitGainFromElsewhere` |
+| `setGain` の無いまま終わった試し聞きで、取っておいたゲインがある | `applyPreferredGain` が決める値に戻る | ブリッジの返事の行と同じ | `endIdlePreview` |
 | `loudnessDb` での「チャンネルに適用」 | 変わる | される: `calcGain(baseLoudnessDb)`、フラグ `false`、基準が分かれば印 | `handleMessage` (`applyLoudness`)、`saveManualChannelGain` |
 | ライブのレベルでの「チャンネルに適用」 | 変わる | される: ライブのゲイン、フラグ `false`、印なし | `handleMessage` (`applyLoudness`)、`saveLiveChannelGain` |
 | レベルがあるときに「LUFS 自動適用」を ON | 変わる | される: ゲインとフラグ `true` を 1 回で | `handleMessage` (`setAutoApplyLoudness`) |

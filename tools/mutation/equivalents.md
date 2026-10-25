@@ -38,31 +38,31 @@ write sent and the follow set are the same either way.
 inside a `try`, so a null source is caught, and the assignment below runs either
 way.
 
-- `content.js:689` a guard is always taken ×1 — if (sourceNode) {
+- `content.js:692` a guard is always taken ×1 — if (sourceNode) {
 
 
 The navigation observer's watch-page check. `triggerApply` opens with the same
 one.
 
-- `content.js:951` a guard is dropped ×1 — if (!isWatchPage()) return;
+- `content.js:997` a guard is dropped ×1 — if (!isWatchPage()) return;
 
 `respondOnce`'s guard against a second answer, and `return true` after a
 synchronous `sendResponse`. Both were measured against Chrome rather than
 reasoned about: a response sent inside the listener is delivered whatever the
 listener returns, and a second one is dropped rather than delivered or thrown.
 
-- `content.js:1067` a guard is dropped ×1 — if (answered) return;
-- `content.js:1081` true becomes false ×1 — return true;
-- `content.js:1088` true becomes false ×1 — return true;
-- `content.js:1094` true becomes false ×1 — return true;
-- `content.js:1100` true becomes false ×1 — return true;
-- `content.js:1104` true becomes false ×1 — return true;
-- `content.js:1108` true becomes false ×1 — return true;
-- `content.js:1137` true becomes false ×1 — return true;
+- `content.js:1114` a guard is dropped ×1 — if (answered) return;
+- `content.js:1128` true becomes false ×1 — return true;
+- `content.js:1135` true becomes false ×1 — return true;
 - `content.js:1141` true becomes false ×1 — return true;
-- `content.js:1145` true becomes false ×1 — return true;
-- `content.js:1158` true becomes false ×1 — return true;
-- `content.js:1177` true becomes false ×1 — return true;
+- `content.js:1147` true becomes false ×1 — return true;
+- `content.js:1151` true becomes false ×1 — return true;
+- `content.js:1155` true becomes false ×1 — return true;
+- `content.js:1184` true becomes false ×1 — return true;
+- `content.js:1188` true becomes false ×1 — return true;
+- `content.js:1193` true becomes false ×1 — return true;
+- `content.js:1210` true becomes false ×1 — return true;
+- `content.js:1235` true becomes false ×1 — return true;
 
 ## popup.js
 
