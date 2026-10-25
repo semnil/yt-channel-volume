@@ -46,6 +46,10 @@
   let activeTabId = null;
   let hasLoudness = false;
   let currentLoudnessDb = null;
+  // A live stream's own level, where the player names one; it goes before the
+  // response's level.
+  let currentLiveLkfs = null;
+  let currentContentLufs = null;
   let currentTargetLufs = DEFAULT_TARGET_LUFS;
   let lastGain = 1.0;
   let displayUnit = '%';
@@ -55,7 +59,12 @@
 
   function fmtGain(gain) { return formatGain(gain, displayUnit); }
 
-  // Use shared calcGain from utils.js
+  // Use shared calcGain / calcLiveGain from utils.js
+  function suggestedGain() {
+    return currentLiveLkfs !== null
+      ? calcLiveGain(currentLiveLkfs, currentTargetLufs)
+      : calcGain(currentLoudnessDb, currentTargetLufs);
+  }
 
   function setCardValue(el, text, unitText, extraClass) {
     el.innerHTML = '';
@@ -79,15 +88,13 @@
 
   function refreshDisplay() {
     if (hasLoudness) {
-      const contentLufs = YT_REFERENCE_LUFS + currentLoudnessDb;
-      setCardValue(contentLufsEl, contentLufs.toFixed(1), ' LUFS');
+      setCardValue(contentLufsEl, currentContentLufs.toFixed(1), ' LUFS');
     } else {
       setUnknown(contentLufsEl);
     }
 
     if (hasLoudness) {
-      const sg = calcGain(currentLoudnessDb, currentTargetLufs);
-      const f = fmtGain(sg);
+      const f = fmtGain(suggestedGain());
       setCardValue(suggestedVolEl, f.text, f.unit, 'suggested');
     } else {
       setUnknown(suggestedVolEl, 'suggested');
@@ -125,6 +132,8 @@
 
     hasLoudness = state.contentLufs !== null && state.contentLufs !== undefined;
     currentLoudnessDb = state.loudnessDb;
+    currentLiveLkfs = Number.isFinite(state.liveLkfs) ? state.liveLkfs : null;
+    currentContentLufs = hasLoudness ? state.contentLufs : null;
     lastGain = state.gain ?? 1.0;
     currentVideoType = state.videoType || 'video';
     autoApplyLoudnessVideo = !!state.autoApplyLoudnessVideo;
@@ -162,8 +171,7 @@
       applyBtn.textContent = msg('applyToChannel');
       applyHint.textContent = msg('hintAutoApplyEnabled');
     } else if (hasLoudness && currentChannel.id) {
-      const sg = calcGain(currentLoudnessDb, currentTargetLufs);
-      const f = fmtGain(sg);
+      const f = fmtGain(suggestedGain());
       const typeLabel = currentVideoType === 'live' ? msg('typeLive') : msg('typeVideo');
       applyBtn.disabled = false;
       applyBtn.textContent = msg('applyToChannelWithValue', [f.text + f.unit]) + ' (' + typeLabel + ')';

@@ -536,6 +536,13 @@ const listed = require('child_process').spawnSync('python3', ['-B', 'pack.py', '
 assert(listed.status === 0, `pack.py --list runs — ${(listed.stderr || '').trim()}`);
 const packaged = listed.stdout.split('\n').map(line => line.trim()).filter(Boolean);
 const packagedUnder = prefix => packaged.some(name => name === prefix || name.startsWith(prefix + '/'));
+// Code fenced as YTCV_DIAG is for evaluating a build on this machine and is
+// not shipped: no file the package carries may hold the fence.
+assert(packaged.length > 0, 'pack.py --list selects files to look into');
+for (const name of packaged) {
+  assert(!fs.readFileSync('./' + name).includes('YTCV_DIAG'),
+    `${name} is packaged and holds code fenced as YTCV_DIAG`);
+}
 // pack.py declares the keys it follows; this reads that declaration and
 // resolves every one of them itself. The two share the list of keys and
 // nothing else — the reading, the parsing and the spelling are separate here —
@@ -3073,6 +3080,34 @@ assert(renditionGainRatio(-0.33, null) === 1, 'no base level: the gain as it is'
 assert(renditionGainRatio(undefined, undefined) === 1, 'neither: the gain as it is');
 assert(renditionGainRatio(NaN, -12.39) === 1, 'NaN → 1');
 assert(renditionGainRatio(-Infinity, -12.39) === 1, 'a level that is not finite → 1');
+
+section('calcLiveGain — a live stream\'s own level, taken as it stands');
+
+// A level YouTube has not normalized: louder than -14 LUFS is not taken to -14.
+assertClose(calcLiveGain(-24.77, -18), Math.pow(10, 6.77 / 20), 1e-9, 'live -24.77, target -18');
+assertClose(calcLiveGain(-10, -18), Math.pow(10, -8 / 20), 1e-9, 'live -10, target -18');
+assert(Math.abs(calcLiveGain(-10, -18) - calcGain(-10 - YT_REFERENCE_LUFS, -18)) > 0.1,
+  'which is not the gain the same level gets once YouTube has normalized it');
+assert(calcLiveGain(-18, -18) === 1, 'a level already at the target is passed through');
+assert(calcLiveGain(-60, -18) === 6.0, 'very quiet → clamped to 6.0 (600%)');
+assert(calcLiveGain(-7000, -18) === 1.0, 'a gain too large to be a number → 1.0');
+assert(calcLiveGain(NaN, -18) === 1.0, 'NaN level → 1.0');
+assert(calcLiveGain(Infinity, -18) === 1.0, 'Infinity level → 1.0');
+assert(calcLiveGain(-Infinity, -18) === 1.0, '-Infinity level → 1.0');
+assert(calcLiveGain(-24, NaN) === 1.0, 'NaN target → 1.0');
+assert(calcLiveGain(-24, Infinity) === 1.0, 'Infinity target → 1.0');
+
+section('gainChangeDb — how far a gain has moved');
+assertClose(gainChangeDb(Math.pow(10, 1 / 20), 1), 1, 1e-9, 'one dB up');
+assertClose(gainChangeDb(1, Math.pow(10, 1 / 20)), 1, 1e-9, 'one dB down is as far');
+assert(gainChangeDb(Math.pow(10, 0.99 / 20), 1) < 1, 'just under one dB');
+assert(gainChangeDb(Math.pow(10, 1.01 / 20), 1) > 1, 'just over one dB');
+assert(gainChangeDb(2, 2) === 0, 'no move');
+for (const [gain, baseline] of [[0, 1], [1, 0], [-1, 1], [1, -1], [NaN, 1], [1, NaN],
+  [Infinity, 1], [1, Infinity], [null, 1], [1, null], [undefined, 1], ['1', 1]]) {
+  assert(gainChangeDb(gain, baseline) === Infinity,
+    `${String(gain)} against ${String(baseline)} is infinitely far`);
+}
 
 // ── Constants ────────────────────────────────────────────────────────
 

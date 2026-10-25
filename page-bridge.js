@@ -21,6 +21,7 @@
       isLiveNow: info.isLiveNow,
       channelId: info.channelId,
       author: info.author,
+      liveLkfs: info.liveLkfs,
       source
     }, '*');
   }
@@ -67,12 +68,10 @@
     return typeof lkfs === 'number' && typeof target === 'number' ? lkfs - target : null;
   }
 
-  // The level of what the player is playing now, as its stats-for-nerds volume
-  // line names it: `cont.<LKFS>dB` belongs to the rendition it chose, whichever
-  // audio track, stable volume or voice boost chose it. The line is taken only
-  // once the player names the formats it plays (before that it carries the
-  // response's level) and only while it names the video the URL does.
-  function playingLoudnessLkfs() {
+  // The player's stats-for-nerds volume line. It is taken only once the player
+  // names the formats it plays (before that it carries the response's level)
+  // and only while it names the video the URL does; otherwise there is none.
+  function settledVolumeLine() {
     try {
       const player = document.getElementById('movie_player');
       if (!player || typeof player.getStatsForNerds !== 'function') return null;
@@ -80,11 +79,28 @@
       if (!stats?.codecs) return null;
       const videoId = currentVideoId();
       if (!videoId || String(stats.video_id_and_cpn).split(' / ')[0] !== videoId) return null;
-      const m = /\bcont\.(-?\d+(?:\.\d+)?)dB\b/.exec(String(stats.volume));
-      return m ? Number(m[1]) : null;
+      return String(stats.volume);
     } catch (_) {
       return null;
     }
+  }
+
+  // The level of what the player is playing now, as the volume line names it:
+  // `cont.<LKFS>dB` belongs to the rendition it chose, whichever audio track,
+  // stable volume or voice boost chose it.
+  function playingLoudnessLkfs() {
+    const line = settledVolumeLine();
+    const m = line === null ? null : /\bcont\.(-?\d+(?:\.\d+)?)dB\b/.exec(line);
+    return m ? Number(m[1]) : null;
+  }
+
+  // The level of a live stream on air, as the volume line names it:
+  // `live.<LKFS>dB` is taken as the absolute level of what is being played,
+  // with no normalization of YouTube's applied to it.
+  function playingLiveLkfs() {
+    const line = settledVolumeLine();
+    const m = line === null ? null : /\blive\.(-?\d+(?:\.\d+)?)dB\b/.exec(line);
+    return m ? Number(m[1]) : null;
   }
 
   // `db` is the level of the rendition played; `baseDb` is the level of the
@@ -278,13 +294,19 @@
 
   // Whichever route an answer takes, the level of what the player is playing
   // takes over from the one the response describes, and answering with it ends
-  // the looking below. Until the player names what it plays, the response's
-  // level stands, and the player is looked at again until it does.
+  // the looking below. A live stream's own level goes with the answer as
+  // `liveLkfs`, and answering with it ends the looking as well. Until the
+  // player names either, the response's level stands, and the player is looked
+  // at again until it does.
   function preferPlayingLevel(result, data) {
     const lkfs = playingLoudnessLkfs();
+    const live = playingLiveLkfs();
+    result.liveLkfs = live;
     const playing = playingLevel(lkfs, data);
     if (playing !== null) {
       result.db = playing;
+      stopFollowing();
+    } else if (live !== null) {
       stopFollowing();
     } else if (lkfs === null && isWatchPage()) {
       followPlaying();
@@ -310,7 +332,8 @@
   }
 
   // Looked at every FOLLOW_INTERVAL_MS, FOLLOW_ATTEMPTS times at most, and
-  // answered again (source `playing`) the first time the player names a level.
+  // answered again (source `playing`) the first time the player names a level,
+  // its rendition's or a live stream's.
   const FOLLOW_INTERVAL_MS = 250;
   const FOLLOW_ATTEMPTS = 40;
   let followTimer = null;
@@ -320,7 +343,7 @@
     const look = () => {
       followTimer = null;
       if (!isWatchPage()) return;
-      if (playingLoudnessLkfs() !== null) {
+      if (playingLoudnessLkfs() !== null || playingLiveLkfs() !== null) {
         answerCurrentVideo('playing');
         return;
       }
@@ -372,7 +395,8 @@
         moviePlayer: summarize(mpPr),
         drcPreference: drcPreference(),
         playerVolume,
-        playingLkfs: playingLoudnessLkfs()
+        playingLkfs: playingLoudnessLkfs(),
+        liveLkfs: playingLiveLkfs()
       });
     } catch (_) { /* logging must never break flow */ }
   });
