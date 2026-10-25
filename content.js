@@ -100,6 +100,9 @@
   // The same for the settings alone: a settings read is answered after a change
   // that came in while it was out, and what it read is older than that change.
   let settingsRevision = 0;
+  // What applyPreferredGain hands back when a change notification arrived
+  // while it read the entry, and it applied nothing.
+  const STORAGE_MOVED = 'storage moved';
   // Resolves once the legacy fold has been attempted; `storageMigrated` says
   // whether it succeeded. Until it has, the channel map still holds the
   // pre-unification shape, where a gain without an Auto flag meant Auto was
@@ -523,8 +526,8 @@
     // navigation, bridge metadata, or a settings change.
     if (requestedVideoId !== getUrlVideoId() ||
         requestedChannelId !== currentChannel.id ||
-        requestedVideoType !== currentVideoType ||
-        requestedStorageRevision !== storageRevision) return;
+        requestedVideoType !== currentVideoType) return;
+    if (requestedStorageRevision !== storageRevision) return STORAGE_MOVED;
 
     setCurrentAutoApplyFromEntry(entry);
     const autoEnabled = isCurrentAutoApplyEnabled(requestedVideoType);
@@ -1028,10 +1031,15 @@
         const targetBefore = targetLufs;
         takeSettings(changes[SETTINGS_KEY].newValue || {});
         if (liveRaiseFrom && targetLufs !== targetBefore) liveRaiseFrom = { ...liveRaiseFrom, at: -Infinity };
-        applyPreferredGain().then(() => {
-          updateGainOverlay();
-          notifyPopup();
-        }).catch(err => reportFailure('apply failed', err));
+        applyPreferredGain()
+          // A notification that landed during the read dropped the apply,
+          // Auto's save with it; it is made once more against storage as it
+          // stands then.
+          .then(result => (result === STORAGE_MOVED ? applyPreferredGain() : result))
+          .then(() => {
+            updateGainOverlay();
+            notifyPopup();
+          }).catch(err => reportFailure('apply failed', err));
         return;
       }
       if (area !== 'local') return;

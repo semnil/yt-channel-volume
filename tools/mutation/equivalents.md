@@ -32,37 +32,37 @@ message handler starts the evaluation without reading what it hands back, so
 which text it carries changes nothing the handler does: the gain applied, the
 write sent and the follow set are the same either way.
 
-- `content.js:320` === becomes !== ×1 — ===
+- `content.js:323` === becomes !== ×1 — ===
 
 `ensureAudioChain`'s check before the teardown. The disconnect it guards is
 inside a `try`, so a null source is caught, and the assignment below runs either
 way.
 
-- `content.js:692` a guard is always taken ×1 — if (sourceNode) {
+- `content.js:695` a guard is always taken ×1 — if (sourceNode) {
 
 
 The navigation observer's watch-page check. `triggerApply` opens with the same
 one.
 
-- `content.js:997` a guard is dropped ×1 — if (!isWatchPage()) return;
+- `content.js:1000` a guard is dropped ×1 — if (!isWatchPage()) return;
 
 `respondOnce`'s guard against a second answer, and `return true` after a
 synchronous `sendResponse`. Both were measured against Chrome rather than
 reasoned about: a response sent inside the listener is delivered whatever the
 listener returns, and a second one is dropped rather than delivered or thrown.
 
-- `content.js:1114` a guard is dropped ×1 — if (answered) return;
-- `content.js:1128` true becomes false ×1 — return true;
-- `content.js:1135` true becomes false ×1 — return true;
-- `content.js:1141` true becomes false ×1 — return true;
-- `content.js:1147` true becomes false ×1 — return true;
-- `content.js:1151` true becomes false ×1 — return true;
+- `content.js:1122` a guard is dropped ×1 — if (answered) return;
+- `content.js:1136` true becomes false ×1 — return true;
+- `content.js:1143` true becomes false ×1 — return true;
+- `content.js:1149` true becomes false ×1 — return true;
 - `content.js:1155` true becomes false ×1 — return true;
-- `content.js:1184` true becomes false ×1 — return true;
-- `content.js:1188` true becomes false ×1 — return true;
-- `content.js:1193` true becomes false ×1 — return true;
-- `content.js:1210` true becomes false ×1 — return true;
-- `content.js:1235` true becomes false ×1 — return true;
+- `content.js:1159` true becomes false ×1 — return true;
+- `content.js:1163` true becomes false ×1 — return true;
+- `content.js:1192` true becomes false ×1 — return true;
+- `content.js:1196` true becomes false ×1 — return true;
+- `content.js:1201` true becomes false ×1 — return true;
+- `content.js:1218` true becomes false ×1 — return true;
+- `content.js:1243` true becomes false ×1 — return true;
 
 ## popup.js
 

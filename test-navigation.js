@@ -9682,6 +9682,8 @@ async function runTests() {
     // A tab that has applied a video of one channel, with nothing the cases
     // before it left behind.
     const onVideo = async ({ entry = { gainVideo: 0.5, autoApplyLoudnessVideo: false }, loudnessDb = null } = {}) => {
+      ytcv.endPreview();
+      heldPreviewEnds.length = 0;
       ytcv._set('currentAutoApplyLoudnessVideo', false);
       ytcv._set('currentAutoApplyLoudnessLive', false);
       ytcv._set('currentLiveLkfs', null);
@@ -9983,6 +9985,34 @@ async function runTests() {
       assert(ytcv.state.currentVideoType === 'live' && ytcv.state.currentGain === 1.0,
         `the live type's gain plays at once (${ytcv.state.currentGain})`);
       ytcv.endPreview();
+    }
+
+    section('Settings change: Auto\'s save dropped by a notification during its read is made again');
+    {
+      await onVideo({ entry: { gainVideo: 0.7, gainVideoPlain: true, autoApplyLoudnessVideo: true }, loudnessDb: -6 });
+      const realGet = chrome.storage.local.get;
+      let releaseRead = null;
+      chrome.storage.local.get = (key) => {
+        if (key !== CHANNEL_VOLUMES_KEY || releaseRead) return realGet(key);
+        return new Promise((resolve) => { releaseRead = () => resolve(realGet(key)); });
+      };
+      mockSyncStorage.autoLoudnessSettings = { targetLufs: -22 };
+      simulateStorageChange({ [SETTINGS_KEY]: { oldValue: { targetLufs: -18 }, newValue: { targetLufs: -22 } } });
+      await tick();
+      // Another tab's save on another channel lands while this tab reads.
+      simulateStorageChange({ [CHANNEL_VOLUMES_KEY]: {
+        oldValue: mockStorage.channelVolumes,
+        newValue: { ...mockStorage.channelVolumes, UCelsewhere: { name: 'Elsewhere', gainVideo: 0.3 } }
+      } });
+      releaseRead();
+      await settle();
+      chrome.storage.local.get = realGet;
+      const target = calcGain(-6, -22);
+      const stored = mockSentMessages.filter((m) => m?.type === 'store:saveChannelGain' && m.channelId === TT_CH);
+      assert(stored.length === 1 && stored[0].gain === target && mockStorage.channelVolumes[TT_CH].gainVideo === target,
+        `the new target's gain is stored for the channel (${JSON.stringify(stored.map((m) => m.gain))} / ${mockStorage.channelVolumes[TT_CH].gainVideo})`);
+      assert(ytcv.state.currentGain === target, `and it is the one playing (${ytcv.state.currentGain})`);
+      ytcv._set('targetLufs', -18);
     }
   }
 
