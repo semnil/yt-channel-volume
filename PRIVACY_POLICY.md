@@ -2,7 +2,7 @@
 
 [日本語版はこちら (Japanese)](PRIVACY_POLICY_JA.md)
 
-Last updated: 2026-08-22
+Last updated: 2026-10-25
 
 ## Overview
 
@@ -14,7 +14,7 @@ YT Channel Volume is a Chrome extension that remembers and auto-applies volume s
 
 - **What**: YouTube channel IDs, display names, channel URLs, the volume (gain) values you set for each kind (video / live), the loudness auto-apply switch for each kind, and the gain the extension works out for itself while that switch is on.
 - **Purpose**: Used to automatically apply your preferred volume when you visit a video from a saved channel.
-- **Storage**: Saved locally in `chrome.storage.local` on your device, and never transmitted to any external server. The gain you set is written when you set it. While auto-apply is on, the extension may also write the gain it calculates from a Content Loudness value, without an additional action from you.
+- **Storage**: Saved locally in `chrome.storage.local` on your device, and never transmitted to any external server. The gain you set is written when you set it. While auto-apply is on, the extension may also write the gain it calculates from a Content Loudness value or from a live stream's level, without an additional action from you.
 
 ### Extension Preferences
 
@@ -24,9 +24,9 @@ YT Channel Volume is a Chrome extension that remembers and auto-applies volume s
 
 ### YouTube Video Metadata (read-only)
 
-- **What**: Content Loudness (`loudnessDb`), `isLiveContent`, `isLive`, `channelId`, `videoId`, and the channel name from YouTube's player response.
+- **What**: Content Loudness (`loudnessDb`), `isLiveContent`, `isLive`, `channelId`, `videoId`, and the channel name from YouTube's player response; and the level of what is playing from the volume line of the player's stats for nerds (`cont.`, and on a live stream `live.`).
 - **Purpose**: Display loudness information and calculate suggested volume. Determine whether content is a live stream or a regular video.
-- **Storage**: `channelId` is the key a channel's settings are kept under, so it stays on your device once that channel is saved, and the channel name read beside it is saved as that channel's display name. The Content Loudness value, `isLiveContent`, `isLive` and `videoId` are held in memory only while the video page is open and are discarded on navigation. The gain worked out from the Content Loudness value, however, is saved with the channel's settings.
+- **Storage**: `channelId` is the key a channel's settings are kept under, so it stays on your device once that channel is saved, and the channel name read beside it is saved as that channel's display name. The Content Loudness value, the level read from the stats for nerds, `isLiveContent`, `isLive` and `videoId` are held in memory only while the video page is open and are discarded on navigation. The gain worked out from the Content Loudness value or the live level, however, is saved with the channel's settings.
 
 ## Data NOT Collected
 
@@ -55,7 +55,7 @@ Nowhere. This extension makes **no external network requests**. All data remains
 
 ## Remote Code
 
-This extension does **not** use remote code. All JavaScript is bundled locally within the extension package. The `page-bridge.js` content script runs in the page's main world (`"world": "MAIN"`) to read YouTube's player response data — this is local code, not remotely fetched.
+This extension does **not** use remote code. All JavaScript is bundled locally within the extension package. The `page-bridge.js` content script runs in the page's main world (`"world": "MAIN"`) to read YouTube's player response data and the player's stats for nerds — this is local code, not remotely fetched.
 
 ## Single Purpose
 
