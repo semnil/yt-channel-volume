@@ -647,7 +647,7 @@ sequenceDiagram
   S-->>C: storage.onChanged in sync for autoLoudnessSettings
   C->>C: takeSettings(): targetLufs, the two defaults and showGainOverlay replaced, storageRevision and settingsRevision plus 1
   C->>C: applyPreferredGain(), then updateGainOverlay() and notifyPopup()
-  opt Auto on for the type with a level, after the fold
+  opt Auto on for the type with a level, after the fold, and the target or an all-channel default changed
     C->>W: store:saveChannelGain from applyPreferredGain or evaluateLiveSave (unasked)
   end
 ```
@@ -656,7 +656,7 @@ sequenceDiagram
 - `saveSetting` returns without writing until the first read has finished (`settingsLoaded`), and the controls are disabled in the markup until then. It sends the key and its value to `background.js` as `store:saveSetting`. There `SETTINGS_WRITES.saveSetting` refuses a key that is not one of the five and a value the key cannot hold (`write refused`), and writes the settings, read through `readSettings()`, back to sync with the key replaced, on `queueSettingsWrite()`, the queue the move of the settings to sync runs on.
 - Where Chrome sync is on, settings that another Chrome signed in to the same account writes arrive the same way, as a `chrome.storage.sync` notification ([`chrome.storage`](https://developer.chrome.com/docs/extensions/reference/api/storage)).
 - The two default toggles are disabled while their write is out; a failed write puts the checkbox back. The other three controls wait for their write as well. When it fails, the page reads the settings again through `readSettings()` and shows what it holds (unless a change notification arrived meanwhile), and the line under the settings shows `settingsSaveFailed` ("Could not save the setting. The saved value was restored."). Where that read fails as well, nothing is put back, and the line shows `settingsLoadFailed` ("Could not load the saved settings. Please reload the page.") instead. A write of one of the three that lands takes the line down.
-- No control on this page writes `channelVolumes`. In each YouTube tab, `applyPreferredGain()` applies the new target and the new defaults: where Auto is on for the type with a known level, it applies the new Auto gain and stores it (Auto's own save, or the live save decision). Where Auto is off or no level is known, the stored gain plays as before. When a change notification lands while that apply reads the entry, the apply returns having applied and stored nothing (`STORAGE_MOVED`), and the listener runs it once more.
+- No control on this page writes `channelVolumes`. In each YouTube tab, `applyPreferredGain()` applies the new target and the new defaults: where Auto is on for the type with a known level, it applies the new Auto gain, and stores it (Auto's own save, or the live save decision) when the change moved the target or an all-channel default as this tab held them. A change of the display unit or the gain overlay applies the gain again and stores nothing (`stores: false`). Where Auto is off or no level is known, the stored gain plays as before. When a change notification lands while that apply reads the entry, the apply returns having applied and stored nothing (`STORAGE_MOVED`), and the listener runs it once more.
 - A change of an all-channel default changes Auto only for channels without their own flag (or the legacy flag) for that type.
 
 Drawn from: `options.js` the `targetSlider`, `defaultAutoVideoToggle`, `defaultAutoLiveToggle`, `unitToggle` and `overlayToggle` listeners, `saveSetting`, `applySettings`, the `chrome.storage.onChanged` listener; `utils.js` `SETTINGS_WRITES`, `SETTING_FIELDS`, `queueSettingsWrite`, `readSettings`; `content.js` the `chrome.storage.onChanged` listener, `takeSettings`, `applyPreferredGain`, `updateGainOverlay`.
@@ -720,7 +720,7 @@ Drawn from: `options.js` `renderChannels` (the `.ch-del` click listener), the `c
 | Worker start | No | Settings still in local, moved to sync | `moveSettingsToSync` |
 | Auto apply before the fold has landed | Yes | No | `applyAutomaticLoudnessGain`, `applyPreferredGain`, `evaluateLiveSave` |
 | `channelVolumes` change notification | When the computed gain differs | No | `content.js` `chrome.storage.onChanged` listener |
-| `autoLoudnessSettings` change | Through `applyPreferredGain` | `autoLoudnessSettings` in sync by `background.js` for `options.js`, and Auto's own save in tabs with Auto on and a level | `saveSetting`, `SETTINGS_WRITES.saveSetting`, `content.js` `chrome.storage.onChanged` listener |
+| `autoLoudnessSettings` change | Through `applyPreferredGain` | `autoLoudnessSettings` in sync by `background.js` for `options.js`, and Auto's own save in tabs with Auto on and a level, when the target or an all-channel default changed | `saveSetting`, `SETTINGS_WRITES.saveSetting`, `content.js` `chrome.storage.onChanged` listener |
 | `unifiedGains` arriving from another context | Through `applyPreferredGain` | Auto's own save, with Auto on and a level | `content.js` `chrome.storage.onChanged` listener |
 | Settings page "×" on a row, "Clear all" | Tabs on the channel: 1.0, or the Auto gain | Yes: `deleteChannel` / `clearChannels` | `renderChannels`, the `clearAllBtn` listener |
 

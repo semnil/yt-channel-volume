@@ -38,31 +38,31 @@ write sent and the follow set are the same either way.
 inside a `try`, so a null source is caught, and the assignment below runs either
 way.
 
-- `content.js:720` a guard is always taken ×1 — if (sourceNode) {
+- `content.js:723` a guard is always taken ×1 — if (sourceNode) {
 
 
 The navigation observer's watch-page check. `triggerApply` opens with the same
 one.
 
-- `content.js:1046` a guard is dropped ×1 — if (!isWatchPage()) return;
+- `content.js:1049` a guard is dropped ×1 — if (!isWatchPage()) return;
 
 `respondOnce`'s guard against a second answer, and `return true` after a
 synchronous `sendResponse`. Both were measured against Chrome rather than
 reasoned about: a response sent inside the listener is delivered whatever the
 listener returns, and a second one is dropped rather than delivered or thrown.
 
-- `content.js:1168` a guard is dropped ×1 — if (answered) return;
-- `content.js:1182` true becomes false ×1 — return true;
-- `content.js:1189` true becomes false ×1 — return true;
-- `content.js:1195` true becomes false ×1 — return true;
-- `content.js:1201` true becomes false ×1 — return true;
+- `content.js:1178` a guard is dropped ×1 — if (answered) return;
+- `content.js:1192` true becomes false ×1 — return true;
+- `content.js:1199` true becomes false ×1 — return true;
 - `content.js:1205` true becomes false ×1 — return true;
-- `content.js:1209` true becomes false ×1 — return true;
-- `content.js:1238` true becomes false ×1 — return true;
-- `content.js:1242` true becomes false ×1 — return true;
-- `content.js:1247` true becomes false ×1 — return true;
-- `content.js:1264` true becomes false ×1 — return true;
-- `content.js:1289` true becomes false ×1 — return true;
+- `content.js:1211` true becomes false ×1 — return true;
+- `content.js:1215` true becomes false ×1 — return true;
+- `content.js:1219` true becomes false ×1 — return true;
+- `content.js:1248` true becomes false ×1 — return true;
+- `content.js:1252` true becomes false ×1 — return true;
+- `content.js:1257` true becomes false ×1 — return true;
+- `content.js:1274` true becomes false ×1 — return true;
+- `content.js:1299` true becomes false ×1 — return true;
 
 The level in hand taken as Auto's when Auto is turned on with a level known.
 Where no live level is in hand (`readLiveLkfs` null) the level known is the
@@ -73,7 +73,7 @@ navigation clears both, and turning Auto on sets Auto's from the one in hand.
 level set, and every way that level is set also sets the rise. Taking the
 branch then writes values nothing reads differently.
 
-- `content.js:1303` a guard is always taken ×1 — if (live) {
+- `content.js:1313` a guard is always taken ×1 — if (live) {
 
 ## popup.js
 

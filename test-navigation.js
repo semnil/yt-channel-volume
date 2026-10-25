@@ -10687,6 +10687,44 @@ async function runTests() {
       assert(writes().length === 1 && writes()[0].value === -12, `a drag writes at its end (${JSON.stringify(writes())})`);
     }
 
+    section('Settings change: Auto\'s own save follows the target and the defaults alone');
+    for (const [what, next, stores] of [
+      ['the display unit', { targetLufs: -18, displayUnit: 'dB' }, false],
+      ['the gain overlay', { targetLufs: -18, showGainOverlay: true }, false],
+      ['the target', { targetLufs: -22 }, true],
+      ['the Video default', { targetLufs: -18, autoApplyLoudnessVideoDefault: true }, true],
+      ['the Live default', { targetLufs: -18, autoApplyLoudnessLiveDefault: true }, true]
+    ]) {
+      await onVideo({ entry: { gainVideo: 0.5, autoApplyLoudnessVideo: true }, loudnessDb: -6 });
+      mockSyncStorage.autoLoudnessSettings = { ...next };
+      simulateStorageChange({ [SETTINGS_KEY]: { oldValue: { targetLufs: -18 }, newValue: { ...next } } });
+      await settle();
+      const saves = mockSentMessages.filter((m) => m?.type === 'store:saveChannelGain');
+      assert((saves.length > 0) === stores,
+        `a change of ${what} ${stores ? 'stores' : 'stores nothing'} (${JSON.stringify(saves.map((m) => m.gain))})`);
+      assert(ytcv.state.currentGain === calcGain(-6, next.targetLufs),
+        `and the gain is applied again either way (${ytcv.state.currentGain})`);
+      ytcv._set('targetLufs', -18);
+    }
+    {
+      // The live save the same way: a first live level is stored only for a
+      // change that moves what Auto works out.
+      await onVideo({ entry: { gainVideo: 0.5, autoApplyLoudnessVideo: true } });
+      ytcv._set('currentLiveLkfs', -20);
+      simulateStorageChange({ [SETTINGS_KEY]: { oldValue: { targetLufs: -18 }, newValue: { targetLufs: -18, displayUnit: 'dB' } } });
+      await settle();
+      assert(mockSentMessages.filter((m) => m?.type === 'store:saveChannelGain').length === 0,
+        'a change of the unit makes no live save');
+      simulateStorageChange({ [SETTINGS_KEY]: { oldValue: { targetLufs: -18 }, newValue: { targetLufs: -20, displayUnit: 'dB' } } });
+      await settle();
+      assert(mockSentMessages.filter((m) => m?.type === 'store:saveChannelGain').length === 1,
+        'while a change of the target does');
+      ytcv._set('currentLiveLkfs', null);
+      ytcv._set('currentAutoApplyLoudnessVideo', false);
+      ytcv._set('targetLufs', -18);
+      ytcv.syncLiveFollow();
+    }
+
     section('Popup: the thumb goes back to the gain a blur saved');
     {
       const popup = makePopup({

@@ -533,8 +533,9 @@
   }
 
   // `fromMessage` is an apply a bridge message starts, which stores only once
-  // `appliedVideoId` names the URL's video.
-  async function applyPreferredGain(source = 'apply', { fromMessage = false } = {}) {
+  // `appliedVideoId` names the URL's video. `stores: false` applies the gain
+  // and makes neither Auto's own save nor the live save.
+  async function applyPreferredGain(source = 'apply', { fromMessage = false, stores = true } = {}) {
     await storageReady;
     const requestedVideoId = getUrlVideoId();
     const requestedChannelId = currentChannel.id;
@@ -554,7 +555,7 @@
     syncLiveFollow();
     if (autoEnabled && currentLiveLkfs !== null) {
       commitLiveGain();
-      await evaluateLiveSave(source, { fromMessage });
+      await evaluateLiveSave(source, { fromMessage, stores });
       return;
     }
     const hasLoudness = currentLoudnessDb !== null;
@@ -563,7 +564,7 @@
       ? calcGainFromLoudness(currentLoudnessDb)
       : (stored != null ? storedGainToPlaying(entry, requestedVideoType, stored) : 1.0);
     commitGainFromElsewhere(gain);
-    if (autoEnabled && hasLoudness && storageMigrated && isVideoPlaying() &&
+    if (stores && autoEnabled && hasLoudness && storageMigrated && isVideoPlaying() &&
         (!fromMessage || appliedVideoId === requestedVideoId)) {
       // The gain is already playing. A failed write must not abort the caller —
       // `forceDetect` answers the popup from this path.
@@ -584,7 +585,7 @@
   // as it stands.
   const LIVE_SAVE_STEP_DB = 1;
 
-  async function evaluateLiveSave(source, { fromMessage = false } = {}) {
+  async function evaluateLiveSave(source, { fromMessage = false, stores = true } = {}) {
     const videoId = getUrlVideoId();
     const videoType = currentVideoType;
     const gain = calcGainFromLiveLevel();
@@ -610,6 +611,8 @@
       result.reason = 'not following';
     } else if (result.decision === 'skip') {
       result.reason = 'under step';
+    } else if (!stores) {
+      result.reason = 'not stored for this change';
     } else if (fromMessage && appliedVideoId !== videoId) {
       result.reason = 'before first apply';
     } else if (currentGain < gain * (1 - 1e-9)) {
@@ -1075,13 +1078,20 @@
         storageRevision++;
         settingsRevision++;
         const targetBefore = targetLufs;
+        const videoDefaultBefore = defaultAutoApplyLoudnessVideo;
+        const liveDefaultBefore = defaultAutoApplyLoudnessLive;
         takeSettings(changes[SETTINGS_KEY].newValue || {});
         if (liveRaiseFrom && targetLufs !== targetBefore) liveRaiseFrom = { ...liveRaiseFrom, at: -Infinity };
-        applyPreferredGain()
+        // The gain is applied again on every settings change; Auto's own save
+        // follows only a change of the target or of an all-channel default.
+        const stores = targetLufs !== targetBefore ||
+          defaultAutoApplyLoudnessVideo !== videoDefaultBefore ||
+          defaultAutoApplyLoudnessLive !== liveDefaultBefore;
+        applyPreferredGain('apply', { stores })
           // A notification that landed during the read dropped the apply,
           // Auto's save with it; it is made once more against storage as it
           // stands then.
-          .then(result => (result === STORAGE_MOVED ? applyPreferredGain() : result))
+          .then(result => (result === STORAGE_MOVED ? applyPreferredGain('apply', { stores }) : result))
           .then(() => {
             updateGainOverlay();
             notifyPopup();

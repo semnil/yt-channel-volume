@@ -647,7 +647,7 @@ sequenceDiagram
   S-->>C: sync の autoLoudnessSettings の storage.onChanged
   C->>C: takeSettings() で targetLufs、2 つの既定値、showGainOverlay を置き換え、storageRevision と settingsRevision を 1 増やす
   C->>C: applyPreferredGain()、そのあと updateGainOverlay() と notifyPopup()
-  opt 取り込み後で、その種別の Auto が ON で、レベルがある
+  opt 取り込み後で、その種別の Auto が ON で、レベルがあり、目標値か全チャンネル共通の既定値が変わった
     C->>W: applyPreferredGain か evaluateLiveSave から store:saveChannelGain (頼まれていない書き込み)
   end
 ```
@@ -656,7 +656,7 @@ sequenceDiagram
 - `saveSetting` は、最初の読み込みが終わるまで (`settingsLoaded`) は書かずに戻り、それまでは画面の部品も操作できない状態で出てくる。その項目と値を `store:saveSetting` として `background.js` に送る。そこでは `SETTINGS_WRITES.saveSetting` が、5 つのどれでもない項目と、その項目が持てない値を断り (`write refused`)、`readSettings()` で読んだ設定を、その項目を置き換えて sync に書き戻す。この書き込みは、設定を sync へ移す処理と同じ列 `queueSettingsWrite()` に並ぶ。
 - Chrome の同期が有効なら、同じアカウントでサインインしているほかの Chrome が書いた設定も、同じく `chrome.storage.sync` の知らせで届く ([`chrome.storage`](https://developer.chrome.com/docs/extensions/reference/api/storage))。
 - 2 つの既定値のトグルは、書き込みが終わるまで操作できなくなり、書き込みが失敗するとチェックを元に戻す。残りの 3 つも書き込みを待つ。失敗したときは、`readSettings()` で設定を読み直して、保存されている値を出す (その間に変更の知らせが来ていれば、そちらを残す)。設定の下の行には `settingsSaveFailed` (「設定を保存できませんでした。保存済みの値へ戻しました」) を出す。その読み直しも失敗したときは何も戻らないので、代わりに `settingsLoadFailed` (「保存済みの設定を読み込めませんでした。ページを再読み込みしてください」) を出す。3 つのどれかの書き込みが成功すると、その行を消す。
-- この画面の操作は、どれも `channelVolumes` を書かない。YouTube の各タブでは `applyPreferredGain()` が新しい目標値と既定値を当てはめる。その種別の Auto が ON でレベルが分かっていれば、新しい Auto のゲインを適用して保存する (Auto 自身の保存、またはライブ保存の判定)。Auto が OFF かレベルが分からなければ、保存ゲインがこれまでどおり鳴る。その適用が項目を読んでいる間に変更の知らせが届いたときは、適用は何もかけず何も保存しないまま戻り (`STORAGE_MOVED`)、受け取り側がもう 1 回だけ動かす。
+- この画面の操作は、どれも `channelVolumes` を書かない。YouTube の各タブでは `applyPreferredGain()` が新しい目標値と既定値を当てはめる。その種別の Auto が ON でレベルが分かっていれば、新しい Auto のゲインを適用し、このタブが持っていた目標値か全チャンネル共通の既定値がその変更で動いたときは保存する (Auto 自身の保存、またはライブ保存の判定)。表示単位やゲイン表示の変更では、ゲインをかけ直すだけで何も保存しない (`stores: false`)。Auto が OFF かレベルが分からなければ、保存ゲインがこれまでどおり鳴る。その適用が項目を読んでいる間に変更の知らせが届いたときは、適用は何もかけず何も保存しないまま戻り (`STORAGE_MOVED`)、受け取り側がもう 1 回だけ動かす。
 - 全チャンネル共通の既定値を変えると、その種別に個別のフラグ (または古い形式のフラグ) を持たないチャンネルだけ、Auto が変わる。
 
 図のもと: `options.js` の `targetSlider`、`defaultAutoVideoToggle`、`defaultAutoLiveToggle`、`unitToggle`、`overlayToggle` の受け取り側、`saveSetting`、`applySettings`、`chrome.storage.onChanged` の受け取り側。`utils.js` の `SETTINGS_WRITES`、`SETTING_FIELDS`、`queueSettingsWrite`、`readSettings`。`content.js` の `chrome.storage.onChanged` の受け取り側、`takeSettings`、`applyPreferredGain`、`updateGainOverlay`。
@@ -720,7 +720,7 @@ sequenceDiagram
 | service worker の起動 | 変わらない | local に残っている設定を sync へ移す | `moveSettingsToSync` |
 | 取り込みが成功する前の Auto の適用 | 変わる | されない | `applyAutomaticLoudnessGain`、`applyPreferredGain`、`evaluateLiveSave` |
 | `channelVolumes` の変更の知らせ | 計算したゲインが違うとき | されない | `content.js` の `chrome.storage.onChanged` の受け取り側 |
-| `autoLoudnessSettings` の変更 | `applyPreferredGain` による | `options.js` に頼まれた `background.js` が sync の `autoLoudnessSettings` を。Auto が ON でレベルがあるタブでは Auto 自身の保存も | `saveSetting`、`SETTINGS_WRITES.saveSetting`、`content.js` の `chrome.storage.onChanged` の受け取り側 |
+| `autoLoudnessSettings` の変更 | `applyPreferredGain` による | `options.js` に頼まれた `background.js` が sync の `autoLoudnessSettings` を。Auto が ON でレベルがあるタブでは、目標値か全チャンネル共通の既定値が変わったときに Auto 自身の保存も | `saveSetting`、`SETTINGS_WRITES.saveSetting`、`content.js` の `chrome.storage.onChanged` の受け取り側 |
 | 他の場所から届いた `unifiedGains` | `applyPreferredGain` による | Auto が ON でレベルがあれば Auto 自身の保存 | `content.js` の `chrome.storage.onChanged` の受け取り側 |
 | 設定画面の行の「×」、「全削除」 | そのチャンネルのタブ: 1.0 か Auto のゲイン | される: `deleteChannel` / `clearChannels` | `renderChannels`、`clearAllBtn` の受け取り側 |
 
