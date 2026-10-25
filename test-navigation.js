@@ -1382,6 +1382,7 @@ async function runTests() {
     'UCapply': { name: 'Apply Ch', url: 'https://y/UCapply', gainVideo: 0.5, gainLive: 0.8 }
   };
   ytcv._set('currentChannel', { id: 'UCapply', name: 'Apply Ch', url: 'https://y/UCapply' });
+  ytcv._set('currentChannelVideoId', ytcv.getUrlVideoId());
   ytcv._set('currentVideoType', 'video');
   ytcv._set('targetLufs', -18);
 
@@ -1400,13 +1401,14 @@ async function runTests() {
     `with nothing measured it is declined — got ${JSON.stringify(withoutLoudness)}`);
 
   // Measured, but the page has not said whose channel it is yet. Applying now
-  // would move the level the viewer hears with nothing able to remember it.
+  // would move the level the viewer hears with nothing able to remember it;
+  // a state with no channel for the video is not one a gesture is taken on.
   ytcv._set('currentLoudnessDb', -6);
   ytcv._set('currentChannel', { id: '', name: '', url: '' });
   const gainBeforeIdless = ytcv.state.currentGain;
   const withoutChannel = await popupGesture({ type: 'applyLoudness' });
   await tick();
-  assert(withoutChannel?.ok === false && withoutChannel?.reason === 'no loudness data',
+  assert(withoutChannel?.ok === false && withoutChannel?.reason === 'state moved',
     `with no channel known it is declined — got ${JSON.stringify(withoutChannel)}`);
   assert(ytcv.state.currentGain === gainBeforeIdless,
     `and the gain that is playing is left alone (${ytcv.state.currentGain})`);
@@ -1416,6 +1418,7 @@ async function runTests() {
   // And with none of the three in the way it goes through. Without this the
   // refusals above would hold for a handler that declined everything.
   ytcv._set('currentChannel', { id: 'UCapply', name: 'Apply Ch', url: 'https://y/UCapply' });
+  ytcv._set('currentChannelVideoId', ytcv.getUrlVideoId());
   const applied = await popupGesture({ type: 'applyLoudness' });
   await tick();
   assert(applied?.ok === true, `otherwise it applies — got ${JSON.stringify(applied)}`);
@@ -2938,6 +2941,7 @@ async function runTests() {
     name: 'Channel B',
     url: 'https://www.youtube.com/channel/UCchannelB'
   });
+  ytcv._set('currentChannelVideoId', ytcv.getUrlVideoId());
   ytcv._set('currentVideoType', 'video');
   ytcv._set('currentLoudnessDb', null);
   mockDOMElements['channelName'] = { textContent: 'Stale Channel A' };
@@ -2958,6 +2962,7 @@ async function runTests() {
     name: 'UCchannelC',
     url: 'https://www.youtube.com/channel/UCchannelC'
   });
+  ytcv._set('currentChannelVideoId', ytcv.getUrlVideoId());
   mockDOMElements['channelName'] = { textContent: 'Channel C' };
   const stubToggleResponse = await popupGesture({
     type: 'setAutoApplyLoudness',
@@ -5149,6 +5154,7 @@ async function runTests() {
     };
     setURL('/watch', 'mismatchVid');
     ytcv._set('currentChannel', { id: 'UChere', name: 'Here Ch', url: 'https://y/UChere' });
+    ytcv._set('currentChannelVideoId', ytcv.getUrlVideoId());
     ytcv._set('currentVideoType', 'video');
     ytcv._set('currentGain', 0.5);
     ytcv._set('currentAutoApplyLoudnessVideo', false);
@@ -5209,6 +5215,7 @@ async function runTests() {
     };
     setURL('/watch', 'replayVid');
     ytcv._set('currentChannel', { id: 'UCwas', name: 'Was Ch', url: '' });
+    ytcv._set('currentChannelVideoId', ytcv.getUrlVideoId());
     ytcv._set('currentVideoType', 'video');
     ytcv._set('currentGain', 0.4);
     ytcv._set('currentAutoApplyLoudnessVideo', false);
@@ -5222,6 +5229,7 @@ async function runTests() {
 
     // The tab moves to another channel before the slider is released.
     ytcv._set('currentChannel', { id: 'UCnow', name: 'Now Ch', url: '' });
+    ytcv._set('currentChannelVideoId', ytcv.getUrlVideoId());
     const released = await simulateRuntimeMessage({ type: 'setGain', appliesTo: drawnFrom, gain: 0.15 });
     await tick();
     assert(released?.ok === false && released?.reason === 'state moved',
@@ -5340,6 +5348,7 @@ async function runTests() {
   {
     setURL('/watch', 'throwVid');
     ytcv._set('currentChannel', { id: 'UCthrow', name: 'Throw Ch', url: '' });
+    ytcv._set('currentChannelVideoId', ytcv.getUrlVideoId());
     ytcv._set('currentLoudnessDb', -6);
     ytcv._set('currentAutoApplyLoudnessVideo', false);
     ytcv._set('targetLufs', -18);
@@ -6401,6 +6410,7 @@ async function runTests() {
     };
     setURL('/watch', 'applyVidA');
     ytcv._set('currentChannel', { id: 'UCold', name: 'Old Ch', url: '' });
+    ytcv._set('currentChannelVideoId', ytcv.getUrlVideoId());
     ytcv._set('currentVideoType', 'video');
     ytcv._set('currentLoudnessDb', -6);
     ytcv._set('currentLoudnessVideoId', 'applyVidA');
@@ -6413,6 +6423,7 @@ async function runTests() {
     // The tab moves to another channel before the click is delivered.
     setURL('/watch', 'applyVidB');
     ytcv._set('currentChannel', { id: 'UCnew', name: 'New Ch', url: '' });
+    ytcv._set('currentChannelVideoId', ytcv.getUrlVideoId());
     ytcv._set('currentLoudnessDb', -4);
     ytcv._set('currentLoudnessVideoId', 'applyVidB');
     ytcv._set('currentGain', 0.6);
@@ -6440,7 +6451,9 @@ async function runTests() {
     assert(mockStorage['channelVolumes']['UCnew'].gainVideo === 0.6,
       `with nothing written for it (${mockStorage['channelVolumes']['UCnew'].gainVideo})`);
 
-    // Made against the state in hand, it applies.
+    // Made against the state in hand, once the bridge has named the channel
+    // for this video, it applies.
+    ytcv._set('currentChannelVideoId', 'applyVidC');
     const now = await popupGesture({ type: 'applyLoudness' });
     await tick();
     assert(now?.ok === true, `the Apply made against this state goes through — got ${JSON.stringify(now)}`);
@@ -7266,6 +7279,7 @@ async function runTests() {
     mockVideoEl = { id: 'popup-video-c' };
     mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCkept' };
     ytcv._set('currentChannel', { id: 'UCkept', name: 'Kept Ch', url: '' });
+    ytcv._set('currentChannelVideoId', ytcv.getUrlVideoId());
     ytcv._set('currentVideoType', 'video');
     ytcv._set('_lastVideoId', 'popVidC');
     ytcv._set('currentGain', 1.0);
@@ -7288,6 +7302,7 @@ async function runTests() {
     mockVideoEl = { id: 'popup-video-d' };
     mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCpreview' };
     ytcv._set('currentChannel', { id: 'UCpreview', name: 'Preview Ch', url: '' });
+    ytcv._set('currentChannelVideoId', ytcv.getUrlVideoId());
     ytcv._set('currentVideoType', 'video');
     ytcv._set('_lastVideoId', 'popVidD');
     ytcv._set('currentGain', 1.0);
@@ -10150,6 +10165,36 @@ async function runTests() {
       await bridge.fetchPlayer(playerResponse({ loudnessDb: -3.25, isLiveContent: true }));
       assert(bridge.posted.length === 1 && bridge.last()?.isLiveContent === true,
         `while the player response for the URL's video is (${JSON.stringify(bridge.last())})`);
+    }
+
+    section('Popup gestures: refused until the channel is named for the URL\'s video');
+    {
+      await onVideo({ entry: { gainVideo: 0.5, autoApplyLoudnessVideo: false } });
+      // The URL has moved on to a video of another channel, and something
+      // redraws the popup before the tab has named that video's channel.
+      setURL('/watch', 'otherChannelVid');
+      ytcv.notifyPopup();
+      const drawn = await simulateRuntimeMessage({ type: 'getState' });
+      for (const gesture of [
+        { type: 'setGainLive', gain: 0 },
+        { type: 'setGain', gain: 0 },
+        { type: 'setAutoApplyLoudness', enabled: true }
+      ]) {
+        const answer = await simulateRuntimeMessage({ appliesTo: drawn.appliesTo, ...gesture });
+        await settle();
+        assert(answer?.ok === false && answer?.reason === 'state moved',
+          `${gesture.type} against the channel the tab left is refused (${JSON.stringify(answer)})`);
+      }
+      assert(mockSentMessages.filter((m) => m?.type?.startsWith('store:save')).length === 0 &&
+        mockStorage.channelVolumes[TT_CH].gainVideo === 0.5,
+        `and nothing is written into it (${JSON.stringify(mockStorage.channelVolumes[TT_CH])})`);
+      // Once the bridge names the video's channel, a gesture is taken.
+      simulateBridgeMessage({ videoId: 'otherChannelVid', loudnessDb: -6, isLiveContent: false, channelId: 'UCotherCh', author: 'Other' });
+      await settle();
+      const taken = await popupGesture({ type: 'setGain', gain: 0.8 });
+      await settle();
+      assert(taken?.ok === true && mockStorage.channelVolumes.UCotherCh?.gainVideo !== undefined,
+        `a gesture after it saves under the channel named (${JSON.stringify(taken)})`);
     }
 
     section('Popup: a drag the popup loses focus during ends there');

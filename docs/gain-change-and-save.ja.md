@@ -53,7 +53,7 @@
 - **Auto のゲイン**: `calcGain(loudnessDb, targetLufs)` = 10^((targetLufs - effectiveLufs) / 20)。`effectiveLufs` は、`loudnessDb` が 0 より大きいとき -14、それ以外は -14 + `loudnessDb`。**ライブのゲイン**: `calcLiveGain(liveLkfs, targetLufs)` = 10^((targetLufs - liveLkfs) / 20)。どちらも 0 から 6 の範囲に切りそろえ、計算結果が有限の数でなければ 1.0 にする。
 - **版の比率**: `renditionGainRatio(loudnessDb, baseLoudnessDb ?? loudnessDb)`。`loudnessDb` が分からないときは 1。印の付いた保存ゲインは、この比率を掛けて鳴らす。手動のゲインは、この比率で割って保存する。
 - **旧形式の取り込み**: 移行処理 `migrateLegacyAutoGains`。`storageMigrated` は成功したかどうか、`storageSettled` は試みが終わったかどうか、`storageReady` はその試みの promise (あとで結果が出る処理を表す JavaScript の値)。
-- **appliesTo**: ポップアップの操作が、どの状態に向けたものか。`currentGestureState()` = チャンネル ID、videoType、URL の動画 ID を `|` でつないだもの。`appliesTo` が今の状態と合わない操作は `state moved` で断られる。
+- **appliesTo**: ポップアップの操作が、どの状態に向けたものか。`currentGestureState()` = チャンネル ID、videoType、URL の動画 ID を `|` でつないだもの。`appliesTo` が今の状態と合わない操作は `state moved` で断られる (`gestureStateMoved`)。持っているチャンネルが URL の動画について名指されていない間は、どの操作も同じく断られる: `currentChannelVideoId` は、ブリッジのメッセージがある動画のチャンネルを名乗ったときと、`applyVideoVolume` がページからチャンネルを取ったときに入る。
 - **頼まれた書き込み**: ポップアップの操作が求めた書き込み。失敗すると `reportFailure` が記録し、`restoreGainAfterFailedSave()` が適用ゲインを戻し、ポップアップに `{ ok: false }` を返す (Auto トグルのフラグだけの書き込みが失敗したときは、ゲインを戻さずに返す)。
 - **頼まれていない書き込み**: Auto 自身の保存、ライブの保存、`@handle` のキーの引き取り、旧形式の取り込み。失敗は `nameUnaskedWrite` に渡る。名前ごとに、続けて起きた失敗の 1 回目を `console.info`、2 回目を `console.error` で記録し、3 回目からは記録しない。その名前の書き込みが成功すると、失敗の続きは終わる。
 
@@ -171,7 +171,7 @@ sequenceDiagram
   Note over P: lastGain、数値の表示、Current の欄が新しいゲインを示す
   opt ポップアップがチャンネル ID を持っている
     P->>C: setGainLive、appliesTo は sliderAppliesTo、gain
-    alt appliesTo が currentGestureState() と違う
+    alt appliesTo が違う、または URL の動画についてチャンネルが名指されていない
       C-->>P: ok false、state moved
     else その種別の Auto が ON で、レベルを持っている
       C-->>P: ok false、auto apply controls current gain
@@ -214,7 +214,7 @@ sequenceDiagram
   end
   P->>C: setGain、appliesTo、gain
   Note over C: スライダーの試し聞きが終わる
-  alt appliesTo が currentGestureState() と違う
+  alt appliesTo が違う、または URL の動画についてチャンネルが名指されていない
     C->>C: restoreGainAfterFailedSave() が applyPreferredGain() を動かす
     C-->>P: ok false、state moved
   else その種別の Auto が ON で、レベルを持っている
@@ -257,7 +257,7 @@ sequenceDiagram
   participant W as background.js
   V->>P: applyBtn を押す
   P->>C: applyLoudness、appliesTo は currentAppliesTo
-  alt appliesTo が違う
+  alt appliesTo が違う、または URL の動画についてチャンネルが名指されていない
     C-->>P: ok false、state moved
   else その種別の Auto が ON
     C-->>P: ok false、auto apply enabled
@@ -301,7 +301,7 @@ sequenceDiagram
   V->>P: 見ている種別の LUFS 自動適用トグルを切り替える
   Note over P: 返事が来るまでトグルを操作できなくする
   P->>C: setAutoApplyLoudness、appliesTo、enabled
-  alt チャンネル ID が無い、または appliesTo が違う
+  alt appliesTo が違う、または URL の動画についてチャンネルが名指されていない
     C-->>P: ok false、state moved
   else 受け付ける
     alt ON にして、手元にライブのレベルがある

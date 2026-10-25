@@ -858,7 +858,10 @@
     if (videoIdChanged) liveSaveBaseline = null;
 
     const ch = detectChannel();
-    if (ch.id && !hasEarlyBridgeChannel) currentChannel = ch;
+    if (ch.id && !hasEarlyBridgeChannel) {
+      currentChannel = ch;
+      currentChannelVideoId = _lastVideoId;
+    }
 
     if (!hasEarlyBridgeLoudness) {
       currentLoudnessDb = null;
@@ -896,6 +899,14 @@
     // popup is showing — the measurement above all — while the channel and the
     // type stay as they were.
     return currentChannel.id + '|' + currentVideoType + '|' + getUrlVideoId();
+  }
+
+  // A gesture is made against the channel in hand only once that channel was
+  // named for the video the URL names; before that it can be the channel of
+  // the page the tab left.
+  function gestureStateMoved(msg) {
+    return msg.appliesTo !== currentGestureState() ||
+      !currentChannel.id || currentChannelVideoId !== getUrlVideoId();
   }
 
   function getState() {
@@ -1170,7 +1181,7 @@
     }
 
     if (msg.type === 'applyLoudness') {
-      if (msg.appliesTo !== currentGestureState()) {
+      if (gestureStateMoved(msg)) {
         sendResponse({ ok: false, reason: 'state moved' });
         return true;
       }
@@ -1207,7 +1218,7 @@
     }
 
     if (msg.type === 'setGainLive') {
-      if (msg.appliesTo !== currentGestureState()) {
+      if (gestureStateMoved(msg)) {
         sendResponse({ ok: false, reason: 'state moved' });
         return true;
       }
@@ -1225,7 +1236,7 @@
       // The save ends the gesture, whatever becomes of it.
       const previewed = preview !== null;
       endPreview();
-      if (msg.appliesTo !== currentGestureState()) {
+      if (gestureStateMoved(msg)) {
         // The preview may have moved the level while the state still held, so
         // the level goes back to what storage has for the state now in hand.
         restoreGainAfterFailedSave().then(() =>
@@ -1258,7 +1269,7 @@
     }
 
     if (msg.type === 'setAutoApplyLoudness') {
-      if (!currentChannel.id || msg.appliesTo !== currentGestureState()) {
+      if (gestureStateMoved(msg)) {
         sendResponse({ ok: false, reason: 'state moved' });
         return true;
       }

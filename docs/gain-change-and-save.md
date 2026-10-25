@@ -53,7 +53,7 @@ Every reader takes the settings through `readSettings()`: sync first, then the c
 - **Auto gain**: `calcGain(loudnessDb, targetLufs)` = 10^((targetLufs - effectiveLufs) / 20), where `effectiveLufs` is -14 for a `loudnessDb` above 0 and -14 + `loudnessDb` otherwise. **Live gain**: `calcLiveGain(liveLkfs, targetLufs)` = 10^((targetLufs - liveLkfs) / 20). Both are clamped to 0 to 6, and a non-finite result is 1.0.
 - **Rendition ratio**: `renditionGainRatio(loudnessDb, baseLoudnessDb ?? loudnessDb)`, 1 where `loudnessDb` is not known. A stored gain with the mark is played multiplied by it; a manual gain is stored divided by it.
 - **Legacy fold**: the migration `migrateLegacyAutoGains`. `storageMigrated` says it succeeded, `storageSettled` says the attempt has finished, and `storageReady` is the promise of that attempt.
-- **appliesTo**: the state a popup gesture was made against, `currentGestureState()` = channel id, videoType and the URL's video id joined with `|`. A gesture whose `appliesTo` no longer matches is refused with `state moved`.
+- **appliesTo**: the state a popup gesture was made against, `currentGestureState()` = channel id, videoType and the URL's video id joined with `|`. A gesture whose `appliesTo` no longer matches is refused with `state moved` (`gestureStateMoved`), and so is any gesture while the channel in hand has not been named for the URL's video: `currentChannelVideoId` is set when a bridge message names the channel for a video, and when `applyVideoVolume` takes the channel from the page.
 - **Asked write**: a write a popup gesture asked for. A failure is logged by `reportFailure`, the applied gain is put back by `restoreGainAfterFailedSave()`, and the popup is answered `{ ok: false }` (a failed flag-only write of the Auto toggle is answered without the restore).
 - **Unasked write**: Auto's own save, the live save, the adoption of an `@handle` entry and the legacy fold. A failure goes to `nameUnaskedWrite`: under each name, the first failure in a row is logged with `console.info`, the next one with `console.error`, later ones are not logged, and a write of that name that lands ends the row.
 
@@ -171,7 +171,7 @@ sequenceDiagram
   Note over P: lastGain, the value text and the Current card show the new gain
   opt the popup holds a channel id
     P->>C: setGainLive, appliesTo sliderAppliesTo, gain
-    alt appliesTo differs from currentGestureState()
+    alt appliesTo differs, or no channel is named for the URL's video
       C-->>P: ok false, state moved
     else Auto on for the type and a level is held
       C-->>P: ok false, auto apply controls current gain
@@ -214,7 +214,7 @@ sequenceDiagram
   end
   P->>C: setGain, appliesTo, gain
   Note over C: the slider preview ends
-  alt appliesTo differs from currentGestureState()
+  alt appliesTo differs, or no channel is named for the URL's video
     C->>C: restoreGainAfterFailedSave() runs applyPreferredGain()
     C-->>P: ok false, state moved
   else Auto on for the type and a level is held
@@ -257,7 +257,7 @@ sequenceDiagram
   participant W as background.js
   V->>P: click on applyBtn
   P->>C: applyLoudness, appliesTo currentAppliesTo
-  alt appliesTo differs
+  alt appliesTo differs, or no channel is named for the URL's video
     C-->>P: ok false, state moved
   else Auto on for the type
     C-->>P: ok false, auto apply enabled
@@ -301,7 +301,7 @@ sequenceDiagram
   V->>P: change on the Auto-apply LUFS toggle of the type being watched
   Note over P: the toggle is disabled until the answer
   P->>C: setAutoApplyLoudness, appliesTo, enabled
-  alt no channel id, or appliesTo differs
+  alt appliesTo differs, or no channel is named for the URL's video
     C-->>P: ok false, state moved
   else accepted
     alt turned on and a live level is in hand
