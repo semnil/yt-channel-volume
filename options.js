@@ -92,6 +92,32 @@
     await requestChannelWrite('saveSetting', { key, value });
   }
 
+  function showSettingsError(visible, key = 'settingsSaveFailed') {
+    if (visible) settingsErrorEl.textContent = msg(key);
+    settingsErrorEl.classList.toggle('hidden', !visible);
+  }
+
+  // A write that did not land leaves the control showing a value nothing holds,
+  // so the page goes back to what storage holds and says that it did.
+  async function saveSettingOrRestore(key, value) {
+    if (!settingsLoaded) return;
+    try {
+      await saveSetting(key, value);
+      showSettingsError(false);
+    } catch (err) {
+      const revision = settingsRevision;
+      try {
+        const settings = await readSettings();
+        if (revision === settingsRevision) applySettings(settings);
+        renderChannels(channelVolumes);
+      } catch (readErr) {
+        console.error('[YTCV] settings not read back after a failed save', readErr);
+      }
+      showSettingsError(true);
+      console.error('[YTCV] setting not saved', err);
+    }
+  }
+
   function updateUnitButtons() {
     unitToggle.querySelectorAll('button').forEach(btn => {
       btn.classList.toggle('active', btn.dataset.unit === displayUnit);
@@ -199,7 +225,7 @@
 
   targetSlider.addEventListener('change', () => {
     targetLufs = Number(targetSlider.value);
-    saveSetting('targetLufs', targetLufs);
+    saveSettingOrRestore('targetLufs', targetLufs);
   });
 
   defaultAutoVideoToggle.addEventListener('change', async () => {
@@ -233,7 +259,7 @@
   });
 
   overlayToggle.addEventListener('change', () => {
-    saveSetting('showGainOverlay', overlayToggle.checked);
+    saveSettingOrRestore('showGainOverlay', overlayToggle.checked);
   });
 
   clearAllBtn.addEventListener('click', async () => {
@@ -250,8 +276,8 @@
     if (!btn || !btn.dataset.unit) return;
     displayUnit = btn.dataset.unit;
     updateUnitButtons();
-    saveSetting('displayUnit', displayUnit);
     renderChannels(channelVolumes);
+    saveSettingOrRestore('displayUnit', displayUnit);
   });
 
   // ── Storage change listener ─────────────────────────────────────

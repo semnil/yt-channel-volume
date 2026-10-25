@@ -8013,6 +8013,18 @@ async function runTests() {
       'and the page is shown either way -- one that never appears cannot be operated');
     assert(options.listMarkup() === '', 'and no channel list is drawn from a list it never read');
   }
+  {
+    // A control changed on a page whose load failed writes nothing and leaves
+    // the line that says so.
+    const options = makeOptions({ failStorageGet: true });
+    await options.settle();
+    const shown = options.node('settingsError').textContent;
+    options.node('targetSlider').value = '-24';
+    await options.fire('targetSlider', 'change');
+    assert(options.node('settingsError').classList.contains('hidden') === false &&
+      options.node('settingsError').textContent === shown,
+      `a change on a page that could not load leaves the line (${options.node('settingsError').className} / ${options.node('settingsError').textContent})`);
+  }
 
   {
     const options = makeOptions({ failStorageGet: true });
@@ -9746,6 +9758,58 @@ async function runTests() {
         `${what}: a failed read is reported as a failed apply (${JSON.stringify(watched)})`);
     }
     ytcv._set('targetLufs', -18);
+
+    section('Settings page: a setting that could not be saved goes back to the stored one, and says so');
+    for (const [what, act, shows] of [
+      ['Target LUFS', async (options) => {
+        options.node('targetSlider').value = '-24';
+        await options.fire('targetSlider', 'input');
+        await options.fire('targetSlider', 'change');
+      }, (options) => options.node('targetSlider').value === -18 &&
+        options.node('targetValue').textContent === '-18 LUFS'],
+      ['Gain overlay', async (options) => {
+        options.node('overlayToggle').checked = true;
+        await options.fire('overlayToggle', 'change');
+      }, (options) => options.node('overlayToggle').checked === false],
+      ['Display unit', async (options) => {
+        await options.clickUnit('dB');
+      }, (options) => options.unitButtons.find((b) => b.dataset.unit === '%').classList.contains('active') &&
+        !options.unitButtons.find((b) => b.dataset.unit === 'dB').classList.contains('active') &&
+        options.listMarkup().includes('50%')]
+    ]) {
+      const watched = watchFailures();
+      const options = makeOptions({
+        settings: { targetLufs: -18, displayUnit: '%', showGainOverlay: false },
+        channels: { UCsaved: { name: 'Saved', gainVideo: 0.5 } },
+        failStorageSet: true
+      });
+      await options.settle();
+      await act(options);
+      await options.settle();
+      watched.stop();
+      assert(shows(options),
+        `${what}: the control shows the stored value again`);
+      assert(options.node('settingsError').classList.contains('hidden') === false &&
+        options.node('settingsError').textContent === 'settingsSaveFailed',
+        `${what}: and the page says the setting was not saved (${options.node('settingsError').className} / ${options.node('settingsError').textContent})`);
+      assert(watched.unhandled.length === 0,
+        `${what}: the failed write is taken, not left unhandled (${JSON.stringify(watched.unhandled)})`);
+      assert(options.synced[SETTINGS_KEY].targetLufs === -18 && options.synced[SETTINGS_KEY].displayUnit === '%' &&
+        options.synced[SETTINGS_KEY].showGainOverlay === false,
+        `${what}: what storage holds is what the page went back to`);
+    }
+    {
+      // A write that lands takes the line down again.
+      const options = makeOptions({ settings: { targetLufs: -18 } });
+      await options.settle();
+      options.node('settingsError').textContent = 'settingsSaveFailed';
+      options.node('settingsError').classList.remove('hidden');
+      options.node('targetSlider').value = '-20';
+      await options.fire('targetSlider', 'change');
+      assert(options.synced[SETTINGS_KEY].targetLufs === -20 &&
+        options.node('settingsError').classList.contains('hidden') === true,
+        'a setting that is saved takes the line down');
+    }
   }
 
   section('The mutation sweep\'s own record');

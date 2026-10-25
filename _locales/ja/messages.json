@@ -38,6 +38,9 @@
   "settingsLoadFailed": {
     "message": "保存済みの設定を読み込めませんでした。ページを再読み込みしてください"
   },
+  "settingsSaveFailed": {
+    "message": "設定を保存できませんでした。保存済みの値へ戻しました"
+  },
   "settings": {
     "message": "Settings"
   },
