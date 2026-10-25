@@ -109,7 +109,7 @@ flowchart LR
 
 - Target LUFS slider (-30 to -6 LUFS, default -18). A key held on it changes the label alone and writes once, at `keyup` or at a `blur` that comes first
 - Auto-apply LUFS for all channels (Video / Live separately, default OFF, inherited by a type with no individual Auto flag)
-- Display unit toggle (% / dB)
+- Display unit toggle (% / dB). The button already active writes nothing
 - Gain overlay toggle (shown next to the player's volume bar, default OFF)
 - Saved Channels table (Video / Live in two columns. Under Auto it reads `Auto (saved gain)`, with a channel link, deletable)
 - Ships with the screen hidden until the load finishes and with the settings controls and the deletions (clear all, the × on a row) disabled

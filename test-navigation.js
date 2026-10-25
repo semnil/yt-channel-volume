@@ -10543,6 +10543,21 @@ async function runTests() {
       ytcv._set('storageMigrated', true);
     }
 
+    section('Settings page: the unit already in use writes nothing');
+    {
+      const options = makeOptions({ settings: { displayUnit: 'dB' }, channels: { UCsaved: { name: 'Saved', gainVideo: 2 } } });
+      await options.settle();
+      options.sent.length = 0;
+      await options.clickUnit('dB');
+      assert(options.sent.filter((m) => m.type === 'store:saveSetting').length === 0,
+        `clicking the active unit writes nothing (${JSON.stringify(options.sent)})`);
+      assert(options.unitButtons.find((b) => b.dataset.unit === 'dB').classList.contains('active') &&
+        options.listMarkup().includes('6.0 dB'), 'and the page stays as it was');
+      await options.clickUnit('%');
+      assert(options.sent.filter((m) => m.type === 'store:saveSetting' && m.value === '%').length === 1,
+        'while the other unit is written');
+    }
+
     section('Popup: a key held on the slider previews each repeat and saves once');
     {
       const popup = makePopup({

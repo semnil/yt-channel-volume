@@ -304,6 +304,8 @@
   unitToggle.addEventListener('click', (e) => {
     const btn = e.target.closest('button');
     if (!btn || !btn.dataset.unit) return;
+    // The unit already in use is not written again.
+    if (btn.dataset.unit === displayUnit) return;
     displayUnit = btn.dataset.unit;
     updateUnitButtons();
     renderChannels(channelVolumes);
