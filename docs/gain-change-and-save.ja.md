@@ -240,7 +240,8 @@ sequenceDiagram
 ```
 
 - プリセットボタンは「0%」「50%」「100%」「200%」「400%」「MAX」(`data-vol` は 600)。ポップアップがチャンネル ID を持っていなければ、何も送らない。
-- スライダーをポインターで押さえている間にポップアップのウィンドウがフォーカスを失う (`blur`) と、ドラッグはそこで終わる。その `blur` より前に来た `change` は、離したときと同じく保存する。`blur` のあとは、次にスライダーで `pointerdown` か、キーの繰り返しでない `keydown` があるまで、`input` も `change` も何も送らない。そのような `change` は、つまみを `blur` の時点で保存したゲイン (`lastGain`) に戻す。
+- スライダーでキーを押し続ける間は、1 つの操作になる。その `keydown` で始まり (繰り返しや、押している間のほかのキーでは始め直さない)、`input` のたびに `setGainLive` を送り、繰り返しごとに来る `change` では何も送らず、押し続けている間に `input` があれば、`keyup` でたどり着いたゲインの `setGain` を 1 回送る。保存していない試し聞きのあとでキーを押し続けている間は、ポインターを押さえているときと同じく、ポップアップがその試し聞きを `PREVIEW_KEEP_ALIVE_MS` ごとに送り直す (前の節を参照)。
+- スライダーをポインターかキーで押さえている間にポップアップのウィンドウかスライダーがフォーカスを失う (`blur`) と、操作はそこで終わる。その `blur` より前に来た `change` は、離したときと同じく保存し、キーを押し続けていたときは `blur` の時点で `setGain` を送る。`blur` のあとは、次にスライダーで `pointerdown` か、キーの繰り返しでない `keydown` があるまで、`input` も `change` も何も送らない。そのような `change` は、つまみを `blur` の時点で保存したゲイン (`lastGain`) に戻す。
 - 保存する値は、適用ゲイン (`commitGain` が切りそろえたあとの値) を版の比率で割ったもので、素の音声の版を基準にした値になる。どちらのレベルも分からないときは、比率は 1 で `heldAgainstPlain` は false。
 - `autoApply` はその時点のその種別の Auto の状態で、チャンネル個別のフラグとして書かれる。Auto が ON でレベルがあるときは操作が断られるので、Auto が ON のまま保存されるのはレベルを持っていないとき (Auto が代わりに保存ゲインを使うとき) で、その保存はチャンネルの Auto を ON に固定する。
 - `restoreGainAfterFailedSave()` は、続いている試し聞きを終わらせて `applyPreferredGain()` を動かすので、ゲインはその関数が保存内容から決める値に戻る。ポップアップへの返事はそのあと。
@@ -651,7 +652,7 @@ sequenceDiagram
   end
 ```
 
-- 操作するもの: 「Target LUFS」(スライダーの `change`)、「全チャンネルの LUFS 自動適用」(Video と Live のトグル)、「表示単位」(`%` / `dB` のボタン)、「ゲイン表示」。どれも 1 項目で `saveSetting` を呼ぶ。
+- 操作するもの: 「Target LUFS」(スライダーの `change`)、「全チャンネルの LUFS 自動適用」(Video と Live のトグル)、「表示単位」(`%` / `dB` のボタン)、「ゲイン表示」。どれも 1 項目で `saveSetting` を呼ぶ。「Target LUFS」でキーを押し続ける間は表示だけを変え、繰り返しごとに来る `change` では書かず、`keyup` か、それより先に来たスライダーかページのウィンドウの `blur` で、目標値を 1 回書く。
 - `saveSetting` は、最初の読み込みが終わるまで (`settingsLoaded`) は書かずに戻り、それまでは画面の部品も操作できない状態で出てくる。その項目と値を `store:saveSetting` として `background.js` に送る。そこでは `SETTINGS_WRITES.saveSetting` が、5 つのどれでもない項目と、その項目が持てない値を断り (`write refused`)、`readSettings()` で読んだ設定を、その項目を置き換えて sync に書き戻す。この書き込みは、設定を sync へ移す処理と同じ列 `queueSettingsWrite()` に並ぶ。
 - Chrome の同期が有効なら、同じアカウントでサインインしているほかの Chrome が書いた設定も、同じく `chrome.storage.sync` の知らせで届く ([`chrome.storage`](https://developer.chrome.com/docs/extensions/reference/api/storage))。
 - 2 つの既定値のトグルは、書き込みが終わるまで操作できなくなり、書き込みが失敗するとチェックを元に戻す。残りの 3 つも書き込みを待つ。失敗したときは、`readSettings()` で設定を読み直して、保存されている値を出す (その間に変更の知らせが来ていれば、そちらを残す)。設定の下の行には `settingsSaveFailed` (「設定を保存できませんでした。保存済みの値へ戻しました」) を出す。その読み直しも失敗したときは何も戻らないので、代わりに `settingsLoadFailed` (「保存済みの設定を読み込めませんでした。ページを再読み込みしてください」) を出す。3 つのどれかの書き込みが成功すると、その行を消す。
@@ -695,7 +696,7 @@ sequenceDiagram
 | 出来事 | 適用ゲインは変わるか | `chrome.storage` に保存されるか | 場所 (関数) |
 |---|---|---|---|
 | ポップアップのスライダーの `input` | 変わる (試し聞き) | されない | `popup.js` の `volumeSlider` の `input` の受け取り側。`content.js` の `handleMessage` (`setGainLive`)、`commitGain` |
-| ポップアップのスライダーの `change`、プリセットボタン | 変わる | される: Auto の状態をチャンネル個別のフラグにして `saveChannelGain` | `handleMessage` (`setGain`)、`saveManualChannelGain` |
+| ポップアップのスライダーの `change` (キーなら `keyup`)、プリセットボタン | 変わる | される: Auto の状態をチャンネル個別のフラグにして `saveChannelGain` | `handleMessage` (`setGain`)、`saveManualChannelGain` |
 | `setGain` が `state moved` で断られた、または試し聞きのあとに `auto apply controls current gain` で断られた | `applyPreferredGain` が決める値に戻る | されない | `restoreGainAfterFailedSave` |
 | スライダーの試し聞きが続いている間に、ほかから来たゲイン | 操作が終わるまで変わらない | その出来事の行と同じ | `commitGainFromElsewhere` |
 | `setGain` の無いまま終わった試し聞き | `applyPreferredGain` が決める値に戻る | ブリッジの返事の行と同じ | `endIdlePreview` |
@@ -729,7 +730,7 @@ sequenceDiagram
 
 - **値の変わらない書き込み** (「設定画面: 設定の変更」と「他のタブ: `content.js` の `chrome.storage.onChanged`」を参照): 保存済みと同じ値を `chrome.storage.local.set` で書いても、書いた側・拡張機能のページ・content script のどこにも `onChanged` は届きませんでした (場合ごとに 10 回中 0 回。値が変わる書き込みは 10 回中 10 回届きました)。変わるキーと変わらないキーを 1 回の `set` で書くと、`changes` には変わったキーだけが入りました。
 - **1 回のチャンネル書き込みの知らせと返事** (「チャンネル書き込みの共通の流れ」を参照): このリポジトリの `background.js` では、200 回中 200 回、`onChanged` が `sendMessage` の返事より先に content script に届きました。返事が遅れた時間は、中央値で 0.1 ms、最大で 0.8 ms です。
-- **ポップアップのスライダーのキーボード操作** (「ポップアップ: スライダーを離したとき (`change`) とプリセットボタン」を参照): このスライダーと同じ `min="0" max="600" step="5"` の range 入力で、値が動くキーを 1 回押すと `input` と `change` が 1 回ずつ出ました (矢印キーで 5、PageUp / PageDown で 60 動きます)。端でキーを押すと、どちらも出ませんでした。キーを押し続けると、値が動いた繰り返しごとに `change` が 1 回出ました。マウスで 10 回動かすドラッグでは、`input` が 10 回、`change` が 1 回でした。`change` 1 回が、保存を伴う `setGain` 1 回になります。
+- **ポップアップのスライダーのキーボード操作** (「ポップアップ: スライダーを離したとき (`change`) とプリセットボタン」を参照): このスライダーと同じ `min="0" max="600" step="5"` の range 入力で、値が動くキーを 1 回押すと `input` と `change` が 1 回ずつ出ました (矢印キーで 5、PageUp / PageDown で 60 動きます)。端でキーを押すと、どちらも出ませんでした。キーを押し続けると、値が動いた繰り返しごとに `change` が 1 回出ました。マウスで 10 回動かすドラッグでは、`input` が 10 回、`change` が 1 回でした。ポップアップは `input` のたびに `setGainLive` を 1 回送り、ドラッグを終える `change` か、1 回の押下や押し続けを終える `keyup` で、保存を伴う `setGain` を 1 回送ります。
 - **隠れたタブでのライブ追従タイマー** (「ライブ配信: 追従タイマーとライブ保存の判定」を参照): ライブ追従タイマーと同じ形の、30000 ms の `setTimeout` をつなげたタイマーは、見えているタブと、音が出ている隠れたタブでは 30.0 秒ごとに動きました (headless でも画面に出る Chrome でも、26 回の間隔のうち 26 回が 30000〜30004 ms)。音が出ていない隠れたタブ (後ろのタブ、または画面に出る Chrome で最小化したウィンドウのタブ) では、隠れてから 216〜217 秒までは約 31 秒ごと、その後は約 60 秒ごとになりました。headless では 278 秒から、画面に出る Chrome では 42〜48 秒の間隔を 1 回はさんで 319〜324 秒からです。ライブ追従タイマー自身の間隔 `LIVE_FOLLOW_INTERVAL_MS` は 10000 ms です。10000 ms の `setTimeout` をつなげたタイマー (headless、2026-10-29、Chrome 156.0.8078.48) は、見えているタブと、音が出ている隠れたタブでは 10.0 秒ごとに動きました (78 回の間隔のうち 78 回が 10000〜10003 ms)。音が出ていない隠れたタブでは、最初の 7 回は約 10 秒ごと (10091〜11039 ms、隠れてから 76 秒まで)、133 秒からは約 60 秒ごと (59968〜60027 ms) になりました。
 - **最初の読み込みでの bridge の返事** (「`page-bridge.js` から届く音量レベル」と「起動時: 旧形式の取り込みと最初の適用」を参照): 普通の動画を 6 回新しく読み込むと、`content.js` が `message` の受け取りを始めたのは読み込み開始から 820〜1232 ms 後で、それより前に出た返事は届きませんでした。`define` は 6 回中 0 回、`playing` は 3 回中 0 回、`fetch` は 18 回中 12 回でした (2 回の読み込みでは、受け取り開始の 13〜107 ms 前に 3 つとも出ていて、届きませんでした)。`request` の返事は 12 回中 12 回届きました。
 - **最初の読み込みでの `/youtubei/v1/player`** (「`page-bridge.js` から届く音量レベル」を参照): ページ自身のスクリプトは、自分の `url` プロパティが `/youtubei/v1/player` と読める `Request` を `window.fetch` に渡しますが、その中身は `data:application/json` の URL でした (調べた 50 個中 50 個)。bridge のフックは `args[0].url` を読むので、これを `/player` の呼び出しとして扱います。ネットワークの記録には出ません。

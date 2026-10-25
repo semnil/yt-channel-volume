@@ -223,14 +223,40 @@
 
   // ── Events ─────────────────────────────────────────────────────────
 
-  targetSlider.addEventListener('input', () => {
-    targetValueEl.textContent = targetSlider.value + ' LUFS';
+  // A key held on the slider changes the label alone, and the target is
+  // written once, at keyup, or where the slider loses focus first.
+  let targetKeyHeld = false;
+  let targetKeyMoved = false;
+
+  targetSlider.addEventListener('keydown', () => {
+    if (targetKeyHeld) return;
+    targetKeyHeld = true;
+    targetKeyMoved = false;
   });
 
-  targetSlider.addEventListener('change', () => {
+  targetSlider.addEventListener('input', () => {
+    targetValueEl.textContent = targetSlider.value + ' LUFS';
+    if (targetKeyHeld) targetKeyMoved = true;
+  });
+
+  function saveTarget() {
     targetLufs = Number(targetSlider.value);
     saveSettingOrRestore('targetLufs', targetLufs);
+  }
+
+  targetSlider.addEventListener('change', () => {
+    if (targetKeyHeld) return;
+    saveTarget();
   });
+
+  function endTargetKeyHold() {
+    if (!targetKeyHeld) return;
+    targetKeyHeld = false;
+    if (targetKeyMoved) saveTarget();
+  }
+  targetSlider.addEventListener('keyup', endTargetKeyHold);
+  targetSlider.addEventListener('blur', endTargetKeyHold);
+  window.addEventListener('blur', endTargetKeyHold);
 
   defaultAutoVideoToggle.addEventListener('change', async () => {
     const previous = defaultAutoApplyVideo;
