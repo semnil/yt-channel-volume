@@ -3541,6 +3541,21 @@ async function runMigrationTests() {
       assert(refused?.constructor?.name === 'ChannelWriteRefused', `${key} = ${JSON.stringify(value)} is refused`);
     }
     assert(mockSyncStorage.autoLoudnessSettings.targetLufs === -30, 'and none of them is written');
+    // The worker takes what the settings page can send: every step of the
+    // Target LUFS slider the markup ships, and nothing past either end.
+    const slider = optionsHtml.match(/<input type="range" id="targetSlider" min="(-?\d+)" max="(-?\d+)"[^>]*step="(\d+)"/);
+    assert(!!slider, 'the markup ships the Target LUFS slider with its range');
+    if (slider) {
+      const [min, max, step] = slider.slice(1).map(Number);
+      const takes = (value) => {
+        try { SETTINGS_WRITES.saveSetting({ key: 'targetLufs', value }); return true; } catch (_) { return false; }
+      };
+      const steps = [];
+      for (let value = min; value <= max; value += step) steps.push(value);
+      assert(steps.every(takes) && !takes(min - step) && !takes(max + step),
+        `the worker's Target LUFS range is the slider's (${min} to ${max})`);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
     mockSyncStorage = {};
     mockStorage = {};
   }
