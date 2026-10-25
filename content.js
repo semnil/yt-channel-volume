@@ -857,8 +857,11 @@
     }
     if (videoIdChanged) liveSaveBaseline = null;
 
-    const ch = detectChannel();
-    if (ch.id && !hasEarlyBridgeChannel) {
+    // The page names the channel for the document's first video alone. After
+    // a navigation it can still name the channel of the video left, and the
+    // channel waits for the bridge, which names it for the video it answers.
+    const ch = prevVideoId ? null : detectChannel();
+    if (ch?.id && !hasEarlyBridgeChannel) {
       currentChannel = ch;
       currentChannelVideoId = _lastVideoId;
     }

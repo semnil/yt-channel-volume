@@ -523,7 +523,7 @@ sequenceDiagram
     C->>C: applyVideoVolume()
     Note over C: 動画 ID が新しければ、ブリッジがその動画に返事済みでない限りチャンネルと Auto の状態を消し、liveSaveBaseline も消す
     Note over C: ブリッジがこの動画に返事済みでなければ、loudnessDb、baseLoudnessDb、2 つのライブのレベル、isLiveNow を消し、videoType を video にする
-    C->>C: canonical のリンク、投稿者のリンク、meta itemprop channelId から detectChannel()、ブリッジがこの動画のチャンネルを示し済みでなければそれを使う
+    C->>C: ドキュメントの最初の動画のときだけ、canonical のリンク、投稿者のリンク、meta itemprop channelId から detectChannel()、ブリッジがこの動画のチャンネルを示し済みでなければそれを使う
     C->>S: readSettings() (loadSettings)、読んでいる間に設定の変更が届いていなければ取り入れる
     C->>C: await applyPreferredGain()
     C->>B: requestLoudnessWithRetry(10, 500)
@@ -534,7 +534,7 @@ sequenceDiagram
 
 - きっかけ: `document` の `yt-navigate-finish`。`window` の `popstate`。ドキュメントを見張る `MutationObserver` は、再生ページで、ページの `<video>` 要素が前に処理したものと別になったとき、または URL の動画 ID が `_lastVideoId` と違うときに `triggerApply()` を呼ぶ。`visibilitychange` は、まだどの動画も処理していない再生ページでタブが表示されたときに `triggerApply()` を呼ぶ。最初の読み込みは次の節で説明する。
 - `triggerApply()` は `_applyRunning` を鍵にする。適用が動いている間に来た呼び出しはすぐに戻り、列に並ばない。debounce は無い。拡張機能とのつながりが切れていると、見張りを止める。
-- `detectChannel()` は UC の ID だけを返す。チャンネルを消したあとでページに UC の ID が無ければ、ブリッジが返事をするまでチャンネルは空のまま。チャンネル ID が無いとき、`applyPreferredGain()` は保存内容を読まない。全チャンネル共通の既定値で Auto が ON でレベルを持っていれば Auto のゲインを、それ以外は 1.0 を鳴らし、何も保存しない。
+- `detectChannel()` は UC の ID だけを返し、ドキュメントの最初の動画 (適用を始めたときに `_lastVideoId` が空) のときだけ聞く。移動のあとはページが離れた動画のチャンネルをまだ示していることがあるので、ブリッジがその動画のチャンネルを名乗るまでチャンネルは空のまま。ページに UC の ID が無いときも同じ。チャンネル ID が無いとき、`applyPreferredGain()` は保存内容を読まない。全チャンネル共通の既定値で Auto が ON でレベルを持っていれば Auto のゲインを、それ以外は 1.0 を鳴らし、何も保存しない。
 - 移動でブリッジ由来の状態を消したときは、ブリッジが `isLiveContent` を送るまで videoType は `'video'` なので、ライブ配信でも最初は動画用の保存ゲインが適用される。
 - `requestLoudnessWithRetry(10, 500)` は次のブリッジのメッセージが来たら終わる。来ないまま 500 ms たつと、レベルを持っていれば終わり、持っていなければもう一度聞く。最大 10 回。ブリッジの返事はそれ自身で適用され (ブリッジの節を参照)、そのあとで `applyPreferredGain()` がもう一度動く。
 - この流れでの保存は、`applyPreferredGain()` の中の Auto 自身の保存とライブの保存。`applyVideoVolume` の最初の `applyPreferredGain()` が終わると、その動画を `appliedVideoId` に入れる。それまでは、ブリッジのメッセージは URL の動画についてどちらの保存もしないので、その適用より前に届いたメッセージは、離れたページのチャンネルを持ったままでも、何も保存しない。設定の変更とポップアップを開いたときの適用は、これまでどおり保存する。

@@ -850,6 +850,11 @@ async function runTests() {
   fireNavigateFinish();
   await tick();
   assert(ytcv.state._lastVideoId === 'vid004', 'video ID updated');
+  // After a navigation the page can still name the channel of the video
+  // left, so the channel waits for the bridge to name it for this video.
+  assert(ytcv.state.currentChannel.id === '', 'the page is not taken for the channel');
+  simulateBridgeMessage({ videoId: 'vid004', isLiveContent: false, channelId: 'UCtest_B' });
+  await tick();
   assert(ytcv.state.currentChannel.id === 'UCtest_B', 'channel detected');
   assert(ytcv.state.currentGain === 0.63, 'saved gainVideo applied');
 
@@ -883,6 +888,8 @@ async function runTests() {
   fireNavigateFinish();
   await tick();
   assert(ytcv.state._lastVideoId === 'vid007', 'video ID after channel→video');
+  simulateBridgeMessage({ videoId: 'vid007', isLiveContent: false, channelId: 'UCtest_C' });
+  await tick();
   assert(ytcv.state.currentGain === 1.5, 'gain for Ch C applied');
 
   // ── P08: Playlist auto-advance ─────────────────────────────────────
@@ -2479,6 +2486,7 @@ async function runTests() {
     channelVolumes: { 'UCshared': { name: 'Shared Ch', gainVideo: 0.5, url: '' } }
   };
   ytcv._set('currentChannel', { id: 'UCshared', name: 'Shared Ch', url: '' });
+  ytcv._set('currentChannelVideoId', ytcv.getUrlVideoId());
   ytcv._set('currentVideoType', 'video');
   ytcv._set('currentLoudnessDb', -6);
   ytcv._set('targetLufs', -18);
@@ -2555,6 +2563,7 @@ async function runTests() {
   mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCfoldfail' };
   setURL('/watch', 'FOLDFAIL001');
   ytcv._set('currentChannel', { id: 'UCfoldfail', name: 'Fold Fail', url: '' });
+  ytcv._set('currentChannelVideoId', ytcv.getUrlVideoId());
   ytcv._set('currentVideoType', 'video');
   ytcv._set('currentLoudnessDb', -6);
   ytcv._set('currentLoudnessVideoId', 'FOLDFAIL001');
@@ -2597,6 +2606,7 @@ async function runTests() {
   section('Storage failure: a rejected write is answered, not dropped');
   mockStorage['channelVolumes'] = { 'UCwritefail': { name: 'Write Fail', gainVideo: 0.5 } };
   ytcv._set('currentChannel', { id: 'UCwritefail', name: 'Write Fail', url: '' });
+  ytcv._set('currentChannelVideoId', ytcv.getUrlVideoId());
   ytcv._set('currentVideoType', 'video');
   ytcv._set('currentLoudnessDb', null);
   ytcv._set('currentAutoApplyLoudnessVideo', false);
@@ -2667,6 +2677,7 @@ async function runTests() {
   section('Auto LUFS defaults: an inherited Auto stays on after a manual save');
   mockStorage['channelVolumes'] = { 'UCinherit': { name: 'Inherit Ch' } };
   ytcv._set('currentChannel', { id: 'UCinherit', name: 'Inherit Ch', url: '' });
+  ytcv._set('currentChannelVideoId', ytcv.getUrlVideoId());
   ytcv._set('currentVideoType', 'live');
   ytcv._set('currentLoudnessDb', null);
   ytcv._set('defaultAutoApplyLoudnessLive', true);
@@ -5335,7 +5346,13 @@ async function runTests() {
     // that was never applied, so opening the popup applies it.
     setURL('/watch', 'newVid');
     mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCopen' };
+    // The channel comes from the bridge after a navigation.
+    mockPostMessageHandler = (data) => {
+      if (data.type !== '__yt_channel_volume_request__') return;
+      setTimeout(() => simulateBridgeMessage({ videoId: 'newVid', isLiveContent: false, channelId: 'UCopen' }), 0);
+    };
     const moved = await simulateRuntimeMessage({ type: 'forceDetect' });
+    mockPostMessageHandler = null;
     await tick();
     assert(moved?.channel?.id === 'UCopen', 'the popup is answered there too');
     assert(ytcv.state._lastVideoId === 'newVid',
@@ -6384,6 +6401,9 @@ async function runTests() {
     setURL('/watch', 'swapVid2');
     mockStorage['channelVolumes'] = { UCswapped: { name: 'Swapped Ch', gainVideo: 0.55 } };
     mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCswapped' };
+    // The channel was named for this video before the element changed.
+    ytcv._set('currentChannel', { id: 'UCswapped', name: 'Swapped Ch', url: '' });
+    ytcv._set('currentChannelVideoId', 'swapVid2');
     ytcv._set('storageMigrated', true);
     ytcv._set('storageSettled', true);
     ytcv._set('_lastVideoId', 'swapVid2');
@@ -6681,6 +6701,10 @@ async function runTests() {
 
   section('Popup: a broadcast from its own tab only');
   {
+    // The tab has applied its video and holds the channel named for it.
+    ytcv._set('currentChannel', { id: 'UCownTab', name: 'Own Tab', url: '' });
+    ytcv._set('_lastVideoId', ytcv.getUrlVideoId());
+    ytcv._set('currentChannelVideoId', ytcv.getUrlVideoId());
     const popup = makePopup();
     await popup.ready();
     const drawn = popup.node('channelName').textContent;
@@ -10195,6 +10219,26 @@ async function runTests() {
       await settle();
       assert(taken?.ok === true && mockStorage.channelVolumes.UCotherCh?.gainVideo !== undefined,
         `a gesture after it saves under the channel named (${JSON.stringify(taken)})`);
+    }
+
+    section('Navigation: the page\'s channel is not taken after a navigation');
+    {
+      await onVideo();
+      // The page still names the channel of the video left.
+      mockDOMElements['canonical'] = { href: TT_URL };
+      setURL('/watch', 'staleDomVid');
+      await ytcv.applyVideoVolume();
+      assert(ytcv.state.currentChannel.id === '' && ytcv.getState().channel.id === '',
+        `the channel of the video left is not taken from the page (${ytcv.state.currentChannel.id})`);
+      // Nor when the same video is applied again for a new element.
+      mockVideoEl = { id: 'transit-video-swapped' };
+      await ytcv.applyVideoVolume();
+      assert(ytcv.state.currentChannel.id === '', `nor on a second apply of that video (${ytcv.state.currentChannel.id})`);
+      // The bridge names the video's channel.
+      simulateBridgeMessage({ videoId: 'staleDomVid', isLiveContent: false, channelId: 'UCstaleDomNew', author: 'New' });
+      await settle();
+      assert(ytcv.state.currentChannel.id === 'UCstaleDomNew', `the bridge names it (${ytcv.state.currentChannel.id})`);
+      mockDOMElements = {};
     }
 
     section('Popup: a drag the popup loses focus during ends there');

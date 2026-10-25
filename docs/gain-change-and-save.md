@@ -523,7 +523,7 @@ sequenceDiagram
     C->>C: applyVideoVolume()
     Note over C: on a new video id, the channel and Auto states are cleared unless the bridge already answered for it, and liveSaveBaseline is cleared
     Note over C: unless the bridge already answered for this video, loudnessDb, baseLoudnessDb, both live levels and isLiveNow are cleared and videoType is video
-    C->>C: detectChannel() from the canonical link, the owner link or meta itemprop channelId, used unless the bridge already named the channel for this video
+    C->>C: on the document's first video only, detectChannel() from the canonical link, the owner link or meta itemprop channelId, used unless the bridge already named the channel for this video
     C->>S: readSettings() (loadSettings), taken unless a settings change arrived while it was out
     C->>C: await applyPreferredGain()
     C->>B: requestLoudnessWithRetry(10, 500)
@@ -534,7 +534,7 @@ sequenceDiagram
 
 - The triggers: `yt-navigate-finish` on `document`; `popstate` on `window`; a `MutationObserver` on the document, which on a watch page calls `triggerApply()` when the page's `<video>` element is a different one from the last processed, or the URL's video id differs from `_lastVideoId`; `visibilitychange`, which calls `triggerApply()` when the tab becomes visible on a watch page before any video was processed. The first load is described in the next section.
 - `triggerApply()` uses `_applyRunning` as a lock. A call that arrives while an apply runs returns at once and is not queued. There is no debounce. When the extension context is invalid, it disconnects the observer.
-- `detectChannel()` returns a UC id only. Where the channel was cleared and the page carries no UC id, the channel stays empty until the bridge answers. With no channel id, `applyPreferredGain()` reads no entry: it plays the Auto gain where the all-channel default is on with a level held, 1.0 otherwise, and saves nothing.
+- `detectChannel()` returns a UC id only, and it is asked for the document's first video alone (`_lastVideoId` empty when the apply begins). After a navigation the page can still name the channel of the video left, so the channel stays empty until the bridge names it for the video, and so it does where the page carries no UC id. With no channel id, `applyPreferredGain()` reads no entry: it plays the Auto gain where the all-channel default is on with a level held, 1.0 otherwise, and saves nothing.
 - When the navigation cleared the bridge state, videoType is `'video'` until the bridge sends `isLiveContent`, so on a live stream the gain stored for videos is applied first.
 - `requestLoudnessWithRetry(10, 500)` resolves at the next bridge message. When 500 ms pass without one, it resolves if a level is held and otherwise asks again, 10 times at most. The bridge answer applies on its own (see the bridge section), and `applyPreferredGain()` runs once more after it.
 - Saves on this path are Auto's own save and the live save inside `applyPreferredGain()`. Once the first `applyPreferredGain()` of `applyVideoVolume` has run, the video goes into `appliedVideoId`. Until then a bridge message makes neither save for the URL's video, so one that lands before that apply, with the channel of the page the tab left still in hand, stores nothing. A settings change and the popup's opening store as before.
