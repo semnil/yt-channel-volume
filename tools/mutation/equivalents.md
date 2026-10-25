@@ -82,13 +82,13 @@ timer body opens with its own `hasLoudness` check, the recursion is bounded by
 `remaining > 1`, and the `catch (_) {}` takes what reading a field of
 `undefined` throws.
 
-- `popup.js:390` === becomes !== ×1 — ===
-- `popup.js:390` a guard is always taken ×1 — if (resp.contentLufs === null || resp.contentLufs === undefined) {
-- `popup.js:408` a guard is dropped ×1 — if (remaining <= 0 || hasLoudness) return;
-- `popup.js:408` || becomes && ×1 — ||
-- `popup.js:413` a guard is always taken ×1 — if (resp) {
-- `popup.js:415` && becomes || ×1 — &&
-- `popup.js:415` a guard is always taken ×1 — if (!hasLoudness && remaining > 1) {
+- `popup.js:416` === becomes !== ×1 — ===
+- `popup.js:416` a guard is always taken ×1 — if (resp.contentLufs === null || resp.contentLufs === undefined) {
+- `popup.js:434` a guard is dropped ×1 — if (remaining <= 0 || hasLoudness) return;
+- `popup.js:434` || becomes && ×1 — ||
+- `popup.js:439` a guard is always taken ×1 — if (resp) {
+- `popup.js:441` && becomes || ×1 — &&
+- `popup.js:441` a guard is always taken ×1 — if (!hasLoudness && remaining > 1) {
 
 ## page-bridge.js
 

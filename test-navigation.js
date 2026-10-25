@@ -686,7 +686,9 @@ function makePopup({ tabUrl = 'https://www.youtube.com/watch?v=abc', answer = nu
     button.dataset.vol = String(percent);
     return button;
   });
+  const windowListeners = {};
   const popupSandbox = {
+    window: { addEventListener: (type, fn) => (windowListeners[type] ||= []).push(fn) },
     console: { log() {}, warn() {}, error() {} },
     Promise, Math, JSON, Date, Object, Array, Number, String, Boolean, isNaN, parseFloat, parseInt,
     setTimeout: (fn) => { popupTimers.push(fn); return popupTimers.length; },
@@ -752,9 +754,14 @@ function makePopup({ tabUrl = 'https://www.youtube.com/watch?v=abc', answer = nu
     },
     // A disabled control receives no event: the browser does not dispatch one,
     // so what protects a gesture is the disabling, not a guard in the handler.
-    async fire(id, type) {
+    async fire(id, type, event = {}) {
       if (node(id).disabled) { await tick(); return; }
-      for (const fn of node(id).listeners[type] || []) await fn({ target: node(id) });
+      for (const fn of node(id).listeners[type] || []) await fn({ target: node(id), ...event });
+      await tick();
+    },
+    // The popup's own window losing focus.
+    async blurWindow() {
+      for (const fn of windowListeners.blur || []) await fn({});
       await tick();
     },
     async firePreset(index, type) {
@@ -10013,6 +10020,82 @@ async function runTests() {
         `the new target's gain is stored for the channel (${JSON.stringify(stored.map((m) => m.gain))} / ${mockStorage.channelVolumes[TT_CH].gainVideo})`);
       assert(ytcv.state.currentGain === target, `and it is the one playing (${ytcv.state.currentGain})`);
       ytcv._set('targetLufs', -18);
+    }
+
+    section('Popup: a drag the popup loses focus during ends there');
+    {
+      const popup = makePopup({
+        answer: async (message) => (message.type === 'setGainLive' || message.type === 'setGain'
+          ? { ok: true }
+          : {
+            isWatchPage: true,
+            channel: { id: TT_CH, name: 'Transit', url: TT_URL },
+            appliesTo: TT_CH + '|video|' + TT_VID,
+            loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0,
+            targetLufs: -18, videoType: 'video'
+          })
+      });
+      await popup.ready();
+      popup.asked.length = 0;
+      popup.node('volumeSlider').value = '165';
+      await popup.fire('volumeSlider', 'pointerdown');
+      await popup.fire('volumeSlider', 'input');
+      // Chrome fires change at the blur, then the blur.
+      await popup.fire('volumeSlider', 'change');
+      await popup.blurWindow();
+      // Focus comes back with the button still held, the drag goes on, and
+      // the release fires change again.
+      popup.node('volumeSlider').value = '210';
+      await popup.fire('volumeSlider', 'input');
+      await popup.fire('volumeSlider', 'change');
+      await popup.fire('volumeSlider', 'pointerup');
+      const saves = popup.asked.filter((m) => m.type === 'setGain');
+      const previews = popup.asked.filter((m) => m.type === 'setGainLive');
+      assert(saves.length === 1 && saves[0].gain === 1.65,
+        `the value at the blur is the one saved, once (${JSON.stringify(saves)})`);
+      assert(previews.length === 1 && previews[0].gain === 1.65,
+        `and the drag after it previews nothing (${JSON.stringify(previews)})`);
+
+      // The next press begins a gesture of its own.
+      popup.asked.length = 0;
+      popup.node('volumeSlider').value = '120';
+      await popup.fire('volumeSlider', 'pointerdown');
+      await popup.fire('volumeSlider', 'input');
+      await popup.fire('volumeSlider', 'change');
+      await popup.fire('volumeSlider', 'pointerup');
+      assert(popup.asked.filter((m) => m.type === 'setGainLive').length === 1 &&
+        popup.asked.filter((m) => m.type === 'setGain' && m.gain === 1.2).length === 1,
+        `a press after it previews and saves again (${JSON.stringify(popup.asked)})`);
+
+      // A key repeat is not a press: after a blur ends a drag, only a new
+      // press takes input again.
+      popup.node('volumeSlider').value = '120';
+      await popup.fire('volumeSlider', 'pointerdown');
+      await popup.fire('volumeSlider', 'input');
+      await popup.fire('volumeSlider', 'change');
+      await popup.blurWindow();
+      popup.asked.length = 0;
+      popup.node('volumeSlider').value = '125';
+      await popup.fire('volumeSlider', 'keydown', { repeat: true });
+      await popup.fire('volumeSlider', 'input');
+      await popup.fire('volumeSlider', 'change');
+      assert(popup.asked.length === 0, `a key repeat after the blur sends nothing (${JSON.stringify(popup.asked)})`);
+      popup.node('volumeSlider').value = '130';
+      await popup.fire('volumeSlider', 'keydown');
+      await popup.fire('volumeSlider', 'input');
+      await popup.fire('volumeSlider', 'change');
+      await popup.fire('volumeSlider', 'keyup');
+      assert(popup.asked.filter((m) => m.type === 'setGain' && m.gain === 1.3).length === 1,
+        `while a new key press saves again (${JSON.stringify(popup.asked)})`);
+
+      // A blur with no drag under way ends nothing.
+      popup.asked.length = 0;
+      await popup.blurWindow();
+      popup.node('volumeSlider').value = '130';
+      await popup.fire('volumeSlider', 'input');
+      await popup.fire('volumeSlider', 'change');
+      assert(popup.asked.filter((m) => m.type === 'setGain' && m.gain === 1.3).length === 1,
+        `an input after a blur that came between gestures is still taken (${JSON.stringify(popup.asked)})`);
     }
   }
 

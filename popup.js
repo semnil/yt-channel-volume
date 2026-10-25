@@ -293,11 +293,36 @@
   // release can pass unseen: the start of the next gesture is what says the
   // one before it is over. Taking the copy here rather than on every movement
   // keeps a drag on the state it began on.
-  const beginSliderGesture = () => { sliderAppliesTo = currentAppliesTo; };
-  volumeSlider.addEventListener('pointerdown', beginSliderGesture);
-  volumeSlider.addEventListener('keydown', beginSliderGesture);
+  const beginSliderGesture = () => {
+    sliderAppliesTo = currentAppliesTo;
+    sliderGestureEnded = false;
+  };
+  // A drag also ends where the popup loses focus during it. Chrome fires
+  // `change` at that blur, ahead of the blur itself, and that change saves;
+  // the input and change that come after it belong to no gesture until the
+  // next press.
+  let sliderPointerHeld = false;
+  let sliderGestureEnded = false;
+  volumeSlider.addEventListener('pointerdown', () => {
+    sliderPointerHeld = true;
+    beginSliderGesture();
+  });
+  // A key repeat is not a new press, and does not end what a blur ended.
+  volumeSlider.addEventListener('keydown', (e) => {
+    if (!e.repeat) beginSliderGesture();
+  });
+  const releaseSliderPointer = () => { sliderPointerHeld = false; };
+  volumeSlider.addEventListener('pointerup', releaseSliderPointer);
+  volumeSlider.addEventListener('pointercancel', releaseSliderPointer);
+  window.addEventListener('blur', () => {
+    if (!sliderPointerHeld) return;
+    sliderPointerHeld = false;
+    sliderGestureEnded = true;
+    sliderAppliesTo = null;
+  });
 
   volumeSlider.addEventListener('input', () => {
+    if (sliderGestureEnded) return;
     // An input that arrived without either of those begins one too.
     if (sliderAppliesTo === null) sliderAppliesTo = currentAppliesTo;
     const pct = Number(volumeSlider.value);
@@ -317,6 +342,7 @@
 
   // change: save to storage on slider release
   volumeSlider.addEventListener('change', () => {
+    if (sliderGestureEnded) return;
     const appliesTo = sliderAppliesTo ?? currentAppliesTo;
     sliderAppliesTo = null;
     if (currentChannel.id) {

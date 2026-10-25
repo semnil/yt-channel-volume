@@ -239,6 +239,7 @@ sequenceDiagram
 ```
 
 - The preset buttons are "0%", "50%", "100%", "200%", "400%" and "MAX" (`data-vol` 600). The popup sends nothing when it holds no channel id.
+- When the popup's window loses focus (`blur`) while the pointer is held on the slider, the drag ends there: a `change` that comes before that `blur` saves as a release does, and after it `input` and `change` send nothing until the next `pointerdown`, or a `keydown` that is not a key repeat, on the slider.
 - The stored value is the applied gain (after `commitGain` clamped it) divided by the rendition ratio, so it is held against the plain rendition. Where neither level is known, the ratio is 1 and `heldAgainstPlain` is false.
 - `autoApply` is the Auto state of the type at that moment, written as the channel's own flag. Since the lock refuses Auto on with a level, a save with Auto on is one made where no level is held (the gain Auto falls back to), and it pins Auto on for the channel.
 - `restoreGainAfterFailedSave()` ends a preview still running and runs `applyPreferredGain()`, so the gain goes back to whatever that function resolves from storage. The popup is answered after it.
