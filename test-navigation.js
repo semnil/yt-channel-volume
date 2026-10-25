@@ -373,6 +373,7 @@ function createBridge({ pathname = '/watch', videoId = 'urlVideoIdA', preassigne
   const listeners = {};
   const logged = [];
   let flexy = null;
+  let canonical = null;
   let moviePlayer = null;
   let fetchAnswer = null;
   let fetchRejection = null;
@@ -448,7 +449,8 @@ function createBridge({ pathname = '/watch', videoId = 'urlVideoIdA', preassigne
       ? (t) => { const at = pendingTimers.indexOf(t); if (at > -1) pendingTimers.splice(at, 1); }
       : clearTimeout,
     document: {
-      querySelector: (selector) => (selector.includes('ytd-watch-flexy') ? flexy : null),
+      querySelector: (selector) => (selector.includes('ytd-watch-flexy') ? flexy
+        : selector.includes('rel="canonical"') ? canonical : null),
       getElementById: (id) => (id === 'movie_player' ? moviePlayer : null)
     }
   };
@@ -476,6 +478,8 @@ function createBridge({ pathname = '/watch', videoId = 'urlVideoIdA', preassigne
     posted,
     logged,
     setUrl,
+    // The page's canonical link, which on a channel's live URL names the stream.
+    setCanonical(href) { canonical = href ? { href } : null; },
     // Method 1: the page assigns its player response.
     assign(playerResponse) { window.ytInitialPlayerResponse = playerResponse; },
     // Method 2: a player request answered mid-navigation. What the page is
@@ -1090,6 +1094,33 @@ async function runTests() {
   mockLocation.href = 'https://www.youtube.com/live/abc12345678';
   assert(ytcv.isWatchPage() === true, '/live/<id> → true');
   assert(ytcv.getUrlVideoId() === 'abc12345678', '/live/<id> → videoId extracted');
+
+  // A channel's live URL names no video; the page's canonical link does, when
+  // the channel has a stream on air or coming.
+  section('isWatchPage: a channel\'s live URL');
+  {
+    const priorCanonical = mockDOMElements['canonical'];
+    mockDOMElements['canonical'] = { href: 'https://www.youtube.com/watch?v=chLiveVid01' };
+    for (const path of ['/@someHandle/live', '/channel/UCsomeChannel/live', '/c/someName/live',
+      '/user/someName/live', '/someName/live', '/@someHandle/live/']) {
+      setURL(path, null);
+      assert(ytcv.isWatchPage() === true && ytcv.getUrlVideoId() === 'chLiveVid01',
+        `${path} with a stream → the video the canonical link names (${ytcv.isWatchPage()} / ${ytcv.getUrlVideoId()})`);
+    }
+    for (const path of ['/@someHandle/videos', '/@someHandle/live/extra', '/live', '/a/b/live']) {
+      setURL(path, null);
+      assert(ytcv.isWatchPage() === false && ytcv.getUrlVideoId() === '',
+        `${path} is not a channel's live URL (${ytcv.isWatchPage()} / ${ytcv.getUrlVideoId()})`);
+    }
+    mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCsomeChannel' };
+    setURL('/@someHandle/live', null);
+    assert(ytcv.isWatchPage() === false && ytcv.getUrlVideoId() === '',
+      `with nothing on air or coming, the page is the channel's (${ytcv.isWatchPage()} / ${ytcv.getUrlVideoId()})`);
+    mockDOMElements['canonical'] = null;
+    assert(ytcv.isWatchPage() === false && ytcv.getUrlVideoId() === '',
+      `and with no canonical link, nothing is named (${ytcv.isWatchPage()} / ${ytcv.getUrlVideoId()})`);
+    mockDOMElements['canonical'] = priorCanonical;
+  }
   setURL('/watch', 'abc123');
   assert(ytcv.getUrlVideoId() === 'abc123', '/watch?v=<id> → videoId extracted');
 
@@ -3090,6 +3121,29 @@ async function runTests() {
   assert(ytcv.state.currentLoudnessDb === -9, 'the answer for the one being watched is taken');
   assert(ytcv.state.currentChannel.id === 'UCfresh', 'and it names the channel');
 
+  section('Bridge message: on a channel\'s live URL, the video the canonical link names is compared');
+  ytcv._set('currentChannel', { id: '', name: '', url: '' });
+  ytcv._set('currentChannelVideoId', '');
+  ytcv._set('currentLoudnessVideoId', '');
+  ytcv._set('currentLoudnessDb', null);
+  setURL('/@liveHandle/live', null);
+  mockDOMElements['canonical'] = { href: 'https://www.youtube.com/watch?v=cHaNnElLiV1' };
+  simulateBridgeMessage({
+    loudnessDb: -7, isLiveContent: true, isLiveNow: true,
+    videoId: 'zZzZzZzZzZz', channelId: 'UCstale', author: 'Stale Ch'
+  });
+  await tick();
+  assert(ytcv.state.currentLoudnessDb === null && ytcv.state.currentChannel.id === '',
+    `an answer queued for another video is dropped (${ytcv.state.currentLoudnessDb} / ${ytcv.state.currentChannel.id})`);
+  simulateBridgeMessage({
+    loudnessDb: -7, isLiveContent: true, isLiveNow: true,
+    videoId: 'cHaNnElLiV1', channelId: 'UCchLive', author: 'Channel Live'
+  });
+  await tick();
+  assert(ytcv.state.currentLoudnessDb === -7 && ytcv.state.currentChannel.id === 'UCchLive',
+    `the answer for the stream the page shows is taken (${ytcv.state.currentLoudnessDb} / ${ytcv.state.currentChannel.id})`);
+  mockDOMElements['canonical'] = null;
+
   // The name of a channel already identified has three sources with an order:
   // the bridge author is the player's own answer for this video, the DOM lags
   // an SPA navigation, and what is held is either a real name or the channel id
@@ -3835,6 +3889,36 @@ async function runTests() {
     await bridge.fetchPlayer(playerResponse({ videoId: 'someOtherId' }));
     assert(bridge.posted.length === 2,
       `an answer for another programme is passed on by neither (${bridge.posted.length})`);
+  }
+
+  section('Bridge: a channel\'s live URL is a watch page, and the canonical link names the stream');
+  {
+    const bridge = createBridge();
+    bridge.setUrl('/@liveHandle/live', null);
+    bridge.setCanonical('https://www.youtube.com/watch?v=urlVideoIdA');
+    bridge.assign(playerResponse({ videoId: 'urlVideoIdA' }));
+    assert(bridge.posted.length === 1 && bridge.last()?.videoId === 'urlVideoIdA',
+      `the assignment is read, for the stream the link names (${bridge.posted.length} / ${bridge.last()?.videoId})`);
+    await bridge.fetchPlayer(playerResponse({ videoId: 'someOtherId' }));
+    assert(bridge.posted.length === 1,
+      `an answer for another programme is not passed on (${bridge.posted.length})`);
+
+    // The player's own level is taken only while its stats name that stream.
+    const pr = playerResponse({ videoId: 'urlVideoIdA' });
+    const stats = { volume: '100%/95% (cont.-13.6dB tgt.-14.0dB)', codecs: 'av01.0.04M.08 (397) / opus (251)' };
+    bridge.setMoviePlayer(pr, {
+      getStatsForNerds: () => ({ ...stats, video_id_and_cpn: 'urlVideoIdA / JHCF WP0H HBKP KJCD 1DSG' })
+    });
+    await bridge.request();
+    assert(Math.abs(bridge.last()?.loudnessDb - 0.4) < 1e-9 && bridge.last()?.videoId === 'urlVideoIdA',
+      `the stats line naming the stream gives the level played (${bridge.last()?.loudnessDb})`);
+
+    const offAir = createBridge();
+    offAir.setUrl('/@liveHandle/live', null);
+    offAir.setCanonical('https://www.youtube.com/channel/UCliveHandle');
+    offAir.assign(playerResponse({ videoId: 'urlVideoIdA' }));
+    assert(offAir.posted.length === 0,
+      `with nothing on air or coming the page is the channel's, and nothing is passed on (${offAir.posted.length})`);
   }
 
   section('Bridge: the level it reads when the first field is absent');

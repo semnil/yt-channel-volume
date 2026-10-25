@@ -6,9 +6,26 @@
 
   const MSG_TYPE = '__yt_channel_volume__';
 
+  // A channel's live URL (`/@<handle>/live`, `/channel/<id>/live`, and the
+  // older `/c/<name>/live`, `/user/<name>/live` and `/<name>/live`) shows the
+  // stream the channel has on air, or the one it has coming, without naming
+  // it in the URL; the page's canonical link names it as `/watch?v=<id>`, and
+  // is in the document ahead of the script that assigns the player response.
+  // Where the channel has neither, the page is the channel's own, and its
+  // canonical link names the channel. Mirrored in content.js.
+  const CHANNEL_LIVE_PATH = /^\/(?:(?:channel|c|user)\/)?[^/]+\/live\/?$/;
+
+  function canonicalVideoId() {
+    try {
+      const u = new URL(document.querySelector('link[rel="canonical"]')?.href);
+      return u.pathname === '/watch' ? u.searchParams.get('v') || '' : '';
+    } catch (_) { return ''; }
+  }
+
   function isWatchPage() {
     const p = location.pathname;
-    return p === '/watch' || p.startsWith('/live/');
+    return p === '/watch' || p.startsWith('/live/') ||
+      (CHANNEL_LIVE_PATH.test(p) && canonicalVideoId() !== '');
   }
 
   function postResult(info, source) {
@@ -137,7 +154,8 @@
       const q = u.searchParams.get('v');
       if (q) return q;
       const m = u.pathname.match(/^\/live\/([^/?#]+)/);
-      return m ? m[1] : '';
+      if (m) return m[1];
+      return CHANNEL_LIVE_PATH.test(u.pathname) ? canonicalVideoId() : '';
     } catch (_) { return ''; }
   }
 

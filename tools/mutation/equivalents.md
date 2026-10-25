@@ -32,13 +32,13 @@ message handler starts the evaluation without reading what it hands back, so
 which text it carries changes nothing the handler does: the gain applied, the
 write sent and the follow set are the same either way.
 
-- `content.js:285` === becomes !== ×1 — ===
+- `content.js:286` === becomes !== ×1 — ===
 
 `ensureAudioChain`'s check before the teardown. The disconnect it guards is
 inside a `try`, so a null source is caught, and the assignment below runs either
 way.
 
-- `content.js:589` a guard is always taken ×1 — if (sourceNode) {
+- `content.js:590` a guard is always taken ×1 — if (sourceNode) {
 
 
 The dropped await before `notifyPopup` in the retry's callback. Measured by
@@ -48,29 +48,29 @@ run by the time the callback is reached — every notification carries the level
 beside the gain that goes with it whether the await is there or not. With Auto
 off the gain does not move at all.
 
-- `content.js:717` an await is dropped ×1 — await
+- `content.js:718` an await is dropped ×1 — await
 
 The navigation observer's watch-page check. `triggerApply` opens with the same
 one.
 
-- `content.js:835` a guard is dropped ×1 — if (!isWatchPage()) return;
+- `content.js:853` a guard is dropped ×1 — if (!isWatchPage()) return;
 
 `respondOnce`'s guard against a second answer, and `return true` after a
 synchronous `sendResponse`. Both were measured against Chrome rather than
 reasoned about: a response sent inside the listener is delivered whatever the
 listener returns, and a second one is dropped rather than delivered or thrown.
 
-- `content.js:945` a guard is dropped ×1 — if (answered) return;
-- `content.js:959` true becomes false ×1 — return true;
-- `content.js:966` true becomes false ×1 — return true;
-- `content.js:972` true becomes false ×1 — return true;
-- `content.js:976` true becomes false ×1 — return true;
-- `content.js:980` true becomes false ×1 — return true;
-- `content.js:1009` true becomes false ×1 — return true;
-- `content.js:1013` true becomes false ×1 — return true;
-- `content.js:1017` true becomes false ×1 — return true;
-- `content.js:1030` true becomes false ×1 — return true;
-- `content.js:1049` true becomes false ×1 — return true;
+- `content.js:963` a guard is dropped ×1 — if (answered) return;
+- `content.js:977` true becomes false ×1 — return true;
+- `content.js:984` true becomes false ×1 — return true;
+- `content.js:990` true becomes false ×1 — return true;
+- `content.js:994` true becomes false ×1 — return true;
+- `content.js:998` true becomes false ×1 — return true;
+- `content.js:1027` true becomes false ×1 — return true;
+- `content.js:1031` true becomes false ×1 — return true;
+- `content.js:1035` true becomes false ×1 — return true;
+- `content.js:1048` true becomes false ×1 — return true;
+- `content.js:1067` true becomes false ×1 — return true;
 
 ## popup.js
 
@@ -105,18 +105,18 @@ The player-response captures. Without the first check the capture holds
 second guards is inside a `try { } catch (_) {}`, which takes what a missing
 player or a missing method throws.
 
-- `page-bridge.js:160` a guard is always taken ×1 — if (window.ytInitialPlayerResponse) {
-- `page-bridge.js:226` && becomes || ×1 — &&
-- `page-bridge.js:226` a guard is always taken ×1 — if (player && typeof player.getPlayerResponse === 'function') {
+- `page-bridge.js:178` a guard is always taken ×1 — if (window.ytInitialPlayerResponse) {
+- `page-bridge.js:244` && becomes || ×1 — &&
+- `page-bridge.js:244` a guard is always taken ×1 — if (player && typeof player.getPlayerResponse === 'function') {
 
 The player's stable volume setting and its stats line are read the same way:
 each call is inside a `try { } catch (_) {}`, and what a missing player or a
 missing method throws lands where the guard would have sent it — on to the
 stored setting, or a level or volume line of `null`.
 
-- `page-bridge.js:39` && becomes || ×1 — &&
-- `page-bridge.js:39` a guard is always taken ×1 — if (player && typeof player.getDrcUserPreference === 'function') {
-- `page-bridge.js:77` || becomes && ×1 — ||
-- `page-bridge.js:77` a guard is dropped ×1 — if (!player || typeof player.getStatsForNerds !== 'function') return nul
-- `page-bridge.js:387` && becomes || ×1 — &&
-- `page-bridge.js:387` a guard is always taken ×1 — if (moviePlayer && typeof moviePlayer.getStatsForNerds === 'function') {
+- `page-bridge.js:56` && becomes || ×1 — &&
+- `page-bridge.js:56` a guard is always taken ×1 — if (player && typeof player.getDrcUserPreference === 'function') {
+- `page-bridge.js:94` || becomes && ×1 — ||
+- `page-bridge.js:94` a guard is dropped ×1 — if (!player || typeof player.getStatsForNerds !== 'function') return nul
+- `page-bridge.js:405` && becomes || ×1 — &&
+- `page-bridge.js:405` a guard is always taken ×1 — if (moviePlayer && typeof moviePlayer.getStatsForNerds === 'function') {
