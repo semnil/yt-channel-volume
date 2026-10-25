@@ -69,6 +69,10 @@
   // the same video and type.
   let liveSaveBaseline = null;
   let liveSaveInFlight = false;
+  // The video the first apply after a change of URL has run for. Until it has,
+  // the tab can still hold the channel of the page it left, so a bridge
+  // message makes neither Auto's own save nor the live save.
+  let appliedVideoId = '';
   // When a live level last set the gain playing, and for which video; null
   // until a live gain plays for the video. `at` is null from a message that
   // names no live level until the next live gain, so a level coming back
@@ -327,7 +331,7 @@
       if (applyAutomaticLoudnessGain(source)) {
         notifyPopup();
       } else {
-        applyPreferredGain(source).then(notifyPopup)
+        applyPreferredGain(source, { fromMessage: true }).then(notifyPopup)
           .catch(err => reportFailure('apply failed', err));
       }
     } catch (err) {
@@ -501,7 +505,7 @@
     // What it stores is decided apart from the apply.
     if (isCurrentAutoApplyEnabled() && currentLiveLkfs !== null) {
       commitLiveGain();
-      evaluateLiveSave(source);
+      evaluateLiveSave(source, { fromMessage: true });
       return true;
     }
     if (!isCurrentAutoApplyEnabled() || currentLoudnessDb === null) return false;
@@ -514,7 +518,7 @@
     // of the same channel without Content Loudness keeps the same level. Not
     // before the fold, though: a flagless gain is what a pre-unification
     // manual save looks like, and the fold would pin this channel Auto-off.
-    if (storageMigrated && isVideoPlaying()) {
+    if (storageMigrated && isVideoPlaying() && appliedVideoId === getUrlVideoId()) {
       nameUnaskedWrite('auto gain not stored', saveChannelGain(
         channelId, currentChannel.name, storedGain, videoType, currentChannel.url
       ));
@@ -522,7 +526,9 @@
     return true;
   }
 
-  async function applyPreferredGain(source = 'apply') {
+  // `fromMessage` is an apply a bridge message starts, which stores only once
+  // `appliedVideoId` names the URL's video.
+  async function applyPreferredGain(source = 'apply', { fromMessage = false } = {}) {
     await storageReady;
     const requestedVideoId = getUrlVideoId();
     const requestedChannelId = currentChannel.id;
@@ -542,7 +548,7 @@
     syncLiveFollow();
     if (autoEnabled && currentLiveLkfs !== null) {
       commitLiveGain();
-      await evaluateLiveSave(source);
+      await evaluateLiveSave(source, { fromMessage });
       return;
     }
     const hasLoudness = currentLoudnessDb !== null;
@@ -551,7 +557,8 @@
       ? calcGainFromLoudness(currentLoudnessDb)
       : (stored != null ? storedGainToPlaying(entry, requestedVideoType, stored) : 1.0);
     commitGainFromElsewhere(gain);
-    if (autoEnabled && hasLoudness && storageMigrated && isVideoPlaying()) {
+    if (autoEnabled && hasLoudness && storageMigrated && isVideoPlaying() &&
+        (!fromMessage || appliedVideoId === requestedVideoId)) {
       // The gain is already playing. A failed write must not abort the caller —
       // `forceDetect` answers the popup from this path.
       await nameUnaskedWrite('auto gain not stored', saveChannelGain(
@@ -571,7 +578,7 @@
   // as it stands.
   const LIVE_SAVE_STEP_DB = 1;
 
-  async function evaluateLiveSave(source) {
+  async function evaluateLiveSave(source, { fromMessage = false } = {}) {
     const videoId = getUrlVideoId();
     const videoType = currentVideoType;
     const gain = calcGainFromLiveLevel();
@@ -597,6 +604,8 @@
       result.reason = 'not following';
     } else if (result.decision === 'skip') {
       result.reason = 'under step';
+    } else if (fromMessage && appliedVideoId !== videoId) {
+      result.reason = 'before first apply';
     } else if (currentGain < gain * (1 - 1e-9)) {
       result.reason = 'held under the level';
     } else if (!storageMigrated) {
@@ -867,6 +876,7 @@
     // read. This avoids replacing an already calculated archive gain with the
     // navigation-time fallback.
     await applyPreferredGain();
+    appliedVideoId = _lastVideoId;
     notifyPopup();
 
     // Fetch loudness + videoType + channelId. Auto mode applies the calculated
@@ -1380,7 +1390,7 @@
         return {
           currentChannel, currentChannelVideoId,
           currentGain, currentLoudnessDb, currentBaseLoudnessDb, currentLoudnessVideoId,
-          currentLiveLkfs, readLiveLkfs, liveSaveBaseline, liveSaveInFlight, liveFollowTimer, liveRaiseFrom, preview,
+          currentLiveLkfs, readLiveLkfs, liveSaveBaseline, liveSaveInFlight, liveFollowTimer, liveRaiseFrom, preview, appliedVideoId,
           storedLiveGain, liveLevelBefore, liveLevelRise,
           currentVideoType, currentVideoTypeDetected, currentIsLiveNow, showGainOverlay,
           currentAutoApplyLoudnessVideo, currentAutoApplyLoudnessLive,
@@ -1417,7 +1427,10 @@
           case 'currentGain': currentGain = val; break;
           case 'currentVideoType': currentVideoType = val; break;
           case 'currentVideoTypeDetected': currentVideoTypeDetected = val; break;
-          case '_lastVideoId': _lastVideoId = val; break;
+          // A video set as the last one applied is one whose first apply has
+          // run; a case that means otherwise sets appliedVideoId after it.
+          case '_lastVideoId': _lastVideoId = val; appliedVideoId = val; break;
+          case 'appliedVideoId': appliedVideoId = val; break;
           case '_lastProcessedVideo': _lastProcessedVideo = val; break;
           case '_applyRunning': _applyRunning = val; break;
           case 'targetLufs': targetLufs = val; break;

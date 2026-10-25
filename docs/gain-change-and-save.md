@@ -136,7 +136,7 @@ sequenceDiagram
       C->>C: await evaluateLiveSave(source)
     else Auto on for the type and loudnessDb is held
       C->>G: commitGain(calcGain(loudnessDb))
-      opt storageMigrated, and the video is playing
+      opt storageMigrated, the video playing, and, for an apply a bridge message starts, the first apply for the URL has run
         C->>W: store:saveChannelGain, calcGain(baseLoudnessDb), no autoApply (unasked)
         W-->>C: answer, a failure goes to nameUnaskedWrite
       end
@@ -150,7 +150,7 @@ sequenceDiagram
 
 - The read is dropped when anything it was taken for has moved: another navigation, a bridge answer that changed the channel or the type, or a change notification (`storageRevision` goes up on every `channelVolumes` or `autoLoudnessSettings` change notification, and when `unifiedGains` from another context is taken in).
 - Auto's own save sends no `autoApply`, so the channel keeps following the all-channel default. It sends `heldAgainstPlain: true` when `baseLoudnessDb` is known. A save whose map comes out unchanged is not set by the worker (see "Common path of a channel write").
-- Nothing is saved before the legacy fold has landed (`storageMigrated` false), nor by a tab whose `<video>` is paused or muted (`isVideoPlaying()`; a volume of 0 or a gain of 0 still counts as playing). The gain is still applied.
+- Nothing is saved before the legacy fold has landed (`storageMigrated` false), nor by a tab whose `<video>` is paused or muted (`isVideoPlaying()`; a volume of 0 or a gain of 0 still counts as playing). An apply a bridge message starts (`fromMessage`) saves nothing either before the first apply after a change of URL has run for the URL's video (`appliedVideoId`). The gain is still applied.
 - `setCurrentAutoApplyFromEntry` also takes the entry's live gain (`storedLiveGain`), which the start cap is measured from.
 - While a slider preview holds (see "Popup: slider drag (`input`)"), the gain in the diagram is held back rather than committed, and the rest runs.
 - When the entry read rejects or the audio chain cannot be built, the apply stops there. Each caller that starts it without waiting for it (the bridge message, the retry after a navigation, and the `autoLoudnessSettings` and `unifiedGains` change notifications) logs the failure with `reportFailure('apply failed')`, as `triggerApply` does for the navigation's own apply.
@@ -420,7 +420,7 @@ sequenceDiagram
       C->>C: evaluateLiveSave(source), not awaited
     else fold settled, Auto on, loudnessDb held
       C->>G: commitGain(calcGain(loudnessDb))
-      opt storageMigrated, and the video is playing
+      opt storageMigrated, the video playing, and the first apply for the URL has run
         C->>W: store:saveChannelGain, calcGain(baseLoudnessDb), no autoApply (unasked)
       end
     else otherwise
@@ -433,7 +433,7 @@ sequenceDiagram
 The bridge posts under these conditions:
 
 - `define` and `fetch`: on a watch page (`/watch`, a path under `/live/`, or a channel's live URL whose canonical link names a stream), when the response's `videoDetails.videoId` is the URL's video or either is missing (`isCurrentVideo`).
-- `request`: whenever `content.js` asks. The answer is taken from the response kept from load when it names the URL's video; where that gives neither a level nor a channel id, from the first of the page's responses (`ytd-watch-flexy`, then `movie_player.getPlayerResponse()`). `isLiveNow` comes from the newest of those that names the URL's video.
+- `request`: whenever `content.js` asks. The answer is taken from the response kept from load when it names the URL's video; where that gives neither a level nor a channel id, from the first of the page's responses (`ytd-watch-flexy`, then `movie_player.getPlayerResponse()`). `isLiveNow` comes from the newest of those that names the URL's video. Where none of them names the URL's video, the answer carries `isLiveContent: null`, which `content.js` does not take, so the tab keeps the type it holds.
 - `audio-change`: on a watch page, each time the player fires `onPlaybackAudioChange`.
 - `playing`: the first look that finds a `cont.` or `live.` level in the volume line.
 
@@ -468,6 +468,8 @@ sequenceDiagram
       Note over C: reason not following
     else a baseline exists for this video and the move rounds to under 1 dB
       Note over C: reason under step
+    else a bridge message started it, and the first apply for the URL has not run
+      Note over C: reason before first apply
     else the gain playing is under the one the level asks for
       Note over C: reason held under the level
     else storageMigrated is false
@@ -534,7 +536,7 @@ sequenceDiagram
 - `detectChannel()` returns a UC id only. Where the channel was cleared and the page carries no UC id, the channel stays empty until the bridge answers. With no channel id, `applyPreferredGain()` reads no entry: it plays the Auto gain where the all-channel default is on with a level held, 1.0 otherwise, and saves nothing.
 - When the navigation cleared the bridge state, videoType is `'video'` until the bridge sends `isLiveContent`, so on a live stream the gain stored for videos is applied first.
 - `requestLoudnessWithRetry(10, 500)` resolves at the next bridge message. When 500 ms pass without one, it resolves if a level is held and otherwise asks again, 10 times at most. The bridge answer applies on its own (see the bridge section), and `applyPreferredGain()` runs once more after it.
-- Saves on this path are Auto's own save and the live save inside `applyPreferredGain()`.
+- Saves on this path are Auto's own save and the live save inside `applyPreferredGain()`. Once the first `applyPreferredGain()` of `applyVideoVolume` has run, the video goes into `appliedVideoId`. Until then a bridge message makes neither save for the URL's video, so one that lands before that apply, with the channel of the page the tab left still in hand, stores nothing. A settings change and the popup's opening store as before.
 - A failure in `applyVideoVolume` is logged by `reportFailure('apply failed')`.
 
 Drawn from: `content.js` the `yt-navigate-finish`, `popstate` and `visibilitychange` listeners, the `MutationObserver` callback, `triggerApply`, `applyVideoVolume`, `detectChannel`, `loadSettings`, `requestLoudnessWithRetry`, `applyPreferredGain`.

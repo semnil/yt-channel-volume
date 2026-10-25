@@ -1477,6 +1477,7 @@ async function runTests() {
     'UCbridgeLearn': { name: 'Bridge Learn', autoApplyLoudnessVideo: true }
   };
   setURL('/watch', 'BRIDGELEARN');
+  ytcv._set('_lastVideoId', 'BRIDGELEARN');
   ytcv._set('currentChannel', { id: 'UCbridgeLearn', name: 'Bridge Learn', url: '' });
   ytcv._set('currentChannelVideoId', 'BRIDGELEARN');
   ytcv._set('currentVideoType', 'video');
@@ -1539,6 +1540,7 @@ async function runTests() {
     }
   };
   setURL('/watch', comparedArchiveVideoId);
+  ytcv._set('_lastVideoId', comparedArchiveVideoId);
   ytcv._set('currentChannel', {
     id: 'UCsharedLive',
     name: 'Shared Live Channel',
@@ -1557,6 +1559,7 @@ async function runTests() {
     'calculated gain becomes the channel live gain');
 
   setURL('/watch', comparedLiveVideoId);
+  ytcv._set('_lastVideoId', comparedLiveVideoId);
   ytcv._set('currentChannelVideoId', comparedLiveVideoId);
   ytcv._set('currentLoudnessDb', null);
   ytcv._set('currentLoudnessVideoId', comparedLiveVideoId);
@@ -1726,6 +1729,7 @@ async function runTests() {
   const enterVideo = (channelId, videoId, videoType, entry) => {
     mockStorage['channelVolumes'] = entry ? { [channelId]: entry } : {};
     setURL('/watch', videoId);
+    ytcv._set('_lastVideoId', videoId);
     ytcv._set('currentChannel', { id: channelId, name: entry?.name || channelId, url: 'https://www.youtube.com/channel/' + channelId });
     ytcv._set('currentChannelVideoId', videoId);
     ytcv._set('currentVideoType', videoType);
@@ -1758,6 +1762,7 @@ async function runTests() {
 
     // On air there is neither a level nor a stable rendition.
     setURL('/watch', 'ONAIRSTB001');
+    ytcv._set('_lastVideoId', 'ONAIRSTB001');
     ytcv._set('currentChannelVideoId', 'ONAIRSTB001');
     await bridgeSays('UCrendition', 'ONAIRSTB001', {
       isLiveContent: true, isLiveNow: true, loudnessDb: null, baseLoudnessDb: null
@@ -2787,6 +2792,7 @@ async function runTests() {
     }
   };
   setURL('/watch', 'NAVIGATE001');
+  ytcv._set('_lastVideoId', 'NAVIGATE001');
   ytcv._set('currentChannel', {
     id: navigationSourceId,
     name: 'Channel A',
@@ -3012,6 +3018,7 @@ async function runTests() {
     '@auto_handle': { name: 'Auto Handle Ch', gainVideo: 0.6 }
   };
   setURL('/watch', 'BACKFILL001');
+  ytcv._set('_lastVideoId', 'BACKFILL001');
   ytcv._set('currentChannel', { id: '', name: '', url: '' });
   ytcv._set('currentChannelVideoId', '');
   ytcv._set('currentLoudnessDb', null);
@@ -3245,6 +3252,7 @@ async function runTests() {
     '@typed_handle': { name: 'Typed Handle', gainVideo: 0.4 }
   };
   setURL('/watch', 'typedVid1');
+  ytcv._set('_lastVideoId', 'typedVid1');
   ytcv._set('currentChannel', { id: 'UCtyped', name: 'Typed', url: 'https://www.youtube.com/channel/UCtyped' });
   ytcv._set('currentChannelVideoId', 'typedVid1');
   ytcv._set('currentLoudnessDb', null);
@@ -3385,6 +3393,7 @@ async function runTests() {
     UCwrites: { name: 'Writes Ch', gainVideo: 0.5, autoApplyLoudnessVideo: true }
   };
   setURL('/watch', 'writeVid1');
+  ytcv._set('_lastVideoId', 'writeVid1');
   ytcv._set('currentChannel', { id: 'UCwrites', name: 'Writes Ch', url: '' });
   ytcv._set('currentChannelVideoId', 'writeVid1');
   ytcv._set('currentLoudnessVideoId', '');
@@ -3560,6 +3569,7 @@ async function runTests() {
   setURL('/watch', 'sharedVid1');
   ytcv._set('currentChannel', { id: '', name: '', url: '' });
   ytcv._set('_lastVideoId', null);
+  ytcv._set('appliedVideoId', 'sharedVid1');
   ytcv._set('_lastProcessedVideo', null);
   ytcv._set('storageMigrated', true);
   ytcv._set('storageReady', Promise.resolve());
@@ -8929,10 +8939,12 @@ async function runTests() {
 
       // Another video is a first level again.
       setURL('/watch', 'liveFollowVid2');
+      ytcv._set('_lastVideoId', 'liveFollowVid2');
       const opened = await ytcv.evaluateLiveSave('open');
       assert(opened.decision === 'open' && opened.saved === true && opened.ok === true && opened.baselineGain === null,
         `another video's first level is stored whatever it is (${JSON.stringify(opened)})`);
       setURL('/watch', LIVE_VID);
+      ytcv._set('_lastVideoId', LIVE_VID);
 
       // A level lost falls back to the gain stored.
       ytcv._set('liveSaveBaseline', { videoId: LIVE_VID, videoType: 'live', gain: liveGain(-21, -20) });
@@ -10061,6 +10073,68 @@ async function runTests() {
       ytcv._set('currentLiveLkfs', null);
       ytcv._set('currentAutoApplyLoudnessVideo', false);
       ytcv.syncLiveFollow();
+    }
+
+    section('Navigation: nothing a message brings is stored before the first apply for the new URL');
+    {
+      await onVideo({ entry: { gainVideo: 0.5, autoApplyLoudnessVideo: true } });
+      mockSyncStorage.autoLoudnessSettings.autoApplyLoudnessVideoDefault = true;
+      ytcv._set('defaultAutoApplyLoudnessVideo', true);
+      const stores = () => mockSentMessages.filter((m) => m?.type === 'store:saveChannelGain');
+      // The URL has moved on and no apply has run for it: the tab still holds
+      // the channel it left.
+      setURL('/watch', 'nextVid');
+      mockVideoEl = { id: 'transit-video-next' };
+      // The answer before a response names the video, carrying a live level,
+      // and then one carrying a level for the video.
+      simulateBridgeMessage({ videoId: 'nextVid', loudnessDb: null, baseLoudnessDb: null, isLiveContent: false,
+        isLiveNow: false, channelId: '', author: '', liveLkfs: -19.6, source: 'playing' });
+      await settle();
+      simulateBridgeMessage({ videoId: 'nextVid', loudnessDb: -6, isLiveContent: false, channelId: '', source: 'request' });
+      await settle();
+      assert(stores().length === 0,
+        `nothing is stored into the channel the tab left (${JSON.stringify(stores())})`);
+      assert(mockStorage.channelVolumes[TT_CH].gainVideo === 0.5, 'which keeps its own gain');
+      // The stop is for what a message brings: a settings change in the same
+      // window stores as it does at any other time.
+      mockSyncStorage.autoLoudnessSettings = { targetLufs: -20, autoApplyLoudnessVideoDefault: true };
+      simulateStorageChange({ [SETTINGS_KEY]: { newValue: { ...mockSyncStorage.autoLoudnessSettings } } });
+      await settle();
+      assert(stores().length === 1,
+        `a settings change before the first apply still makes Auto's save (${JSON.stringify(stores())})`);
+      mockSentMessages.length = 0;
+      mockSyncStorage.autoLoudnessSettings = { targetLufs: -18, autoApplyLoudnessVideoDefault: true };
+      simulateStorageChange({ [SETTINGS_KEY]: { newValue: { ...mockSyncStorage.autoLoudnessSettings } } });
+      await settle();
+      mockSentMessages.length = 0;
+
+      // Once the first apply has run, what a message brings is stored again.
+      await ytcv.applyVideoVolume();
+      simulateBridgeMessage({ videoId: 'nextVid', loudnessDb: -6, isLiveContent: false, channelId: 'UCnext', author: 'Next' });
+      await settle();
+      assert(stores().length > 0 && stores().every((m) => m.channelId === 'UCnext'),
+        `after the first apply the new channel's Auto gain is stored (${JSON.stringify(stores().map((m) => m.channelId))})`);
+      ytcv._set('defaultAutoApplyLoudnessVideo', false);
+      ytcv._set('currentLiveLkfs', null);
+      ytcv._set('currentAutoApplyLoudnessVideo', false);
+      ytcv.syncLiveFollow();
+    }
+    {
+      // The answer the bridge gives before any response names the video does
+      // not say what kind of video it is.
+      const bridge = createBridge();
+      await bridge.request();
+      assert(bridge.last()?.isLiveContent === null,
+        `the answer with no response says nothing about the type (${JSON.stringify(bridge.last()?.isLiveContent)})`);
+      await onVideo();
+      ytcv._set('currentVideoType', 'live');
+      simulateBridgeMessage({ ...bridge.last(), videoId: TT_VID });
+      await settle();
+      assert(ytcv.state.currentVideoType === 'live', 'and the tab keeps the type it knows');
+      const answered = createBridge();
+      answered.assign(playerResponse({ loudnessDb: -6.5 }));
+      await answered.request();
+      assert(answered.last()?.isLiveContent === false, 'a response that names the video still does');
     }
 
     section('Popup: a drag the popup loses focus during ends there');

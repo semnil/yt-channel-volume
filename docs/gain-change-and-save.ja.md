@@ -136,7 +136,7 @@ sequenceDiagram
       C->>C: await evaluateLiveSave(source)
     else その種別の Auto が ON で、loudnessDb を持っている
       C->>G: commitGain(calcGain(loudnessDb))
-      opt storageMigrated で、動画が再生中
+      opt storageMigrated で、動画が再生中で、ブリッジのメッセージが始めた適用なら URL の最初の適用が終わっている
         C->>W: store:saveChannelGain、calcGain(baseLoudnessDb)、autoApply なし (頼まれていない書き込み)
         W-->>C: 返事、失敗は nameUnaskedWrite へ
       end
@@ -150,7 +150,7 @@ sequenceDiagram
 
 - 読み込みのもとになった状態が動いたら、その読み込みの結果は捨てる。動く例: 別の動画への移動、チャンネルや種別を変えたブリッジの返事、保存内容が変わったという知らせ (`storageRevision` は `channelVolumes` か `autoLoudnessSettings` が変わったという知らせのたびに増え、他の場所の `unifiedGains` を取り入れたときにも増える)。
 - Auto 自身の保存は `autoApply` を送らないので、チャンネルは全チャンネル共通の既定値に従い続ける。`baseLoudnessDb` が分かっていれば `heldAgainstPlain: true` を送る。表が変わらない保存は、service worker が `set` しない (「チャンネル書き込みの共通の流れ」を参照)。
-- 旧形式の取り込みが成功するまで (`storageMigrated` が false の間) は保存しない。`<video>` が止まっているかミュートのタブも保存しない (`isVideoPlaying()`。音量 0 やゲイン 0 は再生中に数える)。ゲインの適用はする。
+- 旧形式の取り込みが成功するまで (`storageMigrated` が false の間) は保存しない。`<video>` が止まっているかミュートのタブも保存しない (`isVideoPlaying()`。音量 0 やゲイン 0 は再生中に数える)。ブリッジのメッセージが始めた適用 (`fromMessage`) は、URL が変わったあとの最初の適用が URL の動画について終わるまで (`appliedVideoId`) も保存しない。ゲインの適用はする。
 - `setCurrentAutoApplyFromEntry` は、中身のライブのゲイン (`storedLiveGain`) も取る。始まりの上限はこれをもとに測る。
 - スライダーの試し聞きが続いている間 (「ポップアップ: スライダーを動かしている間 (`input`)」を参照) は、図のゲインを入れずに取っておき、残りは動かす。
 - 項目の読み出しが reject したとき、または音声のつなぎを作れないときは、適用はそこで止まる。この関数を待たずに動かす呼び出し元 (ブリッジのメッセージ、移動の後の再試行、`autoLoudnessSettings` と `unifiedGains` が変わったという知らせ) は、その失敗を `reportFailure('apply failed')` で記録する。移動そのものの適用を `triggerApply` が記録するのと同じ。
@@ -420,7 +420,7 @@ sequenceDiagram
       C->>C: evaluateLiveSave(source)、終わるのを待たない
     else 取り込みが終わっていて、Auto が ON で、loudnessDb を持っている
       C->>G: commitGain(calcGain(loudnessDb))
-      opt storageMigrated で、動画が再生中
+      opt storageMigrated で、動画が再生中で、URL の最初の適用が終わっている
         C->>W: store:saveChannelGain、calcGain(baseLoudnessDb)、autoApply なし (頼まれていない書き込み)
       end
     else それ以外
@@ -433,7 +433,7 @@ sequenceDiagram
 ブリッジが送る条件:
 
 - `define` と `fetch`: 再生ページ (`/watch`、`/live/` の下のパス、または正規リンクが配信を示すチャンネルのライブ URL) で、応答の `videoDetails.videoId` が URL の動画であるか、どちらかが無いとき (`isCurrentVideo`)。
-- `request`: `content.js` が聞いたときはいつでも。返事は、読み込み時に取っておいた応答が URL の動画のものならそれから取る。それでレベルもチャンネル ID も得られないときは、ページが持つ応答の 1 つ目 (`ytd-watch-flexy`、その次に `movie_player.getPlayerResponse()`) から取る。`isLiveNow` は、URL の動画を示すもののうち一番新しいものから取る。
+- `request`: `content.js` が聞いたときはいつでも。返事は、読み込み時に取っておいた応答が URL の動画のものならそれから取る。それでレベルもチャンネル ID も得られないときは、ページが持つ応答の 1 つ目 (`ytd-watch-flexy`、その次に `movie_player.getPlayerResponse()`) から取る。`isLiveNow` は、URL の動画を示すもののうち一番新しいものから取る。どれも URL の動画を示さないときは、返事は `isLiveContent: null` を運ぶ。`content.js` はこれを受け取らないので、タブは持っている種別のままになる。
 - `audio-change`: 再生ページで、プレイヤーが `onPlaybackAudioChange` を出すたび。
 - `playing`: 音量の行に `cont.` か `live.` のレベルを初めて見つけたとき。
 
@@ -468,6 +468,8 @@ sequenceDiagram
       Note over C: reason not following
     else この動画の基準があり、動いた量を丸めると 1 dB 未満
       Note over C: reason under step
+    else ブリッジのメッセージが始めたもので、URL の最初の適用がまだ終わっていない
+      Note over C: reason before first apply
     else 鳴っているゲインが、レベルの求めるゲインより小さい
       Note over C: reason held under the level
     else storageMigrated が false
@@ -534,7 +536,7 @@ sequenceDiagram
 - `detectChannel()` は UC の ID だけを返す。チャンネルを消したあとでページに UC の ID が無ければ、ブリッジが返事をするまでチャンネルは空のまま。チャンネル ID が無いとき、`applyPreferredGain()` は保存内容を読まない。全チャンネル共通の既定値で Auto が ON でレベルを持っていれば Auto のゲインを、それ以外は 1.0 を鳴らし、何も保存しない。
 - 移動でブリッジ由来の状態を消したときは、ブリッジが `isLiveContent` を送るまで videoType は `'video'` なので、ライブ配信でも最初は動画用の保存ゲインが適用される。
 - `requestLoudnessWithRetry(10, 500)` は次のブリッジのメッセージが来たら終わる。来ないまま 500 ms たつと、レベルを持っていれば終わり、持っていなければもう一度聞く。最大 10 回。ブリッジの返事はそれ自身で適用され (ブリッジの節を参照)、そのあとで `applyPreferredGain()` がもう一度動く。
-- この流れでの保存は、`applyPreferredGain()` の中の Auto 自身の保存とライブの保存。
+- この流れでの保存は、`applyPreferredGain()` の中の Auto 自身の保存とライブの保存。`applyVideoVolume` の最初の `applyPreferredGain()` が終わると、その動画を `appliedVideoId` に入れる。それまでは、ブリッジのメッセージは URL の動画についてどちらの保存もしないので、その適用より前に届いたメッセージは、離れたページのチャンネルを持ったままでも、何も保存しない。設定の変更とポップアップを開いたときの適用は、これまでどおり保存する。
 - `applyVideoVolume` の失敗は `reportFailure('apply failed')` が記録する。
 
 図のもと: `content.js` の `yt-navigate-finish` / `popstate` / `visibilitychange` の受け取り側、`MutationObserver` の処理、`triggerApply`、`applyVideoVolume`、`detectChannel`、`loadSettings`、`requestLoudnessWithRetry`、`applyPreferredGain`。

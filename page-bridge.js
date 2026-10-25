@@ -289,10 +289,12 @@
   }
 
   function answerCurrentVideo(source) {
+    // Until a response names this video, whether it is live content is not
+    // known, and the answer says so with null.
     let result = {
       db: null,
       baseDb: null,
-      isLiveContent: false,
+      isLiveContent: null,
       isLiveNow: false,
       videoId: currentVideoId(),
       channelId: '',
