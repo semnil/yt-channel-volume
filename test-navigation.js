@@ -4548,7 +4548,17 @@ async function runTests() {
       `both levels the response carries (${dump?.captured?.loudnessDb} / ${dump?.captured?.drcLoudnessDb})`);
     assert(dump?.playerVolume === '100%/100% (cont.-26.4dB tgt.-14.0dB)',
       `and the player's own volume line (${dump?.playerVolume})`);
-    assert(dump?.playingLkfs === -26.4, `with the level read from it (${dump?.playingLkfs})`);
+    assert(dump?.playingLkfs === -26.4 && dump?.liveLkfs === null,
+      `with the level read from it, and no live level (${dump?.playingLkfs} / ${dump?.liveLkfs})`);
+
+    const onAir = createBridge();
+    const livePr = playerResponse({ loudnessDb: undefined, isLiveContent: true, isLive: true });
+    onAir.assign(livePr);
+    onAir.setMoviePlayer(livePr, { getStatsForNerds: () => statsFor('50%/50% (live.-12.3dB)') });
+    await onAir.diagnose();
+    const [, live] = onAir.logged[onAir.logged.length - 1] || [];
+    assert(live?.playerVolume === '50%/50% (live.-12.3dB)' && live?.liveLkfs === -12.3 && live?.playingLkfs === null,
+      `on air, the live level read from the line (${live?.playerVolume} / ${live?.liveLkfs} / ${live?.playingLkfs})`);
 
     const bare = createBridge();
     bare.assign(pr);
@@ -4556,7 +4566,8 @@ async function runTests() {
     const [, without] = bare.logged[bare.logged.length - 1] || [];
     assert(without?.playerVolume === null && without?.drcPreference?.from === 'default',
       `with no player, no line and the default (${without?.playerVolume} / ${without?.drcPreference?.from})`);
-    assert(without?.playingLkfs === null, `and no level (${without?.playingLkfs})`);
+    assert(without?.playingLkfs === null && without?.liveLkfs === null,
+      `and no level (${without?.playingLkfs} / ${without?.liveLkfs})`);
   }
 
   // ── After a reload, and what a message has to be to be read ────────
@@ -7163,6 +7174,7 @@ async function runTests() {
     mockDOMElements['metaChannel'] = { content: 'UCmeta' };
     mockDOMElements['channelName'] = { textContent: '  Diag Channel  ' };
     ytcv._set('currentBaseLoudnessDb', -9.5);
+    ytcv._set('currentLiveLkfs', -21.5);
 
     const logs = [];
     const realLog = console.log;
@@ -7179,6 +7191,7 @@ async function runTests() {
       console.log = realLog;
       mockPostMessageHandler = null;
       ytcv._set('currentBaseLoudnessDb', null);
+      ytcv._set('currentLiveLkfs', null);
       mockDOMElements['canonical'] = priorCanonical;
       mockDOMElements['ownerLink'] = priorOwner;
       mockDOMElements['metaChannel'] = priorMeta;
@@ -7199,6 +7212,8 @@ async function runTests() {
       `and the name as it reads, trimmed (${dump?.dom?.channelNameText})`);
     assert(dump?.currentBaseLoudnessDb === -9.5,
       `and the base level stored gains are held against (${dump?.currentBaseLoudnessDb})`);
+    assert(dump?.currentLiveLkfs === -21.5,
+      `and the live level the tab holds (${dump?.currentLiveLkfs})`);
   }
 
   section('The dump says whether the audio chain holds the element the page plays');

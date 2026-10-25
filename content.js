@@ -1117,6 +1117,7 @@
           currentIsLiveNow,
           currentLoudnessDb,
           currentBaseLoudnessDb,
+          currentLiveLkfs,
           currentGain,
           audioChain: {
             connected: !!connectedVideo,

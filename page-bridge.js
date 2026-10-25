@@ -395,7 +395,8 @@
         moviePlayer: summarize(mpPr),
         drcPreference: drcPreference(),
         playerVolume,
-        playingLkfs: playingLoudnessLkfs()
+        playingLkfs: playingLoudnessLkfs(),
+        liveLkfs: playingLiveLkfs()
       });
     } catch (_) { /* logging must never break flow */ }
   });
