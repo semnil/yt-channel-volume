@@ -32,13 +32,13 @@ message handler starts the evaluation without reading what it hands back, so
 which text it carries changes nothing the handler does: the gain applied, the
 write sent and the follow set are the same either way.
 
-- `content.js:284` === becomes !== ×1 — ===
+- `content.js:285` === becomes !== ×1 — ===
 
 `ensureAudioChain`'s check before the teardown. The disconnect it guards is
 inside a `try`, so a null source is caught, and the assignment below runs either
 way.
 
-- `content.js:584` a guard is always taken ×1 — if (sourceNode) {
+- `content.js:589` a guard is always taken ×1 — if (sourceNode) {
 
 
 The dropped await before `notifyPopup` in the retry's callback. Measured by
@@ -48,29 +48,29 @@ run by the time the callback is reached — every notification carries the level
 beside the gain that goes with it whether the await is there or not. With Auto
 off the gain does not move at all.
 
-- `content.js:712` an await is dropped ×1 — await
+- `content.js:717` an await is dropped ×1 — await
 
 The navigation observer's watch-page check. `triggerApply` opens with the same
 one.
 
-- `content.js:830` a guard is dropped ×1 — if (!isWatchPage()) return;
+- `content.js:835` a guard is dropped ×1 — if (!isWatchPage()) return;
 
 `respondOnce`'s guard against a second answer, and `return true` after a
 synchronous `sendResponse`. Both were measured against Chrome rather than
 reasoned about: a response sent inside the listener is delivered whatever the
 listener returns, and a second one is dropped rather than delivered or thrown.
 
-- `content.js:940` a guard is dropped ×1 — if (answered) return;
-- `content.js:954` true becomes false ×1 — return true;
-- `content.js:961` true becomes false ×1 — return true;
-- `content.js:967` true becomes false ×1 — return true;
-- `content.js:971` true becomes false ×1 — return true;
-- `content.js:975` true becomes false ×1 — return true;
-- `content.js:1004` true becomes false ×1 — return true;
-- `content.js:1008` true becomes false ×1 — return true;
-- `content.js:1012` true becomes false ×1 — return true;
-- `content.js:1025` true becomes false ×1 — return true;
-- `content.js:1044` true becomes false ×1 — return true;
+- `content.js:945` a guard is dropped ×1 — if (answered) return;
+- `content.js:959` true becomes false ×1 — return true;
+- `content.js:966` true becomes false ×1 — return true;
+- `content.js:972` true becomes false ×1 — return true;
+- `content.js:976` true becomes false ×1 — return true;
+- `content.js:980` true becomes false ×1 — return true;
+- `content.js:1009` true becomes false ×1 — return true;
+- `content.js:1013` true becomes false ×1 — return true;
+- `content.js:1017` true becomes false ×1 — return true;
+- `content.js:1030` true becomes false ×1 — return true;
+- `content.js:1049` true becomes false ×1 — return true;
 
 ## popup.js
 

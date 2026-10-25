@@ -58,8 +58,9 @@
   // A live stream's own level (LKFS) as the player names it on air, from the
   // latest bridge message; null where that message carried none.
   let currentLiveLkfs = null;
-  // The live gain this page last stored, and for which video. A live gain is
-  // stored again only when it has moved far enough from this one.
+  // The live gain this page last stored, and for which video and type. A live
+  // gain is stored again only when it has moved far enough from this one, for
+  // the same video and type.
   let liveSaveBaseline = null;
   let liveSaveInFlight = false;
   let currentGain = 1.0;
@@ -460,8 +461,12 @@
 
   async function evaluateLiveSave(source) {
     const videoId = getUrlVideoId();
+    const videoType = currentVideoType;
     const gain = calcGainFromLiveLevel();
-    const baseline = liveSaveBaseline && liveSaveBaseline.videoId === videoId
+    // Each type stores into a slot of its own, so a gain stored for the other
+    // type is no measure of this one.
+    const baseline = liveSaveBaseline && liveSaveBaseline.videoId === videoId &&
+      liveSaveBaseline.videoType === videoType
       ? liveSaveBaseline
       : null;
     const deltaDb = baseline ? Math.round(gainChangeDb(gain, baseline.gain) * 10) / 10 : null;
@@ -490,10 +495,10 @@
       result.saved = true;
       result.ok = false;
       await nameUnaskedWrite('live gain not stored', saveLiveChannelGain(
-        currentChannel.id, currentChannel.name, gain, currentVideoType, currentChannel.url
+        currentChannel.id, currentChannel.name, gain, videoType, currentChannel.url
       ).then(() => { result.ok = true; }));
       liveSaveInFlight = false;
-      if (result.ok) liveSaveBaseline = { videoId, gain };
+      if (result.ok) liveSaveBaseline = { videoId, videoType, gain };
       else result.reason = 'write failed';
     }
     return result;
@@ -1059,7 +1064,7 @@
           ? saveLiveChannelGain(currentChannel.id, currentChannel.name, gain, videoType, currentChannel.url, true)
           : saveChannelGain(currentChannel.id, currentChannel.name, calcStoredGainFromLoudness(), videoType, currentChannel.url, true)
         ).then(() => {
-          if (live) liveSaveBaseline = { videoId, gain };
+          if (live) liveSaveBaseline = { videoId, videoType, gain };
         });
       } else {
         written = saveChannelAutoApply(

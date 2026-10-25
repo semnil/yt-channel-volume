@@ -8311,7 +8311,7 @@ async function runTests() {
       setURL('/watch', LIVE_VID);
 
       // A level lost falls back to the gain stored.
-      ytcv._set('liveSaveBaseline', { videoId: LIVE_VID, gain: liveGain(-21, -20) });
+      ytcv._set('liveSaveBaseline', { videoId: LIVE_VID, videoType: 'live', gain: liveGain(-21, -20) });
       ytcv._set('currentLiveLkfs', -21);
       liveAnswer(-20.5);
       await settle();
@@ -8326,7 +8326,7 @@ async function runTests() {
       ytcv._set('targetLufs', -18);
 
       // A navigation to another video forgets what was stored for this one.
-      ytcv._set('liveSaveBaseline', { videoId: LIVE_VID, gain: 1 });
+      ytcv._set('liveSaveBaseline', { videoId: LIVE_VID, videoType: 'live', gain: 1 });
       setURL('/watch', 'liveFollowVid3');
       await ytcv.applyVideoVolume();
       assert(ytcv.state.liveSaveBaseline === null && ytcv.state.currentLiveLkfs === null,
@@ -8353,25 +8353,54 @@ async function runTests() {
         `a change the player names as 1.0 dB is stored (${liveSaves().length} / ${entryNow().gainLive})`);
 
       // Measured from -44.5 stored, whether or not the line above stored it.
-      ytcv._set('liveSaveBaseline', { videoId: LIVE_VID, gain: liveGain(-44.5, -30) });
+      ytcv._set('liveSaveBaseline', { videoId: LIVE_VID, videoType: 'live', gain: liveGain(-44.5, -30) });
       const savesBefore = liveSaves().length;
       ytcv._set('currentLiveLkfs', -43.6);
       const under = await ytcv.evaluateLiveSave('check');
       assert(under.decision === 'skip' && under.deltaDb === 0.9 && under.saved === false && liveSaves().length === savesBefore,
         `0.9 dB is a skip, and says 0.9 (${JSON.stringify(under)} / ${liveSaves().length})`);
       // And a 0.9 dB change whose arithmetic comes out a hair over it.
-      ytcv._set('liveSaveBaseline', { videoId: LIVE_VID, gain: liveGain(-45.2, -30) });
+      ytcv._set('liveSaveBaseline', { videoId: LIVE_VID, videoType: 'live', gain: liveGain(-45.2, -30) });
       ytcv._set('currentLiveLkfs', -44.3);
       const over = gainChangeDb(liveGain(-44.3, -30), liveGain(-45.2, -30));
       const nearly = await ytcv.evaluateLiveSave('check');
       assert(over > 0.9 && nearly.decision === 'skip' && nearly.deltaDb === 0.9 && liveSaves().length === savesBefore,
         `0.9 dB a hair over is a skip too (${over} / ${JSON.stringify(nearly)})`);
-      ytcv._set('liveSaveBaseline', { videoId: LIVE_VID, gain: liveGain(-44.5, -30) });
+      ytcv._set('liveSaveBaseline', { videoId: LIVE_VID, videoType: 'live', gain: liveGain(-44.5, -30) });
       ytcv._set('currentLiveLkfs', -43.5);
       const at = await ytcv.evaluateLiveSave('check');
       assert(at.decision === 'delta' && at.deltaDb === 1 && at.saved === true && at.ok === true,
         `1.0 dB is a delta, and says 1 (${JSON.stringify(at)})`);
       ytcv._set('targetLufs', -18);
+    }
+
+    section('Live level: what was stored for one type does not stand for the other');
+    {
+      // Auto on for both types. A message that names the stream as a video,
+      // then the stream as itself: each type's slot gets its own first store.
+      onAir({ autoLive: true, autoVideo: true, entry: { autoApplyLoudnessLive: true, autoApplyLoudnessVideo: true } });
+      liveAnswer(-24.8, { isLiveContent: false });
+      await settle();
+      assert(ytcv.state.currentVideoType === 'video' && close(entryNow().gainVideo, liveGain(-24.8)) && !('gainLive' in entryNow()),
+        `stored as the video gain while the type is a video (${ytcv.state.currentVideoType} / ${JSON.stringify(entryNow())})`);
+      liveAnswer(-24.8);
+      await settle();
+      assert(ytcv.state.currentVideoType === 'live' && close(entryNow().gainLive, liveGain(-24.8)) && liveSaves().length === 2,
+        `the first evaluation as live stores the live gain too (${ytcv.state.currentVideoType} / ${JSON.stringify(entryNow())} / ${liveSaves().length})`);
+      const again = await ytcv.evaluateLiveSave('again');
+      assert(again.decision === 'skip' && again.saved === false && liveSaves().length === 2,
+        `and the same type again is a skip (${JSON.stringify(again)})`);
+
+      // The other way round: stored as live, then evaluated as a video.
+      ytcv._set('currentVideoType', 'video');
+      ytcv._set('currentLiveLkfs', -24.5);
+      const asVideo = await ytcv.evaluateLiveSave('video');
+      assert(asVideo.decision === 'open' && asVideo.saved === true && asVideo.ok === true
+        && close(entryNow().gainVideo, liveGain(-24.5)) && close(entryNow().gainLive, liveGain(-24.8)),
+        `a video after live is a first store for the video slot (${JSON.stringify(asVideo)} / ${JSON.stringify(entryNow())})`);
+      const videoAgain = await ytcv.evaluateLiveSave('video again');
+      assert(videoAgain.decision === 'skip' && videoAgain.saved === false,
+        `and the same type again is a skip (${JSON.stringify(videoAgain)})`);
     }
 
     section('Live level: an evaluation stores nothing it is not following');
