@@ -41,6 +41,32 @@ function updateChannelVolumes(mutate, extraKeys) {
   return write;
 }
 
+// The settings that belong to no channel live in storage.sync, so every machine
+// the profile is signed in on holds the same ones. A profile whose settings the
+// worker has not moved there yet still holds them in local, and they are read
+// from there until it has.
+async function readSettings() {
+  const synced = await chrome.storage.sync.get(SETTINGS_KEY);
+  if (synced[SETTINGS_KEY]) return synced[SETTINGS_KEY];
+  const local = await chrome.storage.local.get(SETTINGS_KEY);
+  return local[SETTINGS_KEY] || {};
+}
+
+// Moves settings saved before they synced out of local. Settings another
+// machine already put in sync are the ones every machine reads, so they stay
+// and the local copy goes. Sync is written before local is cleared, so a reader
+// always finds one of the two.
+async function moveSettingsToSync() {
+  const local = await chrome.storage.local.get(SETTINGS_KEY);
+  if (!local[SETTINGS_KEY]) return false;
+  const synced = await chrome.storage.sync.get(SETTINGS_KEY);
+  if (!synced[SETTINGS_KEY]) {
+    await chrome.storage.sync.set({ [SETTINGS_KEY]: local[SETTINGS_KEY] });
+  }
+  await chrome.storage.local.remove(SETTINGS_KEY);
+  return true;
+}
+
 function gainToPercent(gain) { return Math.round(gain * 100); }
 function percentToGain(pct) { return pct / 100; }
 
@@ -256,7 +282,7 @@ async function migrateLegacyAutoGains() {
     return false;
   }
 
-  const settings = stored[SETTINGS_KEY] || {};
+  const settings = await readSettings();
   const defaults = {
     video: settings.autoApplyLoudnessVideoDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS,
     live: settings.autoApplyLoudnessLiveDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS

@@ -15,6 +15,8 @@ function section(name) { console.log(name); }
 
 let mockLocation = { pathname: '/watch', search: '?v=abc123', href: 'https://www.youtube.com/watch?v=abc123' };
 let mockStorage = {};
+// The settings' own area, apart from local as Chrome keeps it.
+let mockSyncStorage = {};
 let mockVideoEl = { id: 'mock-video-1' };
 let mockDOMElements = {};
 let mockEventListeners = {};
@@ -30,6 +32,7 @@ function cloneStorageValue(value) {
 function resetMocks() {
   mockLocation = { pathname: '/watch', search: '?v=abc123', href: 'https://www.youtube.com/watch?v=abc123' };
   mockStorage = {};
+  mockSyncStorage = {};
   mockVideoEl = { id: 'mock-video-1' };
   mockDOMElements = {};
   mockEventListeners = {};
@@ -194,6 +197,21 @@ globalThis.chrome = {
         return Promise.resolve();
       },
     },
+    sync: {
+      get(key) {
+        return Promise.resolve(
+          Object.prototype.hasOwnProperty.call(mockSyncStorage, key)
+            ? { [key]: cloneStorageValue(mockSyncStorage[key]) }
+            : {}
+        );
+      },
+      set(obj) {
+        for (const [key, value] of Object.entries(obj)) {
+          mockSyncStorage[key] = cloneStorageValue(value);
+        }
+        return Promise.resolve();
+      },
+    },
     onChanged: {
       _listeners: [],
       addListener(fn) { this._listeners.push(fn); },
@@ -350,9 +368,18 @@ function fireObserver() {
   if (globalThis.__mutationObserverCb) globalThis.__mutationObserverCb();
 }
 
-// Helper to fire chrome.storage.onChanged
+// Helper to fire chrome.storage.onChanged. Chrome fires one event per area,
+// and the settings are the one key that lives in sync.
 function simulateStorageChange(changes) {
-  for (const fn of chrome.storage.onChanged._listeners) fn(changes, 'local');
+  const synced = {};
+  const local = {};
+  for (const [key, change] of Object.entries(changes)) {
+    (key === SETTINGS_KEY ? synced : local)[key] = change;
+  }
+  for (const [area, part] of [['sync', synced], ['local', local]]) {
+    if (!Object.keys(part).length) continue;
+    for (const fn of chrome.storage.onChanged._listeners) fn(part, area);
+  }
 }
 
 // Helper to wait for async
@@ -681,7 +708,7 @@ function makePopup({ tabUrl = 'https://www.youtube.com/watch?v=abc', answer = nu
         openOptionsPage() {},
         onMessage: { addListener: (fn) => broadcastListeners.push(fn) }
       },
-      storage: { local: { get: async () => ({ [SETTINGS_KEY]: { displayUnit } }) } }
+      storage: { sync: { get: async () => ({ [SETTINGS_KEY]: { displayUnit } }) } }
     }
   };
   popupSandbox.globalThis = popupSandbox;
@@ -1990,7 +2017,7 @@ async function runTests() {
   section('Auto LUFS: early archive gain survives delayed navigation apply');
   const liveVideoId = 'CCCCCCCCCCC';
   const archiveVideoId = 'DDDDDDDDDDD';
-  mockStorage['autoLoudnessSettings'] = {
+  mockSyncStorage['autoLoudnessSettings'] = {
     targetLufs: -18,
     autoApplyLoudnessVideoDefault: false,
     autoApplyLoudnessLiveDefault: false
@@ -2290,8 +2317,8 @@ async function runTests() {
     'the stored gain is unchanged');
 
   section('Legacy fold: nothing resolves channel state until it has run');
+  mockSyncStorage = { autoLoudnessSettings: { targetLufs: -18, autoApplyLoudnessVideoDefault: true } };
   mockStorage = {
-    autoLoudnessSettings: { targetLufs: -18, autoApplyLoudnessVideoDefault: true },
     channelVolumes: { 'UCpremigration': { name: 'Pre Ch', gainVideo: 0.5, url: '' } }
   };
   mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCpremigration' };
@@ -2335,8 +2362,8 @@ async function runTests() {
   mockDOMElements['canonical'] = null;
 
   section('Legacy fold: an Auto gain is not stored until the fold has landed');
+  mockSyncStorage = { autoLoudnessSettings: { targetLufs: -18, autoApplyLoudnessVideoDefault: true } };
   mockStorage = {
-    autoLoudnessSettings: { targetLufs: -18, autoApplyLoudnessVideoDefault: true },
     channelVolumes: {}
   };
   mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCunstored' };
@@ -2390,8 +2417,8 @@ async function runTests() {
   mockDOMElements['canonical'] = null;
 
   section('Legacy fold: clearing leftovers is not part of the move');
+  mockSyncStorage = { autoLoudnessSettings: { targetLufs: -18, autoApplyLoudnessVideoDefault: true } };
   mockStorage = {
-    autoLoudnessSettings: { targetLufs: -18, autoApplyLoudnessVideoDefault: true },
     channelVolumes: { 'UCswept': { name: 'Swept Ch', gainVideo: 0.5, url: '' } },
     'autoLoudnessFallback:UCstale:video': 0.9
   };
@@ -2419,8 +2446,8 @@ async function runTests() {
   mockDOMElements['canonical'] = null;
 
   section('Legacy fold: another tab finishing it is adopted here');
+  mockSyncStorage = { autoLoudnessSettings: { targetLufs: -18, autoApplyLoudnessVideoDefault: true } };
   mockStorage = {
-    autoLoudnessSettings: { targetLufs: -18, autoApplyLoudnessVideoDefault: true },
     channelVolumes: { 'UCshared': { name: 'Shared Ch', gainVideo: 0.5, url: '' } }
   };
   ytcv._set('currentChannel', { id: 'UCshared', name: 'Shared Ch', url: '' });
@@ -2461,8 +2488,8 @@ async function runTests() {
     'a save made after adopting the mark records Auto as on, not off');
 
   section('Legacy fold: the mark alone re-resolves this tab');
+  mockSyncStorage = { autoLoudnessSettings: { targetLufs: -18, autoApplyLoudnessVideoDefault: true } };
   mockStorage = {
-    autoLoudnessSettings: { targetLufs: -18, autoApplyLoudnessVideoDefault: true },
     channelVolumes: { 'UCmarkonly': { name: 'Mark Only', gainVideo: 0.5, url: '' } }
   };
   ytcv._set('currentChannel', { id: 'UCmarkonly', name: 'Mark Only', url: '' });
@@ -2481,20 +2508,20 @@ async function runTests() {
   section('Legacy fold: the apply mutex covers the wait for it');
   ytcv._set('storageMigrated', false);
   ytcv._set('_lastProcessedVideo', null);
-  const realGetForMutex = chrome.storage.local.get;
+  const realGetForMutex = chrome.storage.sync.get;
   let settingsReads = 0;
-  chrome.storage.local.get = key => {
+  chrome.storage.sync.get = key => {
     if (key === 'autoLoudnessSettings') settingsReads++;
     return realGetForMutex(key);
   };
   await Promise.all([ytcv.triggerApply(), ytcv.triggerApply()]);
-  chrome.storage.local.get = realGetForMutex;
+  chrome.storage.sync.get = realGetForMutex;
   assert(settingsReads === 1,
     'the second call is turned away instead of running a second apply');
 
   section('Legacy fold: a failed fold keeps the old rule instead of Auto');
+  mockSyncStorage = { autoLoudnessSettings: { targetLufs: -18, autoApplyLoudnessVideoDefault: true } };
   mockStorage = {
-    autoLoudnessSettings: { targetLufs: -18, autoApplyLoudnessVideoDefault: true },
     channelVolumes: { 'UCfoldfail': { name: 'Fold Fail', gainVideo: 0.5, url: '' } }
   };
   mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCfoldfail' };
@@ -2661,8 +2688,8 @@ async function runTests() {
   ytcv._set('currentLoudnessDb', null);
 
   section('Upgrade: a save made while the fold is in flight is not rolled back');
+  mockSyncStorage = { autoLoudnessSettings: { targetLufs: -18 } };
   mockStorage = {
-    autoLoudnessSettings: { targetLufs: -18 },
     channelVolumes: { 'UCinflight': { name: 'In Flight', gainVideo: 0.3 } }
   };
   const folding = migrateLegacyAutoGains();
@@ -2677,8 +2704,8 @@ async function runTests() {
 
   // The learned value is older than anything written while the fold was
   // reading it, so it must not be folded over the newer gain.
+  mockSyncStorage = { autoLoudnessSettings: { targetLufs: -18 } };
   mockStorage = {
-    autoLoudnessSettings: { targetLufs: -18 },
     channelVolumes: {
       'UCnewer': { name: 'Newer', autoApplyLoudnessLive: true, gainLive: 0.4 }
     },
@@ -2692,8 +2719,8 @@ async function runTests() {
 
   // Auto saves a gain with no flag — the same shape the fold reads as manual.
   // A channel that only appears while the fold is in flight is Auto's.
+  mockSyncStorage = { autoLoudnessSettings: { targetLufs: -18, autoApplyLoudnessVideoDefault: true } };
   mockStorage = {
-    autoLoudnessSettings: { targetLufs: -18, autoApplyLoudnessVideoDefault: true },
     channelVolumes: {}
   };
   const foldingAgain = migrateLegacyAutoGains();
@@ -2708,8 +2735,8 @@ async function runTests() {
 
   section('Upgrade: a gain saved before Auto existed survives the all-channel default');
   // Released 1.0.4 storage: a saved gain, no Auto flag, no learned Auto key.
+  mockSyncStorage = { autoLoudnessSettings: { targetLufs: -18, autoApplyLoudnessVideoDefault: true } };
   mockStorage = {
-    autoLoudnessSettings: { targetLufs: -18, autoApplyLoudnessVideoDefault: true },
     channelVolumes: { 'UCreleased': { name: 'Released Ch', gainVideo: 0.5, url: '' } }
   };
   await migrateLegacyAutoGains();
@@ -2727,7 +2754,7 @@ async function runTests() {
   assert(ytcv.state.currentGain === 0.5, 'the saved gain is what plays');
   assert(mockStorage['channelVolumes']['UCreleased'].gainVideo === 0.5,
     'the saved gain is not overwritten by a calculated one');
-  delete mockStorage['autoLoudnessSettings'];
+  delete mockSyncStorage['autoLoudnessSettings'];
   ytcv._set('defaultAutoApplyLoudnessVideo', false);
   ytcv._set('currentLoudnessDb', null);
 
@@ -4697,7 +4724,7 @@ async function runTests() {
   section('Extension reload: nothing is read either');
   {
     mockStorage['channelVolumes'] = { UCread: { name: 'Read Ch', gainVideo: 0.5 } };
-    mockStorage['autoLoudnessSettings'] = { targetLufs: -20, displayUnit: '%' };
+    mockSyncStorage['autoLoudnessSettings'] = { targetLufs: -20, displayUnit: '%' };
     ytcv._set('targetLufs', -18);
     const idBefore = chrome.runtime.id;
     const realGet = chrome.storage.local.get;
@@ -5431,7 +5458,7 @@ async function runTests() {
   section('Apply: the settings are read before the gain is worked out');
   {
     mockStorage['channelVolumes'] = { UCsettings: { name: 'Settings Ch', autoApplyLoudnessVideo: true } };
-    mockStorage['autoLoudnessSettings'] = { targetLufs: -24, displayUnit: '%' };
+    mockSyncStorage['autoLoudnessSettings'] = { targetLufs: -24, displayUnit: '%' };
     setURL('/watch', 'settingsVid');
     mockVideoEl = { id: 'settings-video' };
     mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCsettings' };
@@ -5452,6 +5479,51 @@ async function runTests() {
       `and the gain is worked out from it (${ytcv.state.currentGain})`);
   }
 
+  section('Settings: read from local until the worker has moved them to sync');
+  {
+    mockStorage['channelVolumes'] = { UClocalset: { name: 'Local Set Ch', autoApplyLoudnessVideo: true } };
+    delete mockSyncStorage['autoLoudnessSettings'];
+    mockStorage['autoLoudnessSettings'] = { targetLufs: -22, displayUnit: '%' };
+    setURL('/watch', 'localSetVid');
+    mockVideoEl = { id: 'local-set-video' };
+    mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UClocalset' };
+    ytcv._set('targetLufs', -18);
+    ytcv._set('_lastVideoId', 'localSetVid');
+    ytcv._set('_lastProcessedVideo', null);
+    ytcv._set('_applyRunning', false);
+    ytcv._set('currentChannel', { id: 'UClocalset', name: 'Local Set Ch', url: '' });
+    ytcv._set('currentChannelVideoId', 'localSetVid');
+    ytcv._set('currentLoudnessVideoId', 'localSetVid');
+    ytcv._set('currentLoudnessDb', -6);
+    ytcv._set('currentAutoApplyLoudnessVideo', true);
+    await ytcv.applyVideoVolume();
+    await tick();
+    assert(ytcv.state.targetLufs === -22,
+      `settings not moved yet are the ones played by (${ytcv.state.targetLufs})`);
+
+    // The move writes sync, then clears local. The clearing comes as a local
+    // change with no new value, and taking it would put every setting back to
+    // its default.
+    mockSyncStorage['autoLoudnessSettings'] = { targetLufs: -22, displayUnit: '%' };
+    delete mockStorage['autoLoudnessSettings'];
+    for (const fn of chrome.storage.onChanged._listeners) {
+      fn({ autoLoudnessSettings: { oldValue: { targetLufs: -22, displayUnit: '%' } } }, 'local');
+    }
+    await tick();
+    assert(ytcv.state.targetLufs === -22,
+      `the copy leaving local is not a change of settings (${ytcv.state.targetLufs})`);
+    mockSyncStorage['autoLoudnessSettings'] = { targetLufs: -20, displayUnit: '%' };
+    simulateStorageChange({ autoLoudnessSettings: { newValue: { targetLufs: -20, displayUnit: '%' } } });
+    await tick();
+    assert(ytcv.state.targetLufs === -20,
+      `settings another machine synced are taken (${ytcv.state.targetLufs})`);
+    assert(Math.abs(ytcv.state.currentGain - ytcv.calcGainFromLoudness(-6)) < 0.001,
+      `and played by (${ytcv.state.currentGain})`);
+    mockSyncStorage['autoLoudnessSettings'] = { targetLufs: -18, displayUnit: '%' };
+    simulateStorageChange({ autoLoudnessSettings: { newValue: { targetLufs: -18, displayUnit: '%' } } });
+    await tick();
+  }
+
   // ── Waiting for what the next step needs ───────────────────────────
   // Dropping an await leaves the suite green in six places, and one of those
   section('Apply: the target is in hand before the gain is worked out');
@@ -5461,7 +5533,7 @@ async function runTests() {
     await tick();
     await tick();
     mockStorage['channelVolumes'] = { UCorder: { name: 'Order Ch', autoApplyLoudnessVideo: true } };
-    mockStorage['autoLoudnessSettings'] = { targetLufs: -24, displayUnit: '%' };
+    mockSyncStorage['autoLoudnessSettings'] = { targetLufs: -24, displayUnit: '%' };
     setURL('/watch', 'orderVid');
     mockVideoEl = { id: 'order-video' };
     mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCorder' };
@@ -5479,16 +5551,16 @@ async function runTests() {
     ytcv._set('storageSettled', true);
     // The settings read is held, so the gain cannot be worked out from a target
     // that happened to land in time.
-    const realGet = chrome.storage.local.get;
+    const realGet = chrome.storage.sync.get;
     let releaseSettings;
     const heldSettings = new Promise((resolve) => { releaseSettings = resolve; });
-    chrome.storage.local.get = (key) =>
+    chrome.storage.sync.get = (key) =>
       (key === 'autoLoudnessSettings' ? heldSettings.then(() => realGet(key)) : realGet(key));
     const applying = ytcv.applyVideoVolume();
     await tick();
     releaseSettings();
     await applying;
-    chrome.storage.local.get = realGet;
+    chrome.storage.sync.get = realGet;
     assert(ytcv.state.targetLufs === -24,
       `the target stored is the one in hand afterwards (${ytcv.state.targetLufs})`);
     assert(Math.abs(ytcv.state.currentGain - ytcv.calcGainFromLoudness(-6)) < 0.001,
@@ -5504,7 +5576,7 @@ async function runTests() {
     await tick();
     await tick();
     mockStorage['channelVolumes'] = { UCorder: { name: 'Order Ch', autoApplyLoudnessVideo: true } };
-    mockStorage['autoLoudnessSettings'] = { targetLufs: -24, displayUnit: '%' };
+    mockSyncStorage['autoLoudnessSettings'] = { targetLufs: -24, displayUnit: '%' };
     setURL('/watch', 'orderVid');
     mockVideoEl = { id: 'order-video' };
     mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCorder' };
@@ -5533,7 +5605,7 @@ async function runTests() {
   section('Apply: the popup is told after the gain has been applied');
   {
     mockStorage['channelVolumes'] = { UCtold: { name: 'Told Ch', gainVideo: 0.35 } };
-    mockStorage['autoLoudnessSettings'] = { targetLufs: -18, displayUnit: '%' };
+    mockSyncStorage['autoLoudnessSettings'] = { targetLufs: -18, displayUnit: '%' };
     setURL('/watch', 'toldVid');
     mockVideoEl = { id: 'told-video' };
     mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCtold' };
@@ -5559,8 +5631,8 @@ async function runTests() {
 
   section('Apply: the fold is waited for before the video is taken up');
   {
+    mockSyncStorage = { autoLoudnessSettings: { targetLufs: -18 } };
     mockStorage = {
-      autoLoudnessSettings: { targetLufs: -18 },
       channelVolumes: { UCfoldwait: { name: 'Fold Wait Ch', gainVideo: 0.45 } }
     };
     setURL('/watch', 'foldWaitVid');
@@ -6004,8 +6076,8 @@ async function runTests() {
 
   section('Upgrade: the fold is asked for once, and only until it lands');
   {
+    mockSyncStorage = { autoLoudnessSettings: { targetLufs: -18 } };
     mockStorage = {
-      autoLoudnessSettings: { targetLufs: -18 },
       channelVolumes: { UConce: { name: 'Once Ch', gainVideo: 0.3 } }
     };
     ytcv._set('storageMigrated', false);
@@ -7076,7 +7148,7 @@ async function runTests() {
   section('Popup: a slider released after the video changed saves against the one it was moved on');
   {
     mockStorage['channelVolumes'] = {};
-    mockStorage['autoLoudnessSettings'] = { targetLufs: -18, displayUnit: '%' };
+    mockSyncStorage['autoLoudnessSettings'] = { targetLufs: -18, displayUnit: '%' };
     setURL('/watch', 'popVidA');
     mockVideoEl = { id: 'popup-video-a' };
     mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCpopup' };
@@ -7468,16 +7540,20 @@ async function runTests() {
   // of what utils' esc() does with the element it writes into.
   function makeOptions({
     settings = {},
+    localSettings = null,
     channels = {},
     failStorageGet = false,
     failStorageSet = false,
     failMutation = '',
     deferStorageGet = false
   } = {}) {
-    const stored = {
-      [SETTINGS_KEY]: { ...settings },
-      [CHANNEL_VOLUMES_KEY]: JSON.parse(JSON.stringify(channels))
-    };
+    // The two areas the page reads, apart as Chrome keeps them: the settings
+    // in sync, the channels in local.
+    // `localSettings` stands for a profile the worker has not moved yet: the
+    // settings are in local and sync holds none.
+    const synced = localSettings ? {} : { [SETTINGS_KEY]: { ...settings } };
+    const stored = { [CHANNEL_VOLUMES_KEY]: JSON.parse(JSON.stringify(channels)) };
+    if (localSettings) stored[SETTINGS_KEY] = { ...localSettings };
 
     const sent = [];
     const errors = [];
@@ -7582,6 +7658,27 @@ async function runTests() {
       return element;
     });
 
+    const storageArea = (held) => ({
+      get: async (keys) => {
+        if (deferStorageGet) {
+          await new Promise((resolve) => { pendingReads.push(resolve); });
+        }
+        if (failStorageGet) throw new Error('storage unavailable');
+        const wanted = Array.isArray(keys) ? keys : [keys];
+        const answer = {};
+        for (const key of wanted) {
+          if (key in held) answer[key] = JSON.parse(JSON.stringify(held[key]));
+        }
+        return answer;
+      },
+      // A write lands after the turn that asked for it, not during it.
+      set: async (patch) => {
+        await Promise.resolve();
+        if (failStorageSet) throw new Error('storage full');
+        Object.assign(held, JSON.parse(JSON.stringify(patch)));
+      }
+    });
+
     const sandbox = {
       console: { log() {}, warn() {}, error: (...args) => errors.push(args) },
       Promise, Math, JSON, Date, Object, Array, Number, String, Boolean, isNaN, parseFloat, parseInt,
@@ -7602,26 +7699,8 @@ async function runTests() {
       chrome: {
         i18n: { getMessage: (key) => key },
         storage: {
-          local: {
-            get: async (keys) => {
-              if (deferStorageGet) {
-                await new Promise((resolve) => { pendingReads.push(resolve); });
-              }
-              if (failStorageGet) throw new Error('storage unavailable');
-              const wanted = Array.isArray(keys) ? keys : [keys];
-              const answer = {};
-              for (const key of wanted) {
-                if (key in stored) answer[key] = JSON.parse(JSON.stringify(stored[key]));
-              }
-              return answer;
-            },
-            // A write lands after the turn that asked for it, not during it.
-            set: async (patch) => {
-              await Promise.resolve();
-              if (failStorageSet) throw new Error('storage full');
-              Object.assign(stored, JSON.parse(JSON.stringify(patch)));
-            }
-          },
+          local: storageArea(stored),
+          sync: storageArea(synced),
           onChanged: { addListener: (fn) => storageListeners.push(fn) }
         },
         runtime: {
@@ -7642,7 +7721,7 @@ async function runTests() {
 
     const settle = async () => { for (let turn = 0; turn < 12; turn++) await tick(); };
     return {
-      node, body, unitButtons, i18nNodes, sent, errors, confirms, stored,
+      node, body, unitButtons, i18nNodes, sent, errors, confirms, stored, synced,
       answerConfirm(answer) { confirmAnswer = answer; },
       listMarkup() { return markupWithin(node('channelList')); },
       deleteButton(id) {
@@ -7680,8 +7759,18 @@ async function runTests() {
         for (const fn of button.listeners.click || []) await fn({ target: button });
         await settle();
       },
-      async fireStorage(changes, area = 'local') {
-        for (const fn of storageListeners) fn(changes, area);
+      // Named, the area is the one every change is fired in; otherwise each key
+      // is fired in its own, one event per area as Chrome fires them.
+      async fireStorage(changes, area) {
+        const byArea = new Map();
+        for (const [key, change] of Object.entries(changes)) {
+          const into = area || (key === SETTINGS_KEY ? 'sync' : 'local');
+          if (!byArea.has(into)) byArea.set(into, {});
+          byArea.get(into)[key] = change;
+        }
+        for (const [into, part] of byArea) {
+          for (const fn of storageListeners) fn(part, into);
+        }
         await settle();
       }
     };
@@ -7884,7 +7973,7 @@ async function runTests() {
     options.node('defaultAutoVideoToggle').checked = true;
     await options.fire('defaultAutoVideoToggle', 'change');
 
-    assert(options.stored[SETTINGS_KEY].autoApplyLoudnessVideoDefault === true,
+    assert(options.synced[SETTINGS_KEY].autoApplyLoudnessVideoDefault === true,
       'the Auto default is saved');
     assert(options.listMarkup().includes('labelAuto'),
       'and the table is redrawn under the new default');
@@ -7899,10 +7988,10 @@ async function runTests() {
     options.node('targetSlider').value = '-24';
     await options.fire('targetSlider', 'input');
     assert(options.node('targetValue').textContent === '-24 LUFS', 'dragging names the value');
-    assert(options.stored[SETTINGS_KEY].targetLufs === -18, 'and saves nothing until the drag ends');
+    assert(options.synced[SETTINGS_KEY].targetLufs === -18, 'and saves nothing until the drag ends');
 
     await options.fire('targetSlider', 'change');
-    assert(options.stored[SETTINGS_KEY].targetLufs === -24, 'the end of the drag saves it');
+    assert(options.synced[SETTINGS_KEY].targetLufs === -24, 'the end of the drag saves it');
   }
 
   {
@@ -7911,8 +8000,8 @@ async function runTests() {
 
     options.node('overlayToggle').checked = false;
     await options.fire('overlayToggle', 'change');
-    assert(options.stored[SETTINGS_KEY].showGainOverlay === false, 'the overlay choice is saved');
-    assert(options.stored[SETTINGS_KEY].targetLufs === -20, 'and the target survives the write');
+    assert(options.synced[SETTINGS_KEY].showGainOverlay === false, 'the overlay choice is saved');
+    assert(options.synced[SETTINGS_KEY].targetLufs === -20, 'and the target survives the write');
   }
 
   {
@@ -7924,7 +8013,7 @@ async function runTests() {
     assert(options.listMarkup().includes('200%'), 'per cent to begin with');
 
     await options.clickUnit('dB');
-    assert(options.stored[SETTINGS_KEY].displayUnit === 'dB', 'the unit is saved');
+    assert(options.synced[SETTINGS_KEY].displayUnit === 'dB', 'the unit is saved');
     assert(options.unitButtons.find((b) => b.dataset.unit === 'dB').classList.contains('active'),
       'the button pressed becomes the active one');
     assert(options.listMarkup().includes('6.0 dB'), 'and the table is redrawn in it');
@@ -7959,9 +8048,37 @@ async function runTests() {
   {
     const options = makeOptions({ settings: { targetLufs: -18 } });
     await options.settle();
-    await options.fireStorage({ [SETTINGS_KEY]: { newValue: { targetLufs: -26 } } }, 'sync');
+    // The worker moving the settings to sync clears the copy local held; that
+    // removal is not a change of settings, and drawing it would put the
+    // defaults on screen.
+    await options.fireStorage({ [SETTINGS_KEY]: { oldValue: { targetLufs: -18 } } }, 'local');
     assert(options.node('targetSlider').value === -18,
-      'a change in another area is not this page to draw');
+      'the settings key leaving local is not this page to draw');
+    await options.fireStorage({ [SETTINGS_KEY]: { newValue: { targetLufs: -26 } } }, 'local');
+    assert(options.node('targetSlider').value === -18,
+      'nor is one written there');
+    await options.fireStorage({ [CHANNEL_VOLUMES_KEY]: { newValue: { UC9: { name: 'Zeta', gainVideo: 1 } } } }, 'sync');
+    assert(!options.listMarkup().includes('Zeta'),
+      'and channels are taken from local alone');
+    await options.fireStorage({ [SETTINGS_KEY]: { newValue: { targetLufs: -26 } } }, 'sync');
+    assert(options.node('targetSlider').value === -26,
+      'settings another machine synced are drawn');
+  }
+
+  {
+    // The worker moves the settings at its start, which can come after the page
+    // has read them; until then they are where the profile saved them.
+    const options = makeOptions({
+      localSettings: { targetLufs: -22, displayUnit: 'dB', showGainOverlay: true }
+    });
+    await options.settle();
+    assert(options.node('targetSlider').value === -22,
+      'settings not moved to sync yet are read from local');
+    assert(options.node('overlayToggle').checked === true, 'all of them');
+    await options.clickUnit('%');
+    assert(JSON.stringify(options.synced[SETTINGS_KEY]) ===
+      JSON.stringify({ targetLufs: -22, displayUnit: '%', showGainOverlay: true }),
+      `a save goes to sync and carries the rest of them with it (${JSON.stringify(options.synced[SETTINGS_KEY])})`);
   }
 
   {
@@ -8022,7 +8139,7 @@ async function runTests() {
     await options.fire('targetSlider', 'change');
     await options.releaseStorage();
 
-    assert(options.stored[SETTINGS_KEY].targetLufs === -18,
+    assert(options.synced[SETTINGS_KEY].targetLufs === -18,
       'a page that has not read the settings does not write one back');
   }
 

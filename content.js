@@ -104,15 +104,17 @@
 
   async function loadSettings() {
     if (!isContextValid()) return { targetLufs };
-    const data = await chrome.storage.local.get(SETTINGS_KEY);
-    const s = data[SETTINGS_KEY] || {};
+    takeSettings(await readSettings());
+    return { targetLufs, defaultAutoApplyLoudnessVideo, defaultAutoApplyLoudnessLive };
+  }
+
+  function takeSettings(s) {
     targetLufs = s.targetLufs ?? DEFAULT_TARGET_LUFS;
     defaultAutoApplyLoudnessVideo =
       s.autoApplyLoudnessVideoDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS;
     defaultAutoApplyLoudnessLive =
       s.autoApplyLoudnessLiveDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS;
     showGainOverlay = !!s.showGainOverlay;
-    return { targetLufs, defaultAutoApplyLoudnessVideo, defaultAutoApplyLoudnessLive };
   }
 
   function resolveAutoApplyForType(entry, videoType) {
@@ -937,9 +939,22 @@
     triggerApply();
   }
 
-  // React to settings changes (e.g. overlay toggle from options page)
+  // React to settings changes (e.g. overlay toggle from options page, or from
+  // another machine the profile syncs with). The settings live in sync; the
+  // settings key in local is only the copy the worker moves out of it, and its
+  // removal is not a change of settings.
   if (isContextValid()) {
     chrome.storage.onChanged.addListener((changes, area) => {
+      if (area === 'sync') {
+        if (!changes[SETTINGS_KEY]) return;
+        storageRevision++;
+        takeSettings(changes[SETTINGS_KEY].newValue || {});
+        applyPreferredGain().then(() => {
+          updateGainOverlay();
+          notifyPopup();
+        });
+        return;
+      }
       if (area !== 'local') return;
       // Another context may have folded the profile while this one's own fold
       // failed. The mark is the canonical state, so adopt it here rather than
@@ -954,21 +969,8 @@
           applyPreferredGain().then(notifyPopup);
         }
       }
-      if (changes[SETTINGS_KEY] || changes[CHANNEL_VOLUMES_KEY]) {
+      if (changes[CHANNEL_VOLUMES_KEY]) {
         storageRevision++;
-      }
-      if (changes[SETTINGS_KEY]) {
-        const s = changes[SETTINGS_KEY].newValue || {};
-        targetLufs = s.targetLufs ?? DEFAULT_TARGET_LUFS;
-        defaultAutoApplyLoudnessVideo =
-          s.autoApplyLoudnessVideoDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS;
-        defaultAutoApplyLoudnessLive =
-          s.autoApplyLoudnessLiveDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS;
-        showGainOverlay = !!s.showGainOverlay;
-        applyPreferredGain().then(() => {
-          updateGainOverlay();
-          notifyPopup();
-        });
       }
       if (changes[CHANNEL_VOLUMES_KEY] && currentChannel.id) {
         const all = changes[CHANNEL_VOLUMES_KEY].newValue || {};

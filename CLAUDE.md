@@ -3,6 +3,7 @@
 Chrome extension (MV3) that shows a YouTube video's Content Loudness and saves and applies a per-channel gain on a user gesture.
 With Auto-apply LUFS on, a live stream on air is played at the level the player's stats for nerds name for it (`live.`), asked for again every 30 s; where no level is named, a saved gain is applied. A level whose gain would play 10 dB or more above the saved live gain is held back at the start of a stream (the start gate).
 It leaves the YouTube player's volume slider alone and controls the level with a Web Audio API GainNode.
+The settings that belong to no channel live in `chrome.storage.sync`, so every machine the Chrome profile is signed in on shares them; the channels stay in `chrome.storage.local`.
 
 ## Architecture
 
@@ -14,6 +15,7 @@ flowchart LR
   popup["popup.html / popup.js"]
   options["options.html / options.js"]
   store[("chrome.storage.local")]
+  sync[("chrome.storage.sync")]
   audio["video element, MediaElementSource, GainNode, destination"]
 
   bridge -- "postMessage: loudnessDb, baseLoudnessDb, liveLkfs, isLiveContent, channelId, author" --> content
@@ -23,10 +25,13 @@ flowchart LR
   content -- "store:op" --> bg
   options -- "store:op" --> bg
   bg -- "writes channelVolumes" --> store
-  options -- "writes autoLoudnessSettings" --> store
+  bg -- "moves autoLoudnessSettings from local" --> sync
+  options -- "writes autoLoudnessSettings" --> sync
   store -- "get, storage.onChanged" --> content
   store -- "get, storage.onChanged" --> options
-  store -- "get autoLoudnessSettings" --> popup
+  sync -- "get, storage.onChanged" --> content
+  sync -- "get, storage.onChanged" --> options
+  sync -- "get autoLoudnessSettings" --> popup
   content -- "gain" --> audio
 ```
 
@@ -48,6 +53,7 @@ flowchart LR
 
 - importScripts('utils.js')
 - the only context that writes channelVolumes, on a `store:<op>` message (saveChannelGain / saveChannelAutoApply / deleteChannel / clearChannels / adoptHandleEntry / migrateLegacyGains)
+- at every start, `moveSettingsToSync()` moves settings saved in local before they synced (see "Channel-independent settings sync")
 
 **utils.js → content.js (ISOLATED world content scripts, document_idle)**
 
@@ -73,15 +79,15 @@ flowchart LR
 - videoType: 'live' (stream/archive) or 'video' (video/Shorts) hold separate gains
 - Cross-tab sync: chrome.storage.onChanged delivers channelVolumes changes and the gain for the current channel × videoType is applied at once (no polling, self-tab dedup by currentGain comparison)
 - Storage
-  - autoLoudnessSettings: `{ targetLufs, displayUnit, showGainOverlay, autoApplyLoudnessVideoDefault, autoApplyLoudnessLiveDefault }`
-  - channelVolumes: `{ [channelId]: { name, gainLive, gainVideo, gainLivePlain, gainVideoPlain, autoApplyLoudnessLive, autoApplyLoudnessVideo, liveGateOpenFor, url } }`
+  - autoLoudnessSettings (`chrome.storage.sync`, read through `readSettings()`): `{ targetLufs, displayUnit, showGainOverlay, autoApplyLoudnessVideoDefault, autoApplyLoudnessLiveDefault }`
+  - channelVolumes (`chrome.storage.local`, as is everything below): `{ [channelId]: { name, gainLive, gainVideo, gainLivePlain, gainVideoPlain, autoApplyLoudnessLive, autoApplyLoudnessVideo, liveGateOpenFor, url } }`
   - unifiedGains: the migration-done marker (top-level key)
 
 **utils.js (shared, loaded by content / popup / options / background + tests)**
 
 - Constants: storage keys, YT_REFERENCE_LUFS, DEFAULT_TARGET_LUFS
 - Gain utilities: gainToPercent, percentToGain, gainToDb, formatGain, formatAutoGain, calcGain, calcLiveGain, gainChangeDb
-- Storage utilities: isContextValid, updateChannelVolumes, CHANNEL_WRITES, ChannelWriteRefused, isChannelId, getChannelGain, setChannelGain, applyChannelIdentity, normalizeStoredGain, migrateLegacyAutoGains
+- Storage utilities: isContextValid, updateChannelVolumes, readSettings, moveSettingsToSync, CHANNEL_WRITES, ChannelWriteRefused, isChannelId, getChannelGain, setChannelGain, applyChannelIdentity, normalizeStoredGain, migrateLegacyAutoGains
 - Auto state: resolveAutoApplySetting, setChannelAutoApply, hasExplicitAutoApply, isManualGainLocked
 - i18n: msg()
 - HTML escape: esc()
@@ -107,8 +113,8 @@ flowchart LR
 - Gain overlay toggle (shown next to the player's volume bar, default OFF)
 - Saved Channels table (Video / Live in two columns. Under Auto it reads `Auto (saved gain)`, with a channel link, deletable)
 - Ships with the screen hidden until the load finishes and with the settings controls and the deletions (clear all, the × on a row) disabled
-- The first read takes 2 keys in one get and loses to a newer change notification through a per-type revision
-- Real-time sync through storage.onChanged (renders the list the notification carried, as it is)
+- The first read takes the settings (sync) and the channels (local) in one load and loses to a newer change notification through a per-type revision
+- Real-time sync through storage.onChanged (renders the list the notification carried, as it is; settings from the sync area, channels from local)
 
 ## i18n
 
@@ -130,7 +136,7 @@ flowchart LR
 | File | Role |
 |------|------|
 | `manifest.json` | MV3 manifest. permissions: storage, activeTab. host: youtube.com |
-| `background.js` | Service worker. Takes sole charge of writing channelVolumes (`store:<op>`) |
+| `background.js` | Service worker. Takes sole charge of writing channelVolumes (`store:<op>`), and moves settings saved before they synced from local to sync at every start |
 | `page-bridge.js` | MAIN world. loudnessDb extraction (define/fetch/ytplayer) and the live level the player names → postMessage |
 | `content.js` | ISOLATED world. Gain management, audio chain, channel detection, storage |
 | `utils.js` | Shared constants and utilities (shared by content / popup / options / service worker) |
@@ -190,6 +196,7 @@ flowchart LR
 - **Channel ID formats**: `UC...` (canonical) is the canonical ID. `detectChannel()` rejects `@handle` and returns UC alone. Where the DOM carries no UC, it waits for the bridge's `videoDetails.channelId`
 - **notifyPopup dedup**: a state key comparison prevents no-op sends. The key includes `isLiveNow`, so the popup is notified on the waiting → stream start transition too, and `liveLkfs`, so a live level that moves under a gain held at its limit still reaches the popup
 - **Cross-tab sync**: `chrome.storage.onChanged` delivers `channelVolumes` changes. The per-channel, per-type auto-apply flag and the per-type gain are reflected at once, and a remote deletion resets to 1.0
+- **Channel-independent settings sync**: `autoLoudnessSettings` — Target LUFS, the display unit, the gain overlay and the two Auto defaults, everything that belongs to no channel — lives in `chrome.storage.sync`, so every machine the profile is signed in on (with Chrome sync on) reads the same settings; with sync off Chrome keeps the area on the device. The channels, the migration marker and the legacy keys stay in local: `channelVolumes` is per channel, grows with every channel saved, and would outrun sync's quotas (8 KB an item, 100 KB in all, 120 writes a minute — Auto stores per video). Every reader goes through `readSettings()`, which takes sync's object and falls back to local's while sync holds none, so a profile the worker has not moved yet reads the settings it saved. `moveSettingsToSync()` runs at the top of background.js at every worker start (one read once local is clear): with settings in local, it writes them to sync where sync holds none, and then removes them from local. Where another machine already put settings in sync, those win and the local copy is dropped, matching what `readSettings()` was already returning. Sync is written before local is cleared, so a reader always finds one of them, and a move sync refuses leaves local as it was for the next start. options.js writes `chrome.storage.sync` alone, merging into what `readSettings()` returns, so a save made before the move carries the rest of the local settings with it; it writes on `change`, never on `input`, which keeps the slider within the write quota. Chrome fires one `onChanged` per area: content.js and options.js take `autoLoudnessSettings` from the `sync` area alone — the move's removal arrives as a `local` change with no `newValue`, and taking it would put every setting back to its default — and `channelVolumes` / `unifiedGains` from `local` alone. The move is not serialized with options.js: an options save that lands between the move's reads and its write can be put back to the local values (the worker starts on the options page's own fold request, so the window is that page's first moment, before a gesture). Of two machines that both held settings before the update, the first to move uploads and the second keeps what sync carried to it; where both move before sync has carried either, the one Chrome sync takes last is what both read
 - **The service worker is the sole writer of channelVolumes**: content.js and options.js ask background.js through `chrome.runtime.sendMessage({ type: 'store:<op>' })` instead of doing the read-modify-write themselves. `channelVolumes` holds the whole map under one key, so several tabs reading and writing it back at the same time drop other channels' entries — last write wins (Auto saves per video, so that overlap is an everyday event). The worker serializes on `updateChannelVolumes()`'s promise chain, and the migration re-reads the map inside the queue so it does not roll back a gain saved while it was running
 - **NaN/Infinity guard**: a non-finite gain result falls back to 1.0
 - **Lazy audio chain**: where the gain is 1.0 (passthrough), `createMediaElementSource` is not called → this avoids the Live Caption flicker. `connectedVideo` (the audio chain) and `_lastProcessedVideo` (the detected video) are managed separately
@@ -199,7 +206,7 @@ flowchart LR
 - **A gesture is made against a state, and applies to that state alone**: every answer content.js gives carries `appliesTo` — the channel, the videoType and the video the URL names, derived from the state rather than counted, so there is no marker to advance. The video is part of it because a navigation within one channel changes what the popup shows — the Content Loudness above all — while the channel and the type stay as they were, and `appliesTo` is part of `notifyPopup`'s deduplication key so that such a navigation reaches the popup at all. The popup echoes it with the slider, the presets, the Auto toggle and "Apply to channel", and a gesture whose state has moved on is refused with `state moved` rather than applied to the state that replaced it. Without it the handlers took the channel from the message and everything else — the name, the url, the type's slot, the Auto state pinned on the save, and the lock that refuses while Auto is on — from whatever the tab held when the gesture arrived, so a slider released during an SPA navigation wrote one channel's gain into another channel's entry under a third channel's name. The preview (`setGainLive`) carries it too, so a gesture that will be refused never moves the level; a preview that was accepted before the state moved is put back by `restoreGainAfterFailedSave()` when the release is refused
 - **A manual gain is a gain only once it is saved**: on a save failure, `setGain` / `applyLoudness` have `restoreGainAfterFailedSave()` read the saved value again through `applyPreferredGain()` and apply it, and return `{ ok: false }` once that completes. The slider has already previewed through `setGainLive` on `input`, so "the previous value" is the unsaved new one and an in-memory copy cannot restore it. Without the restore, the volume being played and the saved value disagree, the popup shows the value it read again after the failure and so looks saved, and the next navigation puts it back
 - **Reflect the saved values before showing the screen**: popup and options hide the loading screen with `body.initializing` and remove it once the saved settings are rendered (options removes it even when the load fails — a screen that stays hidden cannot be operated either). While initializing, `transition: none !important` on `body.initializing *` (and `::before` / `::after`) stops the transitions — enumerating selectors misses the control someone forgot to write down, and without `!important` an individual selector wins on specificity. A transition starts running the moment the value is written, so the rest moves on screen and reads as "shown, then updated". `revealOptions` / `revealPopup` read `document.body.offsetWidth` and drop the class on the next frame — dropping it in the same style pass makes the value from before the write the transition's starting point
-- **Claim nothing about what was not read**: the first read in options takes `autoLoudnessSettings` and `channelVolumes` in one `get`, so that no state arises in which one of the two succeeded and the other did not, and the `settingsLoadFailed` line shown on failure refers to that one read. Its wording states the read and the next action (reload) alone and says nothing about the values on screen — a change notification that arrives during the read is rendered before the failure is known, so wording that states a value can be false. A change notification after the failure is settled is not taken (a write from another tab would land on a screen that is asking for a reload). A notification that arrived before it was settled is on screen already and stays there
+- **Claim nothing about what was not read**: the first read in options takes `autoLoudnessSettings` (sync, through `readSettings()`) and `channelVolumes` (local) in one `Promise.all`, so that no state arises in which one of the two succeeded and the other did not, and the `settingsLoadFailed` line shown on failure refers to that one load. Its wording states the read and the next action (reload) alone and says nothing about the values on screen — a change notification that arrives during the read is rendered before the failure is known, so wording that states a value can be false. A change notification after the failure is settled is not taken (a write from another tab would land on a screen that is asking for a reload). A notification that arrived before it was settled is on screen already and stays there
 - **Do not let anything be operated that was not read**: the settings controls (Target LUFS / the two Auto defaults / display unit / gain overlay) and the destructive operations (clear all, the × on a row) ship disabled in the markup, and a load that finished reading is what enables them. `saveSetting` also refuses a write made while `settingsLoaded` is false — the markup is the first refusal, the handler the one behind it. The × on a row is written by the render with the state at that moment, so it becomes enabled in the render that follows a successful load
 - **The first read loses to a change that arrives after it**: the read is issued ahead of the change notification and returns the value as of when it was issued. `loadAll` records `settingsRevision` / `channelRevision` before the get and applies what it read only to the side that has not moved. A change notification advances that type's revision by one, and the channel side renders and holds the `newValue` the notification carried (reading again would be a second read racing the first read). The settings side applies the whole object rather than a diff — applying part of it leaves the untouched fields at the markup defaults under the revision guard
 - **`renderChannels` is render-only**: it draws the list it is handed and does not read storage. Holding nothing, it draws nothing. It does not re-read after its own writes either (a row deletion, a clear all) — the service worker's write comes back as a change notification, and that notification carries the list and drives the re-render
@@ -266,7 +273,7 @@ python3 pack.py
 - After editing `background.js`, reload the extension at chrome://extensions. Reloading the page does not re-evaluate the service worker (for a content script change, reloading the tab is enough)
 - Diagnostics on popup open: content.js logs `[YTCV][popup-open]` (with `currentLiveLkfs`, the live level Auto holds, `readLiveLkfs`, the live level in hand, and `audioChain`: whether the chain is built, whether its element is the `<video>` the page holds now, the AudioContext state, the GainNode value) and the bridge logs `[YTCV][bridge-diag]` (with `drcPreference` and where it was read, each response's `drcLoudnessDb`, `playerVolume` — the player's own stats-for-nerds volume line, which names ` DRC` and the `cont.` level of what it plays, or `live.` on a stream on air — `playingLkfs`, the `cont.` level taken from that line, and `liveLkfs`, the `live.` level taken from it, each `null` where it is not taken)
 - Test export: the `__TEST_YTCV__` flag exposes content.js internals on `globalThis.__YTCV__`. Disabled in production
-- Storage keys: `autoLoudnessSettings` (target LUFS, display unit, Video/Live auto defaults), `channelVolumes` (saved channel gains, per-channel auto overrides, URL), `unifiedGains` (the migration-done marker). The legacy `autoLoudnessFallback:<channelId>:<type>` / `autoLoudnessFallbacks` are folded in at startup and deleted
+- Storage keys: `autoLoudnessSettings` (in `chrome.storage.sync`: target LUFS, display unit, gain overlay, Video/Live auto defaults; a copy left in local by an earlier version is read until the worker moves it), `channelVolumes` (saved channel gains, per-channel auto overrides, URL), `unifiedGains` (the migration-done marker). The legacy `autoLoudnessFallback:<channelId>:<type>` / `autoLoudnessFallbacks` are folded in at startup and deleted
 - Storage format: `channelVolumes.{id}` = `{ name, gainLive, gainVideo, gainLivePlain, gainVideoPlain, autoApplyLoudnessLive, autoApplyLoudnessVideo, liveGateOpenFor, url }` (`gain*Plain: true` marks that type's gain as held against the plain rendition, and its absence means the gain plays as it is. `liveGateOpenFor` is the video id of the live stream the start gate was last opened for, written with every live gain stored for live; its absence means no stream. A type with no individual auto-apply flag inherits the all-channel default. The legacy `autoApplyLoudness` counts as the same value for both types, and the legacy `{ name, gain, url }` is read as both gains)
 - slider `input` event = real-time gain change (no storage write), `change` event = storage save. Both gestures are refused while Auto is on and LUFS was detected (a live level counts as detected)
 - videoType decision: page-bridge.js returns `videoDetails.isLiveContent`. In content.js, `isLiveContent` true means 'live' and false means 'video' (loudnessDb takes no part in the decision). A premiere is `isLiveContent=false` and so counts as 'video'. On first load the default is 'video', and the gain switches to the correct type once `isLiveContent` arrives from the bridge

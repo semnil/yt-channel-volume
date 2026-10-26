@@ -5,6 +5,10 @@
 
 importScripts('utils.js');
 
+// Every start, so a move that failed is tried again; once local no longer holds
+// the settings this is one read.
+moveSettingsToSync().catch(err => console.error('[YTCV] settings not moved to sync', err));
+
 const CHANNEL_WRITE_PREFIX = 'store:';
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
