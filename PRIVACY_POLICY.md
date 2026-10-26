@@ -31,7 +31,7 @@ YT Channel Volume is a Chrome extension that remembers and auto-applies volume s
 ## Data NOT Collected
 
 - The extension does **not** collect browsing history, analytics, or telemetry.
-- The extension does **not** track which pages you visit on YouTube or any other site.
+- The extension does **not** track which pages you visit on YouTube or any other site. The only video ID it saves is the one listed under Channel Volume Settings: for each saved channel, the video ID of the channel's live stream whose level was last applied. The next stream whose level is applied replaces it.
 - The extension developer does **not** receive, store, or have access to any of your data.
 - No data is sold, shared with third parties, or used for advertising.
 
