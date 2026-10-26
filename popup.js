@@ -156,6 +156,9 @@
       currentTargetLufs = state.targetLufs;
     }
 
+    liveLevelWanted = !!state.isLiveNow || currentLiveLkfs !== null;
+    askLiveLevelLater();
+
     // LIVE badge: premieres have isLiveNow=true but videoType='video'
     if (state.isLiveNow && state.videoType === 'live') {
       videoTypeBadge.textContent = msg('typeLive');
@@ -198,6 +201,24 @@
   function sendMsg(msg) {
     if (!activeTabId) return Promise.reject();
     return chrome.tabs.sendMessage(activeTabId, msg);
+  }
+
+  // While the page shows a stream on air or a live level, the live level is
+  // asked for again every LIVE_LEVEL_ASK_MS for as long as the popup is open;
+  // content.js answers with stateChanged once the bridge has read it.
+  const LIVE_LEVEL_ASK_MS = 1000;
+  let liveLevelWanted = false;
+  let liveLevelAskSet = false;
+
+  function askLiveLevelLater() {
+    if (!liveLevelWanted || liveLevelAskSet) return;
+    liveLevelAskSet = true;
+    setTimeout(() => {
+      liveLevelAskSet = false;
+      if (!liveLevelWanted) return;
+      sendMsg({ type: 'askLiveLevel' }).catch(() => {});
+      askLiveLevelLater();
+    }, LIVE_LEVEL_ASK_MS);
   }
 
   function sendManualGain(msg) {

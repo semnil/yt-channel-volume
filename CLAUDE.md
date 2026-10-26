@@ -17,8 +17,8 @@ flowchart LR
   audio["video element, MediaElementSource, GainNode, destination"]
 
   bridge -- "postMessage: loudnessDb, baseLoudnessDb, liveLkfs, isLiveContent, channelId, author" --> content
-  content -- "postMessage: request" --> bridge
-  popup -- "forceDetect, getState, gestures" --> content
+  content -- "postMessage: request, live ask" --> bridge
+  popup -- "forceDetect, getState, askLiveLevel, gestures" --> content
   content -- "stateChanged" --> popup
   content -- "store:op" --> bg
   options -- "store:op" --> bg
@@ -41,6 +41,7 @@ flowchart LR
 - Live level: every answer also carries the `live.` level of the same line as `liveLkfs` (an absolute level, null where the line names none), and naming it ends the looking as the `cont.` level does
 - Stable volume: where the playing level is not there, with the player's DRC setting on, the level is the `isDrc` adaptive format's loudnessDb
 - onPlaybackAudioChange listener on movie_player: answers again when the rendition changes (source `audio-change`)
+- Live level ask: `__yt_channel_volume_live_ask__` is answered with `__yt_channel_volume_live__` alone — `{ videoId, liveLkfs }`, the `live.` level the volume line names now (null where it names none) — and no full answer, on a watch page only
 - postMessage → relays loudnessDb (the rendition played) + baseLoudnessDb (the plain rendition `audioConfig` describes) + liveLkfs (the live level the player names) + isLiveContent + channelId + author to content.js
 
 **background.js (service worker)**
@@ -52,6 +53,7 @@ flowchart LR
 
 - postMessage listener: receives loudnessDb, baseLoudnessDb and liveLkfs from page-bridge.js. An answer naming a video other than the one the URL names (`?v=`, the `/live/` path segment, or on a channel's live URL the video its canonical link names) was queued for a page this tab has left, and is dropped; where the URL names no video the answer is taken as it comes. A field of a type the bridge does not send is not taken (see "A bridge message is taken field by field")
 - requestLoudnessWithRetry: asks page-bridge.js again on demand
+- Live level read for the popup: `askLiveLevel` from the popup posts the live ask, and a `__yt_channel_volume_live__` answer for the video the URL names that carries a finite level replaces `currentLiveLkfs` and notifies the popup. Nothing is applied or stored for it (Auto applies at the bridge's full answers); "Apply to channel" applies the level in hand. An answer with no level leaves the one in hand
 - Gain calculation (manual apply / per-channel automatic LUFS apply. Both store into the same per-type gain, held against the base rendition)
   - contentLUFS = -14 + loudnessDb (YouTube reference = -14 LUFS)
   - compensationDb = targetLUFS - contentLUFS
@@ -95,6 +97,7 @@ flowchart LR
 - Manual Volume: slider (0–600%) + presets. Disabled while Auto is on and LUFS was detected; used for fallback adjustment when no LUFS was detected. Every gesture carries the `appliesTo` of the state the popup was drawn from
 - UI hidden on pages other than watch
 - retryGetState: polling fallback while the loudness has not arrived
+- While the state shows a stream on air or a live level, `askLiveLevel` is sent every second (`LIVE_LEVEL_ASK_MS`) for as long as the popup is open, so Loudness and Suggested show the level the player names now rather than the one the 30 s follow read
 
 **options.html / options.js (settings screen, opened in its own tab)**
 

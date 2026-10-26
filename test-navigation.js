@@ -534,6 +534,11 @@ function createBridge({ pathname = '/watch', videoId = 'urlVideoIdA', preassigne
     // Method 3 and the on-demand path: what content.js asks for.
     async request() { deliver({ type: '__yt_channel_volume_request__' }); await tick(); },
     async diagnose() { deliver({ type: '__yt_channel_volume_diag__' }); await tick(); },
+    // The live ask, from this window or, for a case that names one, another.
+    async askLive(source = window) {
+      for (const fn of (listeners['message'] || []).slice()) fn({ source, data: { type: '__yt_channel_volume_live_ask__' } });
+      await tick();
+    },
     // A message that reached this window from somewhere else — another frame,
     // or the page's own script posting to it.
     async deliverAs(source, data) {
@@ -4615,6 +4620,37 @@ async function runTests() {
     await bridge.request();
     assert(bridge.last()?.liveLkfs === null && bridge.pendingTimers() === 1,
       `a line that lost it is answered with none, and looked at again (${bridge.last()?.liveLkfs} / ${bridge.pendingTimers()})`);
+  }
+
+  section('Live level: asked for alone, it is answered with the level the line names now');
+  {
+    const bridge = createBridge();
+    const pr = playerResponse({ loudnessDb: undefined, isLiveContent: true, isLive: true });
+    bridge.assign(pr);
+    let stats = statsFor('100%/100% (live.-16.0dB)');
+    bridge.setMoviePlayer(pr, { getStatsForNerds: () => stats });
+    const answers = () => bridge.posted.filter((m) => m?.type === '__yt_channel_volume_live__');
+    const full = () => bridge.posted.filter((m) => m?.type === '__yt_channel_volume__').length;
+    const fullBefore = full();
+    await bridge.askLive();
+    assert(answers().length === 1 && answers()[0].liveLkfs === -16 && answers()[0].videoId === 'urlVideoIdA',
+      `the level and the video it is for (${JSON.stringify(answers())})`);
+    assert(full() === fullBefore, `and no full answer goes with it (${full() - fullBefore})`);
+
+    stats = statsFor('100%/100% (live.-12.3dB)');
+    await bridge.askLive();
+    assert(answers().length === 2 && answers()[1].liveLkfs === -12.3, `asked again, the level now (${answers()[1]?.liveLkfs})`);
+
+    stats = statsFor('100%/100% (live.-12.3dB)', { id: 'someOtherId' });
+    await bridge.askLive();
+    assert(answers().length === 3 && answers()[2].liveLkfs === null, `during an ad, no level (${answers()[2]?.liveLkfs})`);
+
+    await bridge.askLive({});
+    assert(answers().length === 3, `an ask from another window is not answered (${answers().length})`);
+
+    bridge.setUrl('/feed/subscriptions', null);
+    await bridge.askLive();
+    assert(answers().length === 3, `off a watch page it is not answered (${answers().length})`);
   }
 
   section('Stable volume: what the popup-open dump reports');
@@ -8817,6 +8853,104 @@ async function runTests() {
       assert(close(entryNow().gainLive, liveGain(-40)) && entryNow().autoApplyLoudnessLive === true
         && entryNow().liveGateOpenFor === LIVE_VID,
         `and is stored with the flag and the stream it opened for (${JSON.stringify(entryNow())})`);
+    }
+
+    section('Live level: read alone for the popup, it becomes the level in hand, and nothing is applied');
+    {
+      const liveRead = (liveLkfs, { videoId = LIVE_VID, source = globalThis.window, type = '__yt_channel_volume_live__' } = {}) => {
+        for (const fn of mockEventListeners['message'] || []) {
+          fn({ source, data: { type, videoId, liveLkfs } });
+        }
+      };
+      onAir({ entry: { autoApplyLoudnessLive: true } });
+      liveAnswer(-24.8);
+      await settle();
+      const playing = ytcv.state.currentGain;
+      mockSentMessages.length = 0;
+      const saves = liveSaves().length;
+      liveRead(-20);
+      await settle();
+      assert(ytcv.state.currentLiveLkfs === -20 && ytcv.state.currentGain === playing && liveSaves().length === saves,
+        `the level is taken, and nothing is applied or stored (${ytcv.state.currentLiveLkfs} / ${ytcv.state.currentGain} / ${liveSaves().length - saves})`);
+      assert(mockSentMessages.some((m) => m?.type === 'stateChanged' && m.liveLkfs === -20 && m.contentLufs === -20),
+        `and the popup is told (${JSON.stringify(mockSentMessages.map((m) => m?.liveLkfs))})`);
+
+      for (const [what, read] of [
+        ['another video\'s level', () => liveRead(-30, { videoId: 'someOtherVideo' })],
+        ['an answer naming no level', () => liveRead(null)],
+        ['a level that is not a number', () => liveRead('-30')],
+        ['a message from another window', () => liveRead(-30, { source: {} })],
+        ['a message of another type', () => liveRead(-30, { type: '__some_page_message__' })]
+      ]) {
+        read();
+        await settle();
+        assert(ytcv.state.currentLiveLkfs === -20, `${what} leaves the level in hand (${ytcv.state.currentLiveLkfs})`);
+      }
+
+      // With Auto off, Apply to channel applies the level read last.
+      onAir({ autoLive: false, entry: { autoApplyLoudnessLive: false } });
+      liveAnswer(-24.8);
+      await settle();
+      liveRead(-20);
+      await settle();
+      const applied = await popupGesture({ type: 'applyLoudness' });
+      await settle();
+      assert(applied?.ok === true && close(ytcv.state.currentGain, liveGain(-20)) && close(entryNow().gainLive, liveGain(-20)),
+        `Apply to channel plays and stores it (${JSON.stringify(applied)} / ${ytcv.state.currentGain} / ${entryNow().gainLive})`);
+
+      // The popup's ask goes to the page.
+      mockPostMessages.length = 0;
+      const asked = await simulateRuntimeMessage({ type: 'askLiveLevel' });
+      assert(asked?.ok === true && mockPostMessages.filter((m) => m?.type === '__yt_channel_volume_live_ask__').length === 1,
+        `asked by the popup, the bridge is asked (${JSON.stringify(asked)} / ${JSON.stringify(mockPostMessages)})`);
+    }
+
+    section('Live level: the popup asks for it every second while it is open on a stream');
+    {
+      const stateWith = (over) => ({
+        isWatchPage: true,
+        channel: { id: LIVE_CH, name: 'Live Follow', url: '' },
+        appliesTo: LIVE_CH + '|live|' + LIVE_VID,
+        loudnessDb: null, liveLkfs: -24.8, contentLufs: -24.8, gain: 1.0,
+        targetLufs: -18, videoType: 'live', isLiveNow: true,
+        autoApplyLoudnessVideo: false, autoApplyLoudnessLive: false,
+        ...over
+      });
+      const popup = makePopup({ answer: async () => stateWith({}) });
+      await popup.ready();
+      const asks = () => popup.asked.filter((m) => m.type === 'askLiveLevel').length;
+      assert(asks() === 0, `nothing is asked before a second has passed (${asks()})`);
+      await popup.runTimers();
+      assert(asks() === 1, `a second on, it is asked (${asks()})`);
+
+      // A level that reaches the popup is drawn, and asking goes on once a second.
+      await popup.deliver({ type: 'stateChanged', ...stateWith({ liveLkfs: -20, contentLufs: -20 }) });
+      const drawnIn = (id) => popup.node(id).textContent + (popup.node(id).children[0] ? popup.node(id).children[0].textContent : '');
+      assert(drawnIn('contentLufs') === '-20.0 LUFS'
+        && drawnIn('suggestedVol') === String(gainToPercent(calcLiveGain(-20, -18))) + '%',
+        `the new level is drawn (${drawnIn('contentLufs')} / ${drawnIn('suggestedVol')})`);
+      await popup.runTimers();
+      assert(asks() === 2, `and asked once more a second on, not once per state drawn (${asks()})`);
+
+      // A page that no longer shows a stream stops it.
+      await popup.deliver({ type: 'stateChanged', ...stateWith({ isLiveNow: false, liveLkfs: null, contentLufs: null }) });
+      await popup.runTimers();
+      await popup.runTimers();
+      assert(asks() === 2, `a page with no stream is not asked about (${asks()})`);
+
+      const video = makePopup({
+        answer: async () => stateWith({ videoType: 'video', isLiveNow: false, liveLkfs: null, loudnessDb: -6, contentLufs: -20 })
+      });
+      await video.ready();
+      await video.runTimers();
+      assert(video.asked.filter((m) => m.type === 'askLiveLevel').length === 0, 'a video is not asked about');
+
+      // On air before the player names a level, it is asked for all the same.
+      const early = makePopup({ answer: async () => stateWith({ liveLkfs: null, contentLufs: null }) });
+      await early.ready();
+      await early.runTimers();
+      assert(early.asked.filter((m) => m.type === 'askLiveLevel').length === 1,
+        `a stream on air with no level yet is asked about (${early.asked.filter((m) => m.type === 'askLiveLevel').length})`);
     }
 
     section('Auto turned on stores the gain it plays with the flag, whenever the change arrives');

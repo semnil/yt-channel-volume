@@ -82,7 +82,7 @@ background.js (service worker)
 - At a gain of 1.0 (passthrough) the audio chain stays disconnected → avoids the Live Caption flicker
 - YouTube's CSP forbids inline script, so loudnessDb extraction runs in the MAIN world from `page-bridge.js`
 - The Loudness is the one of the audio the player is playing — the audio track, **Stable Volume** and **Voice boost** included, as the player's stats for nerds name it — and it is read again when the player switches that audio mid-video
-- On a live stream on air, the Loudness is the stream's own, as the player's stats for nerds show it. YouTube has not normalized it, so the gain takes it to Target LUFS as it stands. While LUFS auto-apply is on it is read again every 30 seconds, and the channel volume is saved again when it has moved 1 dB or more
+- On a live stream on air, the Loudness is the stream's own, as the player's stats for nerds show it. YouTube has not normalized it, so the gain takes it to Target LUFS as it stands. While LUFS auto-apply is on it is read again every 30 seconds, and the channel volume is saved again when it has moved 1 dB or more. While the popup is open it is read every second, so the popup's Loudness and Suggested, and what **Apply to channel** applies, are the latest
 - A channel volume saved from this version on is kept for the video's regular audio, and adjusted to the audio playing; a live stream on air, which has neither a Content Loudness nor **Stable Volume**, plays it as it is. A volume saved on a stream on air, or by an earlier version, plays as it is on every video until it is saved again where the video's Loudness is known
 
 ## Build

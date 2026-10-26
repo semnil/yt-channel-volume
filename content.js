@@ -310,6 +310,21 @@
     window.postMessage({ type: '__yt_channel_volume_request__' }, '*');
   }
 
+  // The live level alone, which the popup asks for while it is open. A level
+  // the bridge names for the video the URL does becomes the level in hand: the
+  // popup is shown it, and "Apply to channel" applies it. Nothing is applied or
+  // stored here; Auto applies the level when the bridge's full answer arrives.
+  // An answer naming no level leaves the one in hand.
+  window.addEventListener('message', (event) => {
+    if (event.source !== window) return;
+    if (event.data?.type !== '__yt_channel_volume_live__') return;
+    const videoId = typeof event.data.videoId === 'string' ? event.data.videoId : '';
+    if (!isBridgeMessageForCurrentVideo(videoId)) return;
+    if (!Number.isFinite(event.data.liveLkfs)) return;
+    currentLiveLkfs = event.data.liveLkfs;
+    notifyPopup();
+  });
+
   function requestLoudnessWithRetry(maxAttempts, intervalMs) {
     return new Promise((resolve) => {
       let attempts = 0;
@@ -1027,6 +1042,12 @@
   function handleMessage(msg, sendResponse) {
     if (msg.type === 'getState') {
       sendResponse(getState());
+      return true;
+    }
+
+    if (msg.type === 'askLiveLevel') {
+      window.postMessage({ type: '__yt_channel_volume_live_ask__' }, '*');
+      sendResponse({ ok: true });
       return true;
     }
 
