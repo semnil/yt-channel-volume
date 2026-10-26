@@ -53,13 +53,17 @@
     unitToggle.querySelectorAll('button').forEach(btn => { btn.disabled = disabled; });
   }
 
-  // Both keys come from one read, so a page that shows what it read shows both
-  // or neither, and the line it puts up when it fails names that one read.
+  // The settings (sync) and the channels (local) are read as one load, so a
+  // page that shows what it read shows both or neither, and the line it puts up
+  // when it fails names that one load.
   async function loadAll() {
     const settingsAt = settingsRevision;
     const channelsAt = channelRevision;
-    const data = await chrome.storage.local.get([SETTINGS_KEY, CHANNEL_VOLUMES_KEY]);
-    if (settingsAt === settingsRevision) applySettings(data[SETTINGS_KEY] || {});
+    const [settings, data] = await Promise.all([
+      readSettings(),
+      chrome.storage.local.get(CHANNEL_VOLUMES_KEY)
+    ]);
+    if (settingsAt === settingsRevision) applySettings(settings);
     settingsLoaded = true;
     if (channelsAt === channelRevision) channelVolumes = data[CHANNEL_VOLUMES_KEY] || {};
     renderChannels(channelVolumes);
@@ -83,10 +87,9 @@
   async function saveSetting(key, value) {
     // A page that never read the settings does not get to write one back.
     if (!settingsLoaded) return;
-    const data = await chrome.storage.local.get(SETTINGS_KEY);
-    const s = data[SETTINGS_KEY] || {};
-    s[key] = value;
-    await chrome.storage.local.set({ [SETTINGS_KEY]: s });
+    // The worker writes it, queued with its move of the settings to sync, so a
+    // save made while a move is out is not put back by it.
+    await requestChannelWrite('saveSetting', { key, value });
   }
 
   function updateUnitButtons() {
@@ -255,11 +258,21 @@
   // Re-render when storage changes from popup or content script
 
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area !== 'local') return;
     // The page that could not read its own settings is telling the viewer to
     // reload it. What another tab writes after that would stand on a page whose
     // own read never landed, so none of it is taken.
     if (loadFailed) return;
+    // The settings live in sync, and so do the ones another machine writes. The
+    // settings key in local is only the copy the worker moves out of it.
+    if (area === 'sync') {
+      if (changes[SETTINGS_KEY]) {
+        settingsRevision++;
+        applySettings(changes[SETTINGS_KEY].newValue || {});
+        renderChannels(channelVolumes);
+      }
+      return;
+    }
+    if (area !== 'local') return;
     // Another context may have folded the profile; the table has to stop
     // reading the map under the pre-unification rule.
     if (changes[UNIFIED_GAINS_KEY]?.newValue === true && !storageMigrated) {
@@ -271,11 +284,6 @@
     if (changes[CHANNEL_VOLUMES_KEY]) {
       channelRevision++;
       channelVolumes = changes[CHANNEL_VOLUMES_KEY].newValue || {};
-      renderChannels(channelVolumes);
-    }
-    if (changes[SETTINGS_KEY]) {
-      settingsRevision++;
-      applySettings(changes[SETTINGS_KEY].newValue || {});
       renderChannels(channelVolumes);
     }
   });

@@ -41,6 +41,78 @@ function updateChannelVolumes(mutate, extraKeys) {
   return write;
 }
 
+// The settings that belong to no channel live in storage.sync, so every machine
+// the profile is signed in on holds the same ones. A profile whose settings the
+// worker has not moved there yet still holds them in local, and they are read
+// from there until it has.
+async function readSettings() {
+  const synced = await chrome.storage.sync.get(SETTINGS_KEY);
+  if (synced[SETTINGS_KEY]) return synced[SETTINGS_KEY];
+  const local = await chrome.storage.local.get(SETTINGS_KEY);
+  if (local[SETTINGS_KEY]) return local[SETTINGS_KEY];
+  // The move writes sync before it clears local, so a local read that comes
+  // back empty may have been made across the move, and sync then holds what it
+  // moved.
+  const moved = await chrome.storage.sync.get(SETTINGS_KEY);
+  return moved[SETTINGS_KEY] || {};
+}
+
+// Every settings write the worker makes goes through here, the move among them.
+// The move reads sync before it writes it, so a save landing in between would
+// be put back to local's older copy; queued one after the other, a save waits
+// for the move and the move for a save, whichever worker start the move is in.
+let settingsWrite = Promise.resolve();
+
+function queueSettingsWrite(work) {
+  const write = settingsWrite.then(work);
+  settingsWrite = write.catch(() => {});
+  return write;
+}
+
+// The fields the settings page saves, and what each of them may hold.
+const SETTING_FIELDS = {
+  targetLufs: value => Number.isFinite(value) && value >= -30 && value <= -6,
+  displayUnit: value => value === '%' || value === 'dB',
+  showGainOverlay: value => typeof value === 'boolean',
+  autoApplyLoudnessVideoDefault: value => typeof value === 'boolean',
+  autoApplyLoudnessLiveDefault: value => typeof value === 'boolean'
+};
+
+// The settings writes the options page asks the worker for. A write naming a
+// field the page has not got, or a value that field cannot hold, is refused
+// the way a channel write that names no channel is.
+const SETTINGS_WRITES = {
+  saveSetting(msg) {
+    const accepts = Object.prototype.hasOwnProperty.call(SETTING_FIELDS, msg.key)
+      ? SETTING_FIELDS[msg.key]
+      : null;
+    if (!accepts) throw new ChannelWriteRefused('not a setting');
+    if (!accepts(msg.value)) throw new ChannelWriteRefused(`not a value ${msg.key} can hold`);
+    return queueSettingsWrite(async () => {
+      // Read where it is now, so a write made before the move carries the rest
+      // of the settings with it.
+      const s = await readSettings();
+      s[msg.key] = msg.value;
+      await chrome.storage.sync.set({ [SETTINGS_KEY]: s });
+    });
+  }
+};
+
+// Moves settings saved before they synced out of local. Settings another
+// machine already put in sync are the ones every machine reads, so they stay
+// and the local copy goes. Sync is written before local is cleared, so a reader
+// always finds one of the two.
+async function moveSettingsToSync() {
+  const local = await chrome.storage.local.get(SETTINGS_KEY);
+  if (!local[SETTINGS_KEY]) return false;
+  const synced = await chrome.storage.sync.get(SETTINGS_KEY);
+  if (!synced[SETTINGS_KEY]) {
+    await chrome.storage.sync.set({ [SETTINGS_KEY]: local[SETTINGS_KEY] });
+  }
+  await chrome.storage.local.remove(SETTINGS_KEY);
+  return true;
+}
+
 function gainToPercent(gain) { return Math.round(gain * 100); }
 function percentToGain(pct) { return pct / 100; }
 
@@ -256,7 +328,7 @@ async function migrateLegacyAutoGains() {
     return false;
   }
 
-  const settings = stored[SETTINGS_KEY] || {};
+  const settings = await readSettings();
   const defaults = {
     video: settings.autoApplyLoudnessVideoDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS,
     live: settings.autoApplyLoudnessLiveDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS

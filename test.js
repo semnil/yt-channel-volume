@@ -14,6 +14,8 @@ function section(name) { console.log(name); }
 
 // Load utils.js into global scope
 let mockStorage = {};
+let mockSyncStorage = {};
+let failSyncSet = false;
 const mockStorageRemovals = [];
 let holdRemovals = false;
 let releaseRemovals = null;
@@ -39,6 +41,21 @@ globalThis.chrome = {
         if (holdRemovals) await new Promise((resolve) => { releaseRemovals = resolve; });
         await Promise.resolve();
         for (const key of Array.isArray(keys) ? keys : [keys]) delete mockStorage[key];
+      }
+    },
+    // The settings' own area. Kept apart from local, as Chrome keeps them.
+    sync: {
+      get(key) {
+        return Promise.resolve(
+          Object.prototype.hasOwnProperty.call(mockSyncStorage, key)
+            ? { [key]: JSON.parse(JSON.stringify(mockSyncStorage[key])) }
+            : {}
+        );
+      },
+      async set(obj) {
+        await Promise.resolve();
+        if (failSyncSet) throw new Error('sync quota exceeded');
+        Object.assign(mockSyncStorage, JSON.parse(JSON.stringify(obj)));
       }
     }
   }
@@ -418,10 +435,14 @@ assert(/\.settings-error\.hidden\s*\{\s*display:\s*none;/.test(optionsHtml),
 assert(/\.catch\(err => \{[\s\S]{0,400}?loadFailed = true;[\s\S]{0,200}?settingsErrorEl\.classList\.remove\('hidden'\);/
   .test(optionsSrc),
   'a load that fails records the failure and shows the line');
-assert(optionsSrc.indexOf("if (area !== 'local') return;") !== -1 &&
-  optionsSrc.indexOf("if (area !== 'local') return;") <
-    optionsSrc.indexOf('if (loadFailed) return;'),
-  'the storage listener takes nothing on a page whose load failed');
+{
+  const listenerSrc = optionsSrc.slice(optionsSrc.indexOf('chrome.storage.onChanged.addListener'));
+  const refusal = listenerSrc.indexOf('if (loadFailed) return;');
+  assert(refusal !== -1 &&
+    refusal < listenerSrc.indexOf("if (area === 'sync')") &&
+    refusal < listenerSrc.indexOf("if (area !== 'local') return;"),
+    'the storage listener takes nothing, from either area, on a page whose load failed');
+}
 const jaMessages = JSON.parse(fs.readFileSync('./_locales/ja/messages.json', 'utf8'));
 const enMessages = JSON.parse(fs.readFileSync('./_locales/en/messages.json', 'utf8'));
 // The message speaks for the read, not for the values next to it: a change that
@@ -473,18 +494,18 @@ assert(/function renderChannels\(all\) \{\s*if \(!all\) return;/.test(optionsSrc
   'and a page that holds no list draws none');
 assert(!/function renderChannels[\s\S]{0,400}?chrome\.storage\.local\.get/.test(optionsSrc),
   'the renderer reads no storage of its own');
-// One read of both keys: a page that shows what it read shows both or neither,
-// so the line it puts up names the read that failed rather than half of one.
-assert(/chrome\.storage\.local\.get\(\[SETTINGS_KEY, CHANNEL_VOLUMES_KEY\]\)/.test(optionsSrc),
+// One load of both areas: a page that shows what it read shows both or neither,
+// so the line it puts up names the load that failed rather than half of one.
+assert(/Promise\.all\(\[\s*readSettings\(\),\s*chrome\.storage\.local\.get\(CHANNEL_VOLUMES_KEY\)\s*\]\)/.test(optionsSrc),
   'the initial load reads the settings and the channels together');
 
 section('the initial read does not undo what arrived while it was out');
 // The read is issued before a change that lands during it, and returns what
 // storage held when it was issued, so applying it unconditionally puts the
 // older value back on a page that has already shown the newer one.
-assert(/const settingsAt = settingsRevision;[\s\S]{0,120}const channelsAt = channelRevision;[\s\S]{0,200}chrome\.storage\.local\.get\(\[SETTINGS_KEY, CHANNEL_VOLUMES_KEY\]\)/
+assert(/const settingsAt = settingsRevision;[\s\S]{0,120}const channelsAt = channelRevision;[\s\S]{0,200}Promise\.all\(\[\s*readSettings\(\)/
   .test(optionsSrc),
-  'the load records both revisions before it issues its read');
+  'the load records both revisions before it issues its reads');
 assert(/if \(settingsAt === settingsRevision\) applySettings\(/.test(optionsSrc),
   'and applies the settings it read only where none arrived since');
 assert(/if \(channelsAt === channelRevision\) channelVolumes = /.test(optionsSrc),
@@ -2995,12 +3016,27 @@ assert(manifest.background?.service_worker === 'background.js',
   'the worker is registered so channel writes have one owner');
 assert(backgroundSrc.includes("importScripts('utils.js')"),
   'the worker shares the channel write definitions with the pages');
+assert(/^const settingsMoved = queueSettingsWrite\(moveSettingsToSync\)\s*\.catch\(/m.test(backgroundSrc),
+  'the worker moves settings saved before they synced, at every start');
+assert(/type === 'migrateLegacyGains' \? settingsMoved : undefined/.test(backgroundSrc),
+  'and answers the fold, which the options page waits on, once the move has settled');
+for (const [name, src] of [['content.js', contentSrc], ['options.js', optionsSrc],
+  ['popup.js', fs.readFileSync('./popup.js', 'utf8')]]) {
+  assert(!/chrome\.storage\.local\.(get|set)\(\[?SETTINGS_KEY/.test(src),
+    `${name} reads and writes the settings where they live, through readSettings`);
+}
 assert(!/updateChannelVolumes\(/.test(contentSrc) && !/updateChannelVolumes\(/.test(optionsSrc),
   'no page performs a channel read-modify-write of its own');
 for (const write of Object.keys(CHANNEL_WRITES)) {
   assert(contentSrc.includes(`'${write}'`) || optionsSrc.includes(`'${write}'`),
     `channel write ${write} is requested by a page`);
 }
+for (const write of Object.keys(SETTINGS_WRITES)) {
+  assert(optionsSrc.includes(`'${write}'`), `settings write ${write} is requested by the options page`);
+}
+assert(!/chrome\.storage\.sync\.set\(/.test(contentSrc + optionsSrc + fs.readFileSync('./popup.js', 'utf8')),
+  'no page writes the settings itself: the worker queues them with its move');
+
 
 // ── calcGain ─────────────────────────────────────────────────────────
 
@@ -3370,6 +3406,199 @@ async function runMigrationTests() {
     }
 
     mockStorage = priorStorage;
+  }
+
+  section('migrateLegacyAutoGains — the defaults are read where the settings live');
+  {
+    mockSyncStorage = { autoLoudnessSettings: { autoApplyLoudnessVideoDefault: true } };
+    mockStorage = {
+      channelVolumes: { UCsyncedAuto: { name: 'Synced Auto' } },
+      autoLoudnessFallbacks: { UCsyncedAuto: { gainVideo: 0.3 } }
+    };
+    await migrateLegacyAutoGains();
+    assert(mockStorage.channelVolumes.UCsyncedAuto.gainVideo === 0.3,
+      'a learned gain is folded in under the Auto default sync holds');
+    mockSyncStorage = {};
+  }
+
+  section('readSettings — sync first, local while the move has not happened');
+  {
+    mockSyncStorage = {};
+    mockStorage = {};
+    assert(JSON.stringify(await readSettings()) === '{}', 'nothing saved anywhere reads as no settings');
+    mockStorage = { autoLoudnessSettings: { targetLufs: -22 } };
+    assert((await readSettings()).targetLufs === -22, 'settings not moved yet are read from local');
+    mockSyncStorage = { autoLoudnessSettings: { targetLufs: -16 } };
+    assert((await readSettings()).targetLufs === -16, 'and settings in sync go before them');
+  }
+
+  section('readSettings — a read made across the move');
+  {
+    // Sync is read empty, then the move writes sync and clears local before
+    // the local read is answered. That read finds nothing, and the settings
+    // the move put in sync are what the profile holds.
+    mockSyncStorage = {};
+    mockStorage = { autoLoudnessSettings: { targetLufs: -24, displayUnit: 'dB' } };
+    const realLocalGet = chrome.storage.local.get;
+    let releaseLocal;
+    const localHeld = new Promise((resolve) => { releaseLocal = resolve; });
+    let localAsked = false;
+    chrome.storage.local.get = (key) => {
+      localAsked = true;
+      return localHeld.then(() => realLocalGet(key));
+    };
+    const reading = readSettings();
+    for (let turn = 0; turn < 12 && !localAsked; turn++) await Promise.resolve();
+    assert(localAsked, 'the read has found sync empty and asked local');
+    mockSyncStorage = { autoLoudnessSettings: { targetLufs: -24, displayUnit: 'dB' } };
+    delete mockStorage.autoLoudnessSettings;
+    releaseLocal();
+    const read = await reading;
+    chrome.storage.local.get = realLocalGet;
+    assert(read.targetLufs === -24 && read.displayUnit === 'dB',
+      `it answers with what the move put in sync, not with no settings (${JSON.stringify(read)})`);
+    mockSyncStorage = {};
+    mockStorage = {};
+  }
+
+  section('migrateLegacyAutoGains — the defaults read across the move');
+  {
+    // The fold reads its Auto defaults with readSettings. Read across the move,
+    // a read that found neither area would take the defaults as off and drop
+    // the gain Auto learned while marking the profile folded.
+    mockSyncStorage = {};
+    mockStorage = {
+      autoLoudnessSettings: { targetLufs: -26, autoApplyLoudnessVideoDefault: true },
+      channelVolumes: { UCacross: { name: 'Across' } },
+      'autoLoudnessFallback:UCacross:video': 2
+    };
+    const realLocalGet = chrome.storage.local.get;
+    let releaseLocal;
+    const localHeld = new Promise((resolve) => { releaseLocal = resolve; });
+    let settingsAsked = false;
+    chrome.storage.local.get = (key) => {
+      if (key !== 'autoLoudnessSettings') return realLocalGet(key);
+      settingsAsked = true;
+      return localHeld.then(() => realLocalGet(key));
+    };
+    const folding = migrateLegacyAutoGains();
+    for (let turn = 0; turn < 24 && !settingsAsked; turn++) await Promise.resolve();
+    assert(settingsAsked, 'the fold has found sync empty and asked local for the settings');
+    mockSyncStorage = { autoLoudnessSettings: mockStorage.autoLoudnessSettings };
+    delete mockStorage.autoLoudnessSettings;
+    releaseLocal();
+    await folding;
+    chrome.storage.local.get = realLocalGet;
+    assert(mockStorage.channelVolumes.UCacross.gainVideo === 2,
+      `the learned gain is folded in under the default the move put in sync (${JSON.stringify(mockStorage.channelVolumes.UCacross)})`);
+    mockSyncStorage = {};
+    mockStorage = {};
+  }
+
+  section('SETTINGS_WRITES.saveSetting — queued with the move');
+  {
+    // A worker start whose move is out when an open options page saves: the
+    // move read sync empty, and writing local's older copy after the save would
+    // put the save back. Queued, the save goes after the move.
+    mockSyncStorage = {};
+    mockStorage = { autoLoudnessSettings: { targetLufs: -18, displayUnit: '%', showGainOverlay: false } };
+    // Chrome answers a read with a copy; the save's read must not be the very
+    // object the move then writes.
+    const realLocalGet = chrome.storage.local.get;
+    chrome.storage.local.get = async (key) => JSON.parse(JSON.stringify(await realLocalGet(key)));
+    const realSyncGet = chrome.storage.sync.get;
+    let releaseSync;
+    const syncHeld = new Promise((resolve) => { releaseSync = resolve; });
+    let held = true;
+    chrome.storage.sync.get = (key) => {
+      if (!held) return realSyncGet(key);
+      held = false;
+      const snapshot = realSyncGet(key);
+      return syncHeld.then(() => snapshot);
+    };
+    const moving = queueSettingsWrite(moveSettingsToSync);
+    for (let turn = 0; turn < 12; turn++) await Promise.resolve();
+    let saved = false;
+    const saving = SETTINGS_WRITES.saveSetting({ type: 'store:saveSetting', key: 'targetLufs', value: -30 })
+      .then(() => { saved = true; });
+    for (let turn = 0; turn < 12; turn++) await Promise.resolve();
+    assert(saved === false, 'the save waits while the move is out');
+    releaseSync();
+    await moving;
+    await saving;
+    chrome.storage.sync.get = realSyncGet;
+    chrome.storage.local.get = realLocalGet;
+    assert(JSON.stringify(mockSyncStorage.autoLoudnessSettings) ===
+      JSON.stringify({ targetLufs: -30, displayUnit: '%', showGainOverlay: false }),
+      `the save stands over the move, and carries what the move brought (${JSON.stringify(mockSyncStorage.autoLoudnessSettings)})`);
+    assert(!('autoLoudnessSettings' in mockStorage), 'and local is clear');
+
+    for (const [key, value] of [['volume', 1], ['__proto__', {}], ['targetLufs', -40],
+      ['targetLufs', '-20'], ['displayUnit', 'LUFS'], ['showGainOverlay', 'yes'],
+      ['autoApplyLoudnessVideoDefault', 1], ['autoApplyLoudnessLiveDefault', null]]) {
+      let refused = null;
+      try { SETTINGS_WRITES.saveSetting({ key, value }); } catch (err) { refused = err; }
+      assert(refused?.constructor?.name === 'ChannelWriteRefused', `${key} = ${JSON.stringify(value)} is refused`);
+    }
+    assert(mockSyncStorage.autoLoudnessSettings.targetLufs === -30, 'and none of them is written');
+    mockSyncStorage = {};
+    mockStorage = {};
+  }
+
+  section('moveSettingsToSync — settings saved before they synced');
+  {
+    const removalsBefore = mockStorageRemovals.length;
+    mockSyncStorage = {};
+    mockStorage = { channelVolumes: { UCstay: { name: 'Stay', gainVideo: 0.5 } } };
+    assert(await moveSettingsToSync() === false, 'a profile with nothing in local has nothing to move');
+    assert(!('autoLoudnessSettings' in mockSyncStorage), 'and writes nothing to sync');
+    assert(mockStorageRemovals.length === removalsBefore, 'nor clears anything in local');
+
+    mockStorage = {
+      autoLoudnessSettings: { targetLufs: -22, displayUnit: 'dB', showGainOverlay: true },
+      channelVolumes: { UCstay: { name: 'Stay', gainVideo: 0.5 } }
+    };
+    assert(await moveSettingsToSync() === true, 'settings in local are moved');
+    assert(JSON.stringify(mockSyncStorage.autoLoudnessSettings) ===
+      JSON.stringify({ targetLufs: -22, displayUnit: 'dB', showGainOverlay: true }),
+      'to sync, as they stood');
+    assert(!('autoLoudnessSettings' in mockStorage), 'and local no longer holds them');
+    assert(mockStorage.channelVolumes.UCstay.gainVideo === 0.5, 'the channels stay where they are');
+    assert(await moveSettingsToSync() === false, 'a second start has nothing to move');
+
+    mockSyncStorage = { autoLoudnessSettings: { targetLufs: -16 } };
+    mockStorage = { autoLoudnessSettings: { targetLufs: -22 } };
+    assert(await moveSettingsToSync() === true, 'where another machine has synced settings');
+    assert(mockSyncStorage.autoLoudnessSettings.targetLufs === -16, 'those are kept');
+    assert(!('autoLoudnessSettings' in mockStorage), 'and the local copy goes');
+
+    // The move answers once local is clear, so a worker start that fails to
+    // clear it is reported rather than taken for a move that landed.
+    mockSyncStorage = {};
+    mockStorage = { autoLoudnessSettings: { targetLufs: -22 } };
+    holdRemovals = true;
+    releaseRemovals = null;
+    let moved = false;
+    const moving = moveSettingsToSync().then(() => { moved = true; });
+    for (let turn = 0; turn < 12; turn++) await Promise.resolve();
+    assert(moved === false && !!releaseRemovals, 'the move waits for local to be cleared');
+    releaseRemovals();
+    await moving;
+    holdRemovals = false;
+    assert(moved === true && !('autoLoudnessSettings' in mockStorage),
+      'and answers once it is');
+
+    mockSyncStorage = {};
+    mockStorage = { autoLoudnessSettings: { targetLufs: -22 } };
+    failSyncSet = true;
+    let refused = null;
+    try { await moveSettingsToSync(); } catch (err) { refused = err; }
+    failSyncSet = false;
+    assert(refused !== null, 'a move sync refuses fails');
+    assert(mockStorage.autoLoudnessSettings?.targetLufs === -22,
+      'and leaves the settings in local, where they are still read and moved on the next start');
+    mockSyncStorage = {};
+    mockStorage = {};
   }
 
   // ── Summary ────────────────────────────────────────────────────────

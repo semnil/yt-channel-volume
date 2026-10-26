@@ -373,8 +373,7 @@
   async function init() {
     try {
       // Load display unit preference
-      const data = await chrome.storage.local.get(SETTINGS_KEY);
-      displayUnit = data[SETTINGS_KEY]?.displayUnit || '%';
+      displayUnit = (await readSettings()).displayUnit || '%';
 
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (!tab || !tab.url?.includes('youtube.com')) {

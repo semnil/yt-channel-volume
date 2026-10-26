@@ -20,7 +20,7 @@ YT Channel Volume is a Chrome extension that remembers and auto-applies volume s
 
 - **What**: Target LUFS level, display unit (% or dB), gain overlay toggle, and the loudness auto-apply default for each kind (video / live).
 - **Purpose**: Customize the extension's behavior according to your preferences.
-- **Storage**: Saved locally in `chrome.storage.local` on your device.
+- **Storage**: Saved in `chrome.storage.sync`, so every computer where you are signed in to Chrome with the extension installed uses the same preferences. With Chrome sync on, Chrome carries them through your Google account, as it does for other extensions' synced settings; with it off, they stay on your device. The extension itself sends them nowhere. Channel volume settings are not part of this and stay on each device.
 
 ### YouTube Video Metadata (read-only)
 
@@ -37,19 +37,19 @@ YT Channel Volume is a Chrome extension that remembers and auto-applies volume s
 
 ## Where Data Is Sent
 
-Nowhere. This extension makes **no external network requests**. All data remains on your device.
+Nowhere. This extension makes **no external network requests**. Channel volume settings remain on your device. The extension preferences above are kept in Chrome's synced storage, which Chrome itself carries between your signed-in computers when Chrome sync is on.
 
 ## Data Storage and Security
 
-- All settings are stored in `chrome.storage.local`, which is accessible only to this extension.
-- No data is synced across devices or stored in the cloud.
+- Channel volume settings are stored in `chrome.storage.local`, and the extension preferences in `chrome.storage.sync`. Both are accessible only to this extension.
+- Only the extension preferences are synced across devices, and only through Chrome sync. Channel volume settings, and anything read from YouTube, are never synced or stored in the cloud.
 - Uninstalling the extension removes all locally stored data.
 
 ## Permissions
 
 | Permission | Reason |
 |---|---|
-| **storage** | Save channel volume settings and user preferences locally |
+| **storage** | Save channel volume settings on your device, and user preferences in Chrome's synced storage |
 | **activeTab** | Access the current YouTube tab to detect the channel, read Content Loudness, and apply volume adjustment |
 | **host_permissions** (`youtube.com`) | Inject content scripts on YouTube pages to control audio volume via Web Audio API |
 
