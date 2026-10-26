@@ -46,7 +46,7 @@ Install from the [Chrome Web Store](https://chromewebstore.google.com/detail/yt-
 1. Open a video from the channel
 2. Turn on **Auto-apply LUFS** in the popup for the kind you are watching, Video or Live
 3. On a video whose LUFS can be detected, the gain that matches Target LUFS is applied automatically
-4. On a live stream on air, the stream's own loudness is followed and read again every 30 seconds. Where no loudness can be read, the saved channel volume keeps applying
+4. On a live stream on air, the stream's own loudness is followed and read again every 30 seconds. Where no loudness can be read, the saved channel volume keeps applying. At the start of a stream, a loudness that would turn the volume up by 10 dB or more over the saved channel volume is not applied: the saved volume keeps playing until the loudness comes within that, and the popup marks the volume as **Gated**. Turning **Auto-apply LUFS** off and on applies the loudness at once
 
 ### 3. Settings
 
