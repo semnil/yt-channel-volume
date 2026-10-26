@@ -259,6 +259,20 @@
     answerCurrentVideo('request');
   });
 
+  // The live level alone, asked for while the popup is open, is answered with a
+  // message of its own: the level the volume line names now, for the video the
+  // URL names.
+  window.addEventListener('message', (event) => {
+    if (event.source !== window) return;
+    if (event.data?.type !== '__yt_channel_volume_live_ask__') return;
+    if (!isWatchPage()) return;
+    window.postMessage({
+      type: '__yt_channel_volume_live__',
+      videoId: currentVideoId(),
+      liveLkfs: playingLiveLkfs()
+    }, '*');
+  });
+
   // Turning stable volume on or off swaps the rendition under the same video,
   // and the player announces it with onPlaybackAudioChange. The answer is given
   // again then, so the level follows the rendition being played.
