@@ -3016,7 +3016,7 @@ assert(manifest.background?.service_worker === 'background.js',
   'the worker is registered so channel writes have one owner');
 assert(backgroundSrc.includes("importScripts('utils.js')"),
   'the worker shares the channel write definitions with the pages');
-assert(/^const settingsMoved = moveSettingsToSync\(\)\s*\.catch\(/m.test(backgroundSrc),
+assert(/^const settingsMoved = queueSettingsWrite\(moveSettingsToSync\)\s*\.catch\(/m.test(backgroundSrc),
   'the worker moves settings saved before they synced, at every start');
 assert(/type === 'migrateLegacyGains' \? settingsMoved : undefined/.test(backgroundSrc),
   'and answers the fold, which the options page waits on, once the move has settled');
@@ -3031,6 +3031,12 @@ for (const write of Object.keys(CHANNEL_WRITES)) {
   assert(contentSrc.includes(`'${write}'`) || optionsSrc.includes(`'${write}'`),
     `channel write ${write} is requested by a page`);
 }
+for (const write of Object.keys(SETTINGS_WRITES)) {
+  assert(optionsSrc.includes(`'${write}'`), `settings write ${write} is requested by the options page`);
+}
+assert(!/chrome\.storage\.sync\.set\(/.test(contentSrc + optionsSrc + fs.readFileSync('./popup.js', 'utf8')),
+  'no page writes the settings itself: the worker queues them with its move');
+
 
 // ── calcGain ─────────────────────────────────────────────────────────
 
@@ -3485,6 +3491,56 @@ async function runMigrationTests() {
     chrome.storage.local.get = realLocalGet;
     assert(mockStorage.channelVolumes.UCacross.gainVideo === 2,
       `the learned gain is folded in under the default the move put in sync (${JSON.stringify(mockStorage.channelVolumes.UCacross)})`);
+    mockSyncStorage = {};
+    mockStorage = {};
+  }
+
+  section('SETTINGS_WRITES.saveSetting — queued with the move');
+  {
+    // A worker start whose move is out when an open options page saves: the
+    // move read sync empty, and writing local's older copy after the save would
+    // put the save back. Queued, the save goes after the move.
+    mockSyncStorage = {};
+    mockStorage = { autoLoudnessSettings: { targetLufs: -18, displayUnit: '%', showGainOverlay: false } };
+    // Chrome answers a read with a copy; the save's read must not be the very
+    // object the move then writes.
+    const realLocalGet = chrome.storage.local.get;
+    chrome.storage.local.get = async (key) => JSON.parse(JSON.stringify(await realLocalGet(key)));
+    const realSyncGet = chrome.storage.sync.get;
+    let releaseSync;
+    const syncHeld = new Promise((resolve) => { releaseSync = resolve; });
+    let held = true;
+    chrome.storage.sync.get = (key) => {
+      if (!held) return realSyncGet(key);
+      held = false;
+      const snapshot = realSyncGet(key);
+      return syncHeld.then(() => snapshot);
+    };
+    const moving = queueSettingsWrite(moveSettingsToSync);
+    for (let turn = 0; turn < 12; turn++) await Promise.resolve();
+    let saved = false;
+    const saving = SETTINGS_WRITES.saveSetting({ type: 'store:saveSetting', key: 'targetLufs', value: -30 })
+      .then(() => { saved = true; });
+    for (let turn = 0; turn < 12; turn++) await Promise.resolve();
+    assert(saved === false, 'the save waits while the move is out');
+    releaseSync();
+    await moving;
+    await saving;
+    chrome.storage.sync.get = realSyncGet;
+    chrome.storage.local.get = realLocalGet;
+    assert(JSON.stringify(mockSyncStorage.autoLoudnessSettings) ===
+      JSON.stringify({ targetLufs: -30, displayUnit: '%', showGainOverlay: false }),
+      `the save stands over the move, and carries what the move brought (${JSON.stringify(mockSyncStorage.autoLoudnessSettings)})`);
+    assert(!('autoLoudnessSettings' in mockStorage), 'and local is clear');
+
+    for (const [key, value] of [['volume', 1], ['__proto__', {}], ['targetLufs', -40],
+      ['targetLufs', '-20'], ['displayUnit', 'LUFS'], ['showGainOverlay', 'yes'],
+      ['autoApplyLoudnessVideoDefault', 1], ['autoApplyLoudnessLiveDefault', null]]) {
+      let refused = null;
+      try { SETTINGS_WRITES.saveSetting({ key, value }); } catch (err) { refused = err; }
+      assert(refused?.constructor?.name === 'ChannelWriteRefused', `${key} = ${JSON.stringify(value)} is refused`);
+    }
+    assert(mockSyncStorage.autoLoudnessSettings.targetLufs === -30, 'and none of them is written');
     mockSyncStorage = {};
     mockStorage = {};
   }

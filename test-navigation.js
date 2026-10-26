@@ -7637,6 +7637,64 @@ async function runTests() {
       `a save made after the fold answered stands (${JSON.stringify(synced[SETTINGS_KEY])})`);
   }
 
+  section('Worker: a save an open options page makes while a later start moves is not put back');
+  {
+    // A move that failed leaves the settings in local; the options page stays
+    // open, and a later worker start moves again while the page saves. The
+    // move read sync empty before the save landed.
+    const local = { [SETTINGS_KEY]: { targetLufs: -18, displayUnit: '%', showGainOverlay: false } };
+    const synced = {};
+    let releaseSyncRead;
+    const syncReadHeld = new Promise((resolve) => { releaseSyncRead = resolve; });
+    let syncReads = 0;
+    const listeners = [];
+    const area = (held, holdRead) => ({
+      async get(key) {
+        const snapshot = cloneStorageValue(held);
+        if (holdRead && syncReads++ === 0) await syncReadHeld;
+        const keys = Array.isArray(key) ? key : [key];
+        return Object.fromEntries(keys.filter((k) => k in snapshot).map((k) => [k, snapshot[k]]));
+      },
+      async set(obj) { Object.assign(held, cloneStorageValue(obj)); },
+      async remove(keys) { for (const k of [].concat(keys)) delete held[k]; }
+    });
+    const worker = {
+      console: { log() {}, info() {}, warn() {}, error() {} },
+      Promise, Object, Array, JSON, Math, Number, String, Boolean, Error, TypeError,
+      chrome: {
+        runtime: { id: 'worker', onMessage: { addListener: (fn) => listeners.push(fn) } },
+        storage: { local: area(local, false), sync: area(synced, true) }
+      }
+    };
+    worker.globalThis = worker;
+    worker.importScripts = () => {};
+    vm.createContext(worker);
+    vm.runInContext(fs.readFileSync('./utils.js', 'utf8'), worker, { filename: 'utils.js' });
+    vm.runInContext(fs.readFileSync('./background.js', 'utf8'), worker, { filename: 'background.js' });
+
+    // The move has read local and is waiting on sync before the save comes in.
+    for (let turn = 0; turn < 3; turn++) await tick();
+    assert(syncReads === 1, `the move's read of sync is out (${syncReads})`);
+    let answer;
+    const kept = listeners[0](
+      { type: 'store:saveSetting', key: 'targetLufs', value: -30 }, {}, (r) => { answer = r; });
+    for (let turn = 0; turn < 5; turn++) await tick();
+    assert(kept === true && answer === undefined,
+      `the save is held while the move is out (${JSON.stringify(answer)})`);
+    releaseSyncRead();
+    for (let turn = 0; turn < 5; turn++) await tick();
+    assert(answer?.ok === true, `and answered once it lands (${JSON.stringify(answer)})`);
+    assert(synced[SETTINGS_KEY]?.targetLufs === -30 && synced[SETTINGS_KEY]?.displayUnit === '%',
+      `the save stands, with the settings the move brought (${JSON.stringify(synced[SETTINGS_KEY])})`);
+    assert(!(SETTINGS_KEY in local), 'and local is clear');
+
+    let refused;
+    listeners[0]({ type: 'store:saveSetting', key: 'targetLufs', value: 'loud' }, {}, (r) => { refused = r; });
+    for (let turn = 0; turn < 3; turn++) await tick();
+    assert(refused?.ok === false && refused.reason === 'write refused',
+      `a value the field cannot hold is refused as such (${JSON.stringify(refused)})`);
+  }
+
   // ── options.js ────────────────────────────────────────────────────
   section('options page');
 
@@ -7814,6 +7872,20 @@ async function runTests() {
             sent.push(JSON.parse(JSON.stringify(message)));
             if (failMutation && message.type === failMutation) {
               return { ok: false, reason: 'store refused' };
+            }
+            // The settings writes run as the worker runs them, against the
+            // areas this page reads.
+            const settingsWrites = vm.runInContext('SETTINGS_WRITES', sandbox);
+            const settingsWrite = message.type.startsWith('store:') &&
+              Object.prototype.hasOwnProperty.call(settingsWrites, message.type.slice(6))
+              ? settingsWrites[message.type.slice(6)]
+              : null;
+            if (settingsWrite) {
+              try {
+                await settingsWrite(message);
+              } catch (err) {
+                return { ok: false, reason: 'storage write failed' };
+              }
             }
             return { ok: true };
           }

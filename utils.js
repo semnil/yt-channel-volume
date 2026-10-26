@@ -57,6 +57,47 @@ async function readSettings() {
   return moved[SETTINGS_KEY] || {};
 }
 
+// Every settings write the worker makes goes through here, the move among them.
+// The move reads sync before it writes it, so a save landing in between would
+// be put back to local's older copy; queued one after the other, a save waits
+// for the move and the move for a save, whichever worker start the move is in.
+let settingsWrite = Promise.resolve();
+
+function queueSettingsWrite(work) {
+  const write = settingsWrite.then(work);
+  settingsWrite = write.catch(() => {});
+  return write;
+}
+
+// The fields the settings page saves, and what each of them may hold.
+const SETTING_FIELDS = {
+  targetLufs: value => Number.isFinite(value) && value >= -30 && value <= -6,
+  displayUnit: value => value === '%' || value === 'dB',
+  showGainOverlay: value => typeof value === 'boolean',
+  autoApplyLoudnessVideoDefault: value => typeof value === 'boolean',
+  autoApplyLoudnessLiveDefault: value => typeof value === 'boolean'
+};
+
+// The settings writes the options page asks the worker for. A write naming a
+// field the page has not got, or a value that field cannot hold, is refused
+// the way a channel write that names no channel is.
+const SETTINGS_WRITES = {
+  saveSetting(msg) {
+    const accepts = Object.prototype.hasOwnProperty.call(SETTING_FIELDS, msg.key)
+      ? SETTING_FIELDS[msg.key]
+      : null;
+    if (!accepts) throw new ChannelWriteRefused('not a setting');
+    if (!accepts(msg.value)) throw new ChannelWriteRefused(`not a value ${msg.key} can hold`);
+    return queueSettingsWrite(async () => {
+      // Read where it is now, so a write made before the move carries the rest
+      // of the settings with it.
+      const s = await readSettings();
+      s[msg.key] = msg.value;
+      await chrome.storage.sync.set({ [SETTINGS_KEY]: s });
+    });
+  }
+};
+
 // Moves settings saved before they synced out of local. Settings another
 // machine already put in sync are the ones every machine reads, so they stay
 // and the local copy goes. Sync is written before local is cleared, so a reader

@@ -87,11 +87,9 @@
   async function saveSetting(key, value) {
     // A page that never read the settings does not get to write one back.
     if (!settingsLoaded) return;
-    // Read where it is now, so a write made before the worker moved the
-    // settings to sync carries the rest of them with it.
-    const s = await readSettings();
-    s[key] = value;
-    await chrome.storage.sync.set({ [SETTINGS_KEY]: s });
+    // The worker writes it, queued with its move of the settings to sync, so a
+    // save made while a move is out is not put back by it.
+    await requestChannelWrite('saveSetting', { key, value });
   }
 
   function updateUnitButtons() {
