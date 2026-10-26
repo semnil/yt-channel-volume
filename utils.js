@@ -161,9 +161,14 @@ function checkChannelIdentity(msg) {
 // the only context that runs them, so two tabs cannot read the map and write
 // back over each other's channel.
 const CHANNEL_WRITES = {
+  // `liveGateOpenFor` names the live stream the start gate was last opened
+  // for; the entry keeps the latest one named.
   saveChannelGain(msg) {
     checkChannelIdentity(msg);
     if (!Number.isFinite(msg.gain)) throw new ChannelWriteRefused('gain is not a finite number');
+    if (msg.liveGateOpenFor !== undefined && typeof msg.liveGateOpenFor !== 'string') {
+      throw new ChannelWriteRefused('live gate stream is not text');
+    }
     return updateChannelVolumes(all => {
       const entry = all[msg.channelId] || {};
       applyChannelIdentity(entry, msg.channelId, msg.name, msg.url);
@@ -171,6 +176,7 @@ const CHANNEL_WRITES = {
       if (msg.autoApply !== undefined) {
         setChannelAutoApply(entry, msg.videoType, msg.autoApply);
       }
+      if (msg.liveGateOpenFor) entry.liveGateOpenFor = msg.liveGateOpenFor;
       all[msg.channelId] = entry;
     });
   },

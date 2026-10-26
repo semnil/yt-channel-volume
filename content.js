@@ -63,6 +63,12 @@
   // the same video and type.
   let liveSaveBaseline = null;
   let liveSaveInFlight = false;
+  // For the start gate (liveGateHolds): the gain the channel's entry holds for
+  // live and the stream it says the gate was last opened for, both taken with
+  // the Auto flags, and the stream this page has opened it for.
+  let storedLiveGain = null;
+  let storedLiveGateOpenFor = '';
+  let liveGateOpenFor = '';
   let currentGain = 1.0;
   let targetLufs = DEFAULT_TARGET_LUFS;
   let defaultAutoApplyLoudnessVideo = DEFAULT_AUTO_APPLY_LOUDNESS;
@@ -113,6 +119,8 @@
   function setCurrentAutoApplyFromEntry(entry) {
     currentAutoApplyLoudnessVideo = resolveAutoApplyForType(entry, 'video');
     currentAutoApplyLoudnessLive = resolveAutoApplyForType(entry, 'live');
+    storedLiveGain = normalizeStoredGain(getChannelGain(entry, 'live'));
+    storedLiveGateOpenFor = typeof entry?.liveGateOpenFor === 'string' ? entry.liveGateOpenFor : '';
   }
 
   function isCurrentAutoApplyEnabled(videoType = currentVideoType) {
@@ -169,10 +177,13 @@
 
   // A gain from a live stream's own level is the gain for what is being
   // played, so it is stored to play as it is, with any mark the type had taken
-  // off. `autoApply` as above. Its callers hold a channel id already.
+  // off. `autoApply` as above. Its callers hold a channel id already. A live
+  // gain stored for live names the stream it came from as the one the start
+  // gate was last opened for.
   function saveLiveChannelGain(channelId, name, gain, videoType, url, autoApply) {
     return requestChannelWrite('saveChannelGain', {
-      channelId, name, gain, videoType, url, autoApply, heldAgainstPlain: false
+      channelId, name, gain, videoType, url, autoApply, heldAgainstPlain: false,
+      liveGateOpenFor: videoType === 'live' ? getUrlVideoId() || undefined : undefined
     });
   }
 
@@ -386,13 +397,41 @@
     return calcLiveGain(currentLiveLkfs, targetLufs);
   }
 
+  // The start gate. On a live stream whose channel has a gain above 0 stored
+  // for live, a live level whose gain would play LIVE_GATE_DB or more above
+  // that stored gain, the difference taken to 0.1 dB, is held back: Auto plays
+  // the stored gain and stores nothing. The gate opens for a stream once a level
+  // of it is played — one that came within LIVE_GATE_DB, or the one in hand when
+  // Auto is turned on — and stays open for that stream.
+  const LIVE_GATE_DB = 10;
+
+  function liveGateHolds() {
+    if (currentVideoType !== 'live' || currentLiveLkfs === null || !(storedLiveGain > 0)) return false;
+    const videoId = getUrlVideoId();
+    if (videoId === liveGateOpenFor || videoId === storedLiveGateOpenFor) return false;
+    const riseDb = targetLufs - currentLiveLkfs - 20 * Math.log10(storedLiveGain);
+    return Math.round(riseDb * 10) / 10 >= LIVE_GATE_DB;
+  }
+
+  // A live level about to be played opens the start gate for the stream.
+  function openLiveGate() {
+    if (currentVideoType === 'live') liveGateOpenFor = getUrlVideoId();
+  }
+
+  function commitLiveGain() {
+    openLiveGate();
+    commitGain(calcGainFromLiveLevel());
+  }
+
   function applyAutomaticLoudnessGain(source) {
     // Before the fold, fall through to applyPreferredGain, which waits for it.
     if (!storageSettled) return false;
     // A live level is what is being played now, and goes before the response's.
-    // What it stores is decided apart from the apply.
+    // What it stores is decided apart from the apply. One the start gate holds
+    // back is left to applyPreferredGain, which plays the stored gain.
     if (isCurrentAutoApplyEnabled() && currentLiveLkfs !== null) {
-      commitGain(calcGainFromLiveLevel());
+      if (liveGateHolds()) return false;
+      commitLiveGain();
       evaluateLiveSave(source);
       return true;
     }
@@ -432,12 +471,14 @@
     setCurrentAutoApplyFromEntry(entry);
     const autoEnabled = isCurrentAutoApplyEnabled(requestedVideoType);
     syncLiveFollow();
-    if (autoEnabled && currentLiveLkfs !== null) {
-      commitGain(calcGainFromLiveLevel());
+    // A live level the start gate holds back leaves the stored gain playing.
+    const heldBack = liveGateHolds();
+    if (autoEnabled && currentLiveLkfs !== null && !heldBack) {
+      commitLiveGain();
       await evaluateLiveSave(source);
       return;
     }
-    const hasLoudness = currentLoudnessDb !== null;
+    const hasLoudness = currentLoudnessDb !== null && !heldBack;
     const stored = getChannelGain(entry, requestedVideoType);
     const gain = autoEnabled && hasLoudness
       ? calcGainFromLoudness(currentLoudnessDb)
@@ -746,6 +787,7 @@
       targetLufs,
       autoApplyLoudnessVideo: currentAutoApplyLoudnessVideo,
       autoApplyLoudnessLive: currentAutoApplyLoudnessLive,
+      liveGateHolds: liveGateHolds(),
       videoType: currentVideoType,
       isLiveNow: currentIsLiveNow,
       isWatchPage: isWatchPage()
@@ -759,7 +801,7 @@
     // The state a gesture would be made against is part of the key: a video
     // changing under the popup moves nothing else it shows, and the popup has
     // to be given the state that replaced it or its next gesture is refused.
-    const key = state.appliesTo + '|' + state.loudnessDb + '|' + state.liveLkfs + '|' + state.gain + '|' + state.channel.id + '|' + state.channel.name + '|' + state.videoType + '|' + state.isLiveNow + '|' + state.autoApplyLoudnessVideo + '|' + state.autoApplyLoudnessLive;
+    const key = state.appliesTo + '|' + state.loudnessDb + '|' + state.liveLkfs + '|' + state.gain + '|' + state.channel.id + '|' + state.channel.name + '|' + state.videoType + '|' + state.isLiveNow + '|' + state.autoApplyLoudnessVideo + '|' + state.autoApplyLoudnessLive + '|' + state.liveGateHolds;
     if (key === _lastNotifiedState) return;
     _lastNotifiedState = key;
     chrome.runtime.sendMessage({ type: 'stateChanged', ...state }).catch(() => {});
@@ -922,11 +964,15 @@
           previousAutoApplyVideo !== currentAutoApplyLoudnessVideo ||
           previousAutoApplyLive !== currentAutoApplyLoudnessLive;
         const stored = entry ? getChannelGain(entry, currentVideoType) : 1.0;
-        // This tab's live level goes before a gain another tab stored.
+        // This tab's live level goes before a gain another tab stored, unless
+        // the start gate holds it back.
         let gain;
-        if (currentAutoApply && currentLiveLkfs !== null) gain = calcGainFromLiveLevel();
-        else if (currentAutoApply && currentLoudnessDb !== null) gain = calcGainFromLoudness(currentLoudnessDb);
-        else gain = stored != null ? storedGainToPlaying(entry, currentVideoType, stored) : stored;
+        if (currentAutoApply && currentLiveLkfs !== null && !liveGateHolds()) {
+          openLiveGate();
+          gain = calcGainFromLiveLevel();
+        } else if (currentAutoApply && currentLoudnessDb !== null && currentLiveLkfs === null) {
+          gain = calcGainFromLoudness(currentLoudnessDb);
+        } else gain = stored != null ? storedGainToPlaying(entry, currentVideoType, stored) : stored;
         if (gain == null && !currentTypeAutoApplyChanged) {
           if (anyAutoApplyChanged) notifyPopup();
           return;
@@ -1070,7 +1116,9 @@
       fillCurrentChannelNameFromDomFallback();
       // Turned on where a level is known, Auto plays its gain at once and that
       // gain is stored with the flag in one write, as Apply to channel stores
-      // it. Turned off, or on with no level known, the flag is written alone.
+      // it; a live level stored this way names its stream as the one the start
+      // gate was opened for. Turned off, or on with no level known, the flag is
+      // written alone.
       const live = currentLiveLkfs !== null;
       const storesGain = !!msg.enabled && (live || currentLoudnessDb !== null);
       let written;
@@ -1188,6 +1236,7 @@
           currentChannel, currentChannelVideoId,
           currentGain, currentLoudnessDb, currentBaseLoudnessDb, currentLoudnessVideoId,
           currentLiveLkfs, liveSaveBaseline, liveSaveInFlight, liveFollowTimer,
+          storedLiveGain, storedLiveGateOpenFor, liveGateOpenFor,
           currentVideoType, currentVideoTypeDetected, currentIsLiveNow, showGainOverlay,
           currentAutoApplyLoudnessVideo, currentAutoApplyLoudnessLive,
           storageSettled, storageMigrated,
@@ -1239,6 +1288,9 @@
           case 'currentLiveLkfs': currentLiveLkfs = val; break;
           case 'currentIsLiveNow': currentIsLiveNow = val; break;
           case 'liveSaveBaseline': liveSaveBaseline = val; break;
+          case 'storedLiveGain': storedLiveGain = val; break;
+          case 'storedLiveGateOpenFor': storedLiveGateOpenFor = val; break;
+          case 'liveGateOpenFor': liveGateOpenFor = val; break;
           // The audio chain is built once per element and never taken down in
           // production; a case that means to ask what building it does starts
           // from nothing.

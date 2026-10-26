@@ -95,6 +95,9 @@
   "labelFallback": {
     "message": "Fallback"
   },
+  "labelLiveGate": {
+    "message": "Gated"
+  },
   "colChannel": {
     "message": "Channel"
   },
