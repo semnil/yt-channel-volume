@@ -3016,8 +3016,10 @@ assert(manifest.background?.service_worker === 'background.js',
   'the worker is registered so channel writes have one owner');
 assert(backgroundSrc.includes("importScripts('utils.js')"),
   'the worker shares the channel write definitions with the pages');
-assert(/^moveSettingsToSync\(\)\.catch\(/m.test(backgroundSrc),
+assert(/^const settingsMoved = moveSettingsToSync\(\)\s*\.catch\(/m.test(backgroundSrc),
   'the worker moves settings saved before they synced, at every start');
+assert(/type === 'migrateLegacyGains' \? settingsMoved : undefined/.test(backgroundSrc),
+  'and answers the fold, which the options page waits on, once the move has settled');
 for (const [name, src] of [['content.js', contentSrc], ['options.js', optionsSrc],
   ['popup.js', fs.readFileSync('./popup.js', 'utf8')]]) {
   assert(!/chrome\.storage\.local\.(get|set)\(\[?SETTINGS_KEY/.test(src),
@@ -3422,6 +3424,69 @@ async function runMigrationTests() {
     assert((await readSettings()).targetLufs === -22, 'settings not moved yet are read from local');
     mockSyncStorage = { autoLoudnessSettings: { targetLufs: -16 } };
     assert((await readSettings()).targetLufs === -16, 'and settings in sync go before them');
+  }
+
+  section('readSettings — a read made across the move');
+  {
+    // Sync is read empty, then the move writes sync and clears local before
+    // the local read is answered. That read finds nothing, and the settings
+    // the move put in sync are what the profile holds.
+    mockSyncStorage = {};
+    mockStorage = { autoLoudnessSettings: { targetLufs: -24, displayUnit: 'dB' } };
+    const realLocalGet = chrome.storage.local.get;
+    let releaseLocal;
+    const localHeld = new Promise((resolve) => { releaseLocal = resolve; });
+    let localAsked = false;
+    chrome.storage.local.get = (key) => {
+      localAsked = true;
+      return localHeld.then(() => realLocalGet(key));
+    };
+    const reading = readSettings();
+    for (let turn = 0; turn < 12 && !localAsked; turn++) await Promise.resolve();
+    assert(localAsked, 'the read has found sync empty and asked local');
+    mockSyncStorage = { autoLoudnessSettings: { targetLufs: -24, displayUnit: 'dB' } };
+    delete mockStorage.autoLoudnessSettings;
+    releaseLocal();
+    const read = await reading;
+    chrome.storage.local.get = realLocalGet;
+    assert(read.targetLufs === -24 && read.displayUnit === 'dB',
+      `it answers with what the move put in sync, not with no settings (${JSON.stringify(read)})`);
+    mockSyncStorage = {};
+    mockStorage = {};
+  }
+
+  section('migrateLegacyAutoGains — the defaults read across the move');
+  {
+    // The fold reads its Auto defaults with readSettings. Read across the move,
+    // a read that found neither area would take the defaults as off and drop
+    // the gain Auto learned while marking the profile folded.
+    mockSyncStorage = {};
+    mockStorage = {
+      autoLoudnessSettings: { targetLufs: -26, autoApplyLoudnessVideoDefault: true },
+      channelVolumes: { UCacross: { name: 'Across' } },
+      'autoLoudnessFallback:UCacross:video': 2
+    };
+    const realLocalGet = chrome.storage.local.get;
+    let releaseLocal;
+    const localHeld = new Promise((resolve) => { releaseLocal = resolve; });
+    let settingsAsked = false;
+    chrome.storage.local.get = (key) => {
+      if (key !== 'autoLoudnessSettings') return realLocalGet(key);
+      settingsAsked = true;
+      return localHeld.then(() => realLocalGet(key));
+    };
+    const folding = migrateLegacyAutoGains();
+    for (let turn = 0; turn < 24 && !settingsAsked; turn++) await Promise.resolve();
+    assert(settingsAsked, 'the fold has found sync empty and asked local for the settings');
+    mockSyncStorage = { autoLoudnessSettings: mockStorage.autoLoudnessSettings };
+    delete mockStorage.autoLoudnessSettings;
+    releaseLocal();
+    await folding;
+    chrome.storage.local.get = realLocalGet;
+    assert(mockStorage.channelVolumes.UCacross.gainVideo === 2,
+      `the learned gain is folded in under the default the move put in sync (${JSON.stringify(mockStorage.channelVolumes.UCacross)})`);
+    mockSyncStorage = {};
+    mockStorage = {};
   }
 
   section('moveSettingsToSync — settings saved before they synced');

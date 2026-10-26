@@ -49,7 +49,12 @@ async function readSettings() {
   const synced = await chrome.storage.sync.get(SETTINGS_KEY);
   if (synced[SETTINGS_KEY]) return synced[SETTINGS_KEY];
   const local = await chrome.storage.local.get(SETTINGS_KEY);
-  return local[SETTINGS_KEY] || {};
+  if (local[SETTINGS_KEY]) return local[SETTINGS_KEY];
+  // The move writes sync before it clears local, so a local read that comes
+  // back empty may have been made across the move, and sync then holds what it
+  // moved.
+  const moved = await chrome.storage.sync.get(SETTINGS_KEY);
+  return moved[SETTINGS_KEY] || {};
 }
 
 // Moves settings saved before they synced out of local. Settings another

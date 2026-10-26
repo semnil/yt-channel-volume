@@ -90,6 +90,9 @@
   // already been applied. Without this, an older read can undo a cross-tab
   // gain update after storage.onChanged commits it.
   let storageRevision = 0;
+  // The same for the settings alone: a settings read is answered after a change
+  // that came in while it was out, and what it read is older than that change.
+  let settingsRevision = 0;
   // Resolves once the legacy fold has been attempted; `storageMigrated` says
   // whether it succeeded. Until it has, the channel map still holds the
   // pre-unification shape, where a gain without an Auto flag meant Auto was
@@ -104,7 +107,9 @@
 
   async function loadSettings() {
     if (!isContextValid()) return { targetLufs };
-    takeSettings(await readSettings());
+    const revision = settingsRevision;
+    const s = await readSettings();
+    if (revision === settingsRevision) takeSettings(s);
     return { targetLufs, defaultAutoApplyLoudnessVideo, defaultAutoApplyLoudnessLive };
   }
 
@@ -948,6 +953,7 @@
       if (area === 'sync') {
         if (!changes[SETTINGS_KEY]) return;
         storageRevision++;
+        settingsRevision++;
         takeSettings(changes[SETTINGS_KEY].newValue || {});
         applyPreferredGain().then(() => {
           updateGainOverlay();

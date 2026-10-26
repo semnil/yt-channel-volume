@@ -6,8 +6,13 @@
 importScripts('utils.js');
 
 // Every start, so a move that failed is tried again; once local no longer holds
-// the settings this is one read.
-moveSettingsToSync().catch(err => console.error('[YTCV] settings not moved to sync', err));
+// the settings this is one read. The move reads sync before it writes it, so a
+// settings save landing in between would be put back to local's older copy.
+// Options writes the settings itself, and offers its controls only once the
+// fold has answered; the fold answers once the move has settled, so no save
+// can land inside it.
+const settingsMoved = moveSettingsToSync()
+  .catch(err => console.error('[YTCV] settings not moved to sync', err));
 
 const CHANNEL_WRITE_PREFIX = 'store:';
 
@@ -21,6 +26,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   // Everything else on this channel belongs to the popup (stateChanged).
   if (!write) return false;
   Promise.resolve()
+    .then(() => (type === 'migrateLegacyGains' ? settingsMoved : undefined))
     .then(() => write(msg))
     .then(() => sendResponse({ ok: true }))
     .catch(err => {

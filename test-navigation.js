@@ -5524,6 +5524,53 @@ async function runTests() {
     await tick();
   }
 
+  section('Settings: a change that came in while the read was out is not undone by it');
+  {
+    // The read is answered with what sync held when it was made; the change
+    // that came in meanwhile is newer, and is what goes on being played by.
+    mockStorage['channelVolumes'] = { UCreadrace: { name: 'Read Race Ch', autoApplyLoudnessVideo: true } };
+    mockSyncStorage['autoLoudnessSettings'] = { targetLufs: -20, displayUnit: '%' };
+    setURL('/watch', 'readRaceVid');
+    mockVideoEl = { id: 'read-race-video' };
+    mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCreadrace' };
+    ytcv._set('targetLufs', -18);
+    ytcv._set('_lastVideoId', 'readRaceVid');
+    ytcv._set('_lastProcessedVideo', null);
+    ytcv._set('_applyRunning', false);
+    ytcv._set('currentChannel', { id: 'UCreadrace', name: 'Read Race Ch', url: '' });
+    ytcv._set('currentChannelVideoId', 'readRaceVid');
+    ytcv._set('currentLoudnessVideoId', 'readRaceVid');
+    ytcv._set('currentLoudnessDb', -6);
+    ytcv._set('currentAutoApplyLoudnessVideo', true);
+    const realGet = chrome.storage.sync.get;
+    let releaseRead;
+    const readHeld = new Promise((resolve) => { releaseRead = resolve; });
+    let held = true;
+    chrome.storage.sync.get = (key) => {
+      if (!held) return realGet(key);
+      held = false;
+      const snapshot = realGet(key);
+      return readHeld.then(() => snapshot);
+    };
+    const applying = ytcv.applyVideoVolume();
+    await tick();
+    mockSyncStorage['autoLoudnessSettings'] = { targetLufs: -24, displayUnit: '%' };
+    simulateStorageChange({ autoLoudnessSettings: { newValue: { targetLufs: -24, displayUnit: '%' } } });
+    await tick();
+    releaseRead();
+    await applying;
+    await tick();
+    chrome.storage.sync.get = realGet;
+    assert(ytcv.state.targetLufs === -24,
+      `the target the change brought stands (${ytcv.state.targetLufs})`);
+    assert(Math.abs(ytcv.state.currentGain - ytcv.calcGainFromLoudness(-6)) < 0.001 &&
+      Math.abs(ytcv.calcGainFromLoudness(-6) - calcGain(-6, -24)) < 0.001,
+      `and the gain is worked out from it (${ytcv.state.currentGain})`);
+    mockSyncStorage['autoLoudnessSettings'] = { targetLufs: -18, displayUnit: '%' };
+    simulateStorageChange({ autoLoudnessSettings: { newValue: { targetLufs: -18, displayUnit: '%' } } });
+    await tick();
+  }
+
   // ── Waiting for what the next step needs ───────────────────────────
   // Dropping an await leaves the suite green in six places, and one of those
   section('Apply: the target is in hand before the gain is worked out');
@@ -7529,6 +7576,65 @@ async function runTests() {
     mockLocation.search = priorSearch;
     mockLocation.href = priorHref;
     mockStorage['channelVolumes'] = priorChannels;
+  }
+
+  // ── The worker's settings move ───────────────────────────────────
+  section('Worker: the fold is answered once the settings move has settled');
+  {
+    // A worker of its own, started on a profile whose settings are still in
+    // local, with the move's read of sync held. The options page offers its
+    // controls once the fold answers, so a fold answered inside the move would
+    // let a save land that the move then puts back to local's older copy.
+    const local = {
+      [SETTINGS_KEY]: { targetLufs: -18, displayUnit: '%' },
+      [UNIFIED_GAINS_KEY]: true
+    };
+    const synced = {};
+    let releaseSyncRead;
+    const syncReadHeld = new Promise((resolve) => { releaseSyncRead = resolve; });
+    let syncReads = 0;
+    const listeners = [];
+    const area = (held, holdRead) => ({
+      async get(key) {
+        if (holdRead && syncReads++ === 0) await syncReadHeld;
+        if (key === null) return cloneStorageValue(held);
+        const keys = Array.isArray(key) ? key : [key];
+        return Object.fromEntries(keys.filter((k) => k in held).map((k) => [k, cloneStorageValue(held[k])]));
+      },
+      async set(obj) { Object.assign(held, cloneStorageValue(obj)); },
+      async remove(keys) { for (const k of [].concat(keys)) delete held[k]; }
+    });
+    const worker = {
+      console: { log() {}, info() {}, warn() {}, error() {} },
+      Promise, Object, Array, JSON, Math, Number, String, Boolean, Error, TypeError,
+      chrome: {
+        runtime: { id: 'worker', onMessage: { addListener: (fn) => listeners.push(fn) } },
+        storage: { local: area(local, false), sync: area(synced, true) }
+      }
+    };
+    worker.globalThis = worker;
+    worker.importScripts = () => {};
+    vm.createContext(worker);
+    vm.runInContext(fs.readFileSync('./utils.js', 'utf8'), worker, { filename: 'utils.js' });
+    vm.runInContext(fs.readFileSync('./background.js', 'utf8'), worker, { filename: 'background.js' });
+
+    let answer;
+    const kept = listeners[0]({ type: 'store:migrateLegacyGains' }, {}, (r) => { answer = r; });
+    for (let turn = 0; turn < 5; turn++) await tick();
+    assert(kept === true, 'the fold keeps its answer open');
+    assert(answer === undefined, `and gives none while the move is out (${JSON.stringify(answer)})`);
+    releaseSyncRead();
+    for (let turn = 0; turn < 5; turn++) await tick();
+    assert(answer?.ok === true, `the fold answers once the move has settled (${JSON.stringify(answer)})`);
+    assert(synced[SETTINGS_KEY]?.targetLufs === -18 && !(SETTINGS_KEY in local),
+      'by then the settings are in sync and local is clear');
+    // What the page saves after that answer is the move's to keep, not undo.
+    synced[SETTINGS_KEY] = { targetLufs: -30, displayUnit: 'dB' };
+    let again;
+    listeners[0]({ type: 'store:migrateLegacyGains' }, {}, (r) => { again = r; });
+    for (let turn = 0; turn < 5; turn++) await tick();
+    assert(again?.ok === true && synced[SETTINGS_KEY].targetLufs === -30,
+      `a save made after the fold answered stands (${JSON.stringify(synced[SETTINGS_KEY])})`);
   }
 
   // ── options.js ────────────────────────────────────────────────────
