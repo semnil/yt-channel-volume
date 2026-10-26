@@ -3451,6 +3451,22 @@ async function runMigrationTests() {
     assert(mockSyncStorage.autoLoudnessSettings.targetLufs === -16, 'those are kept');
     assert(!('autoLoudnessSettings' in mockStorage), 'and the local copy goes');
 
+    // The move answers once local is clear, so a worker start that fails to
+    // clear it is reported rather than taken for a move that landed.
+    mockSyncStorage = {};
+    mockStorage = { autoLoudnessSettings: { targetLufs: -22 } };
+    holdRemovals = true;
+    releaseRemovals = null;
+    let moved = false;
+    const moving = moveSettingsToSync().then(() => { moved = true; });
+    for (let turn = 0; turn < 12; turn++) await Promise.resolve();
+    assert(moved === false && !!releaseRemovals, 'the move waits for local to be cleared');
+    releaseRemovals();
+    await moving;
+    holdRemovals = false;
+    assert(moved === true && !('autoLoudnessSettings' in mockStorage),
+      'and answers once it is');
+
     mockSyncStorage = {};
     mockStorage = { autoLoudnessSettings: { targetLufs: -22 } };
     failSyncSet = true;
