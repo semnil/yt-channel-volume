@@ -8855,7 +8855,7 @@ async function runTests() {
         `and is stored with the flag and the stream it opened for (${JSON.stringify(entryNow())})`);
     }
 
-    section('Live level: read alone for the popup, it becomes the level in hand, and nothing is applied');
+    section('Live level: read alone for the popup, it becomes the level in hand, and Auto\'s is left as it is');
     {
       const liveRead = (liveLkfs, { videoId = LIVE_VID, source = globalThis.window, type = '__yt_channel_volume_live__' } = {}) => {
         for (const fn of mockEventListeners['message'] || []) {
@@ -8870,8 +8870,10 @@ async function runTests() {
       const saves = liveSaves().length;
       liveRead(-20);
       await settle();
-      assert(ytcv.state.currentLiveLkfs === -20 && ytcv.state.currentGain === playing && liveSaves().length === saves,
-        `the level is taken, and nothing is applied or stored (${ytcv.state.currentLiveLkfs} / ${ytcv.state.currentGain} / ${liveSaves().length - saves})`);
+      assert(ytcv.state.readLiveLkfs === -20 && ytcv.state.currentGain === playing && liveSaves().length === saves,
+        `the level is taken, and nothing is applied or stored (${ytcv.state.readLiveLkfs} / ${ytcv.state.currentGain} / ${liveSaves().length - saves})`);
+      assert(ytcv.state.currentLiveLkfs === -24.8,
+        `Auto's level stays the one the full answer named (${ytcv.state.currentLiveLkfs})`);
       assert(mockSentMessages.some((m) => m?.type === 'stateChanged' && m.liveLkfs === -20 && m.contentLufs === -20),
         `and the popup is told (${JSON.stringify(mockSentMessages.map((m) => m?.liveLkfs))})`);
 
@@ -8884,7 +8886,7 @@ async function runTests() {
       ]) {
         read();
         await settle();
-        assert(ytcv.state.currentLiveLkfs === -20, `${what} leaves the level in hand (${ytcv.state.currentLiveLkfs})`);
+        assert(ytcv.state.readLiveLkfs === -20, `${what} leaves the level in hand (${ytcv.state.readLiveLkfs})`);
       }
 
       // With Auto off, Apply to channel applies the level read last.
@@ -8903,6 +8905,89 @@ async function runTests() {
       const asked = await simulateRuntimeMessage({ type: 'askLiveLevel' });
       assert(asked?.ok === true && mockPostMessages.filter((m) => m?.type === '__yt_channel_volume_live_ask__').length === 1,
         `asked by the popup, the bridge is asked (${JSON.stringify(asked)} / ${JSON.stringify(mockPostMessages)})`);
+
+      // A level read on one stream is not carried to the next video.
+      onAir({ entry: { autoApplyLoudnessLive: true } });
+      liveAnswer(-24.8);
+      await settle();
+      liveRead(-20);
+      await settle();
+      setURL('/watch', 'nextVideoAfterRead');
+      fireNavigateFinish();
+      await settle();
+      const next = ytcv.getState();
+      assert(ytcv.state.readLiveLkfs === null && next.liveLkfs === null && next.contentLufs === null,
+        `a navigation to another video lets the level in hand go (${ytcv.state.readLiveLkfs} / ${next.liveLkfs} / ${next.contentLufs})`);
+    }
+
+    section('Live level: a level read for the popup is not what Auto re-applies or stores in between full answers');
+    {
+      const liveRead = (liveLkfs) => {
+        for (const fn of mockEventListeners['message'] || []) {
+          fn({ source: globalThis.window, data: { type: '__yt_channel_volume_live__', videoId: LIVE_VID, liveLkfs } });
+        }
+      };
+      onAir({ entry: { autoApplyLoudnessLive: true } });
+      liveAnswer(-24.8);
+      await settle();
+      assert(close(ytcv.state.currentGain, liveGain(-24.8)) && close(entryNow().gainLive, liveGain(-24.8)),
+        `the full answer plays and stores its level (${ytcv.state.currentGain} / ${entryNow().gainLive})`);
+      liveRead(-20);
+      await settle();
+      const saves = liveSaves().length;
+
+      // Another tab stores a gain for another channel: the change notification
+      // re-applies Auto for this channel.
+      const other = { name: 'Other', url: 'https://www.youtube.com/channel/UCotherChannel', gainVideo: 0.5 };
+      const before = { ...mockStorage['channelVolumes'] };
+      mockStorage['channelVolumes'] = { ...before, UCotherChannel: other };
+      simulateStorageChange({
+        channelVolumes: { oldValue: before, newValue: mockStorage['channelVolumes'] }
+      });
+      await settle();
+      assert(close(ytcv.state.currentGain, liveGain(-24.8)),
+        `another channel's store leaves Auto playing the full answer's level (${ytcv.state.currentGain})`);
+
+      // A settings write that changes neither the target nor Auto re-applies
+      // Auto's gain through applyPreferredGain, which decides what to store.
+      for (const showGainOverlay of [true, false]) {
+        simulateStorageChange({
+          autoLoudnessSettings: { newValue: { targetLufs: -18, displayUnit: '%', showGainOverlay } }
+        });
+        await settle();
+      }
+      assert(close(ytcv.state.currentGain, liveGain(-24.8)) && close(entryNow().gainLive, liveGain(-24.8))
+        && liveSaves().length === saves,
+        `the overlay switched on and off plays and stores nothing new (${ytcv.state.currentGain} / ${entryNow().gainLive} / ${liveSaves().length - saves})`);
+      const shown = ytcv.getState();
+      assert(shown.liveLkfs === -20 && shown.contentLufs === -20,
+        `the popup goes on being shown the level read (${shown.liveLkfs} / ${shown.contentLufs})`);
+
+      // The next full answer naming that level is what Auto takes.
+      liveAnswer(-20);
+      await settle();
+      assert(ytcv.state.currentLiveLkfs === -20 && close(ytcv.state.currentGain, liveGain(-20))
+        && close(entryNow().gainLive, liveGain(-20)),
+        `a full answer of -20 plays and stores it (${ytcv.state.currentGain} / ${entryNow().gainLive})`);
+
+      // Turning Auto on is a gesture made against what the popup shows: the
+      // level in hand is played, stored, and is Auto's from then on.
+      onAir({ autoLive: false, entry: { autoApplyLoudnessLive: false } });
+      liveAnswer(-24.8);
+      await settle();
+      liveRead(-20);
+      await settle();
+      const on = await popupGesture({ type: 'setAutoApplyLoudness', enabled: true });
+      await settle();
+      assert(on?.ok === true && ytcv.state.currentLiveLkfs === -20 && close(ytcv.state.currentGain, liveGain(-20))
+        && close(entryNow().gainLive, liveGain(-20)) && entryNow().autoApplyLoudnessLive === true,
+        `Auto turned on plays and stores the level in hand (${JSON.stringify(on?.ok)} / ${ytcv.state.currentLiveLkfs} / ${ytcv.state.currentGain} / ${entryNow().gainLive})`);
+      simulateStorageChange({
+        autoLoudnessSettings: { newValue: { targetLufs: -18, displayUnit: '%', showGainOverlay: true } }
+      });
+      await settle();
+      assert(close(ytcv.state.currentGain, liveGain(-20)),
+        `and goes on playing it when Auto is re-applied (${ytcv.state.currentGain})`);
     }
 
     section('Live level: the popup asks for it every second while it is open on a stream');

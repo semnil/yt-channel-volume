@@ -56,8 +56,14 @@
   let currentBaseLoudnessDb = null;
   let currentLoudnessVideoId = '';
   // A live stream's own level (LKFS) as the player names it on air, from the
-  // latest bridge message; null where that message carried none.
+  // latest bridge message; null where that message carried none. This is the
+  // level Auto plays and stores.
   let currentLiveLkfs = null;
+  // The live level in hand: the one the latest bridge message named, or one the
+  // popup's read named since. The popup is shown it and "Apply to channel" and
+  // turning Auto on apply it; nothing else does, so a read alone never moves
+  // what Auto plays or stores.
+  let readLiveLkfs = null;
   // The live gain this page last stored, and for which video and type. A live
   // gain is stored again only when it has moved far enough from this one, for
   // the same video and type.
@@ -132,7 +138,7 @@
   function isCurrentManualGainLocked() {
     return isManualGainLocked(
       isCurrentAutoApplyEnabled(),
-      currentLoudnessDb !== null || currentLiveLkfs !== null
+      currentLoudnessDb !== null || readLiveLkfs !== null
     );
   }
 
@@ -242,6 +248,7 @@
     // Every message says what the player names now, so one without a live
     // level takes the last one away.
     currentLiveLkfs = Number.isFinite(event.data.liveLkfs) ? event.data.liveLkfs : null;
+    readLiveLkfs = currentLiveLkfs;
     const hasLiveContent = typeof event.data.isLiveContent === 'boolean';
     if (hasLiveContent) {
       currentVideoType = event.data.isLiveContent ? 'live' : 'video';
@@ -311,17 +318,18 @@
   }
 
   // The live level alone, which the popup asks for while it is open. A level
-  // the bridge names for the video the URL does becomes the level in hand: the
-  // popup is shown it, and "Apply to channel" applies it. Nothing is applied or
-  // stored here; Auto applies the level when the bridge's full answer arrives.
-  // An answer naming no level leaves the one in hand.
+  // the bridge names for the video the URL does becomes the level in hand
+  // (readLiveLkfs), and the popup is shown it. Auto's level is left as it is:
+  // Auto takes a level only from the bridge's full answer, so nothing that
+  // re-applies Auto's gain in between — a change in storage, a settings write —
+  // plays or stores this one. An answer naming no level leaves the one in hand.
   window.addEventListener('message', (event) => {
     if (event.source !== window) return;
     if (event.data?.type !== '__yt_channel_volume_live__') return;
     const videoId = typeof event.data.videoId === 'string' ? event.data.videoId : '';
     if (!isBridgeMessageForCurrentVideo(videoId)) return;
     if (!Number.isFinite(event.data.liveLkfs)) return;
-    currentLiveLkfs = event.data.liveLkfs;
+    readLiveLkfs = event.data.liveLkfs;
     notifyPopup();
   });
 
@@ -408,8 +416,8 @@
     return calcGainFromLoudness(currentBaseLoudnessDb ?? currentLoudnessDb);
   }
 
-  function calcGainFromLiveLevel() {
-    return calcLiveGain(currentLiveLkfs, targetLufs);
+  function calcGainFromLiveLevel(liveLkfs = currentLiveLkfs) {
+    return calcLiveGain(liveLkfs, targetLufs);
   }
 
   // The start gate. On a live stream whose channel has a gain above 0 stored
@@ -755,6 +763,7 @@
       currentLoudnessDb = null;
       currentBaseLoudnessDb = null;
       currentLiveLkfs = null;
+      readLiveLkfs = null;
       currentLoudnessVideoId = '';
       currentVideoType = 'video';
       currentVideoTypeDetected = false;
@@ -789,15 +798,15 @@
 
   function getState() {
     // A live level is already an absolute one, and goes before the response's.
-    const contentLufs = currentLiveLkfs !== null
-      ? currentLiveLkfs
+    const contentLufs = readLiveLkfs !== null
+      ? readLiveLkfs
       : (currentLoudnessDb !== null ? YT_REFERENCE_LUFS + currentLoudnessDb : null);
     return {
       appliesTo: currentGestureState(),
       channel: currentChannel,
       gain: currentGain,
       loudnessDb: currentLoudnessDb,
-      liveLkfs: currentLiveLkfs,
+      liveLkfs: readLiveLkfs,
       contentLufs,
       targetLufs,
       autoApplyLoudnessVideo: currentAutoApplyLoudnessVideo,
@@ -1060,17 +1069,17 @@
         sendResponse({ ok: false, reason: 'auto apply enabled' });
         return true;
       }
-      if ((currentLoudnessDb === null && currentLiveLkfs === null) || !currentChannel.id) {
+      if ((currentLoudnessDb === null && readLiveLkfs === null) || !currentChannel.id) {
         sendResponse({ ok: false, reason: 'no loudness data' });
         return true;
       }
       // The bridge author is authoritative. DOM is only a fallback while the
       // current name is still empty or a channel-ID placeholder.
       fillCurrentChannelNameFromDomFallback();
-      // A live level goes before the response's, and its gain is stored as it
-      // plays.
-      const live = currentLiveLkfs !== null;
-      const gain = live ? calcGainFromLiveLevel() : calcGainFromLoudness(currentLoudnessDb);
+      // A live level — the one in hand — goes before the response's, and its
+      // gain is stored as it plays.
+      const live = readLiveLkfs !== null;
+      const gain = live ? calcGainFromLiveLevel(readLiveLkfs) : calcGainFromLoudness(currentLoudnessDb);
       commitGain(gain);
       const saved = live
         ? saveLiveChannelGain(currentChannel.id, currentChannel.name, gain, currentVideoType, currentChannel.url, isCurrentAutoApplyEnabled(currentVideoType))
@@ -1138,13 +1147,15 @@
       // Turned on where a level is known, Auto plays its gain at once and that
       // gain is stored with the flag in one write, as Apply to channel stores
       // it; a live level stored this way names its stream as the one the start
-      // gate was opened for. Turned off, or on with no level known, the flag is
-      // written alone.
-      const live = currentLiveLkfs !== null;
+      // gate was opened for. The live level is the one in hand, which Auto
+      // takes as its own from here. Turned off, or on with no level known, the
+      // flag is written alone.
+      const live = readLiveLkfs !== null;
       const storesGain = !!msg.enabled && (live || currentLoudnessDb !== null);
       let written;
       if (storesGain) {
         const videoId = getUrlVideoId();
+        if (live) currentLiveLkfs = readLiveLkfs;
         const gain = live ? calcGainFromLiveLevel() : calcGainFromLoudness(currentLoudnessDb);
         commitGain(gain);
         written = (live
@@ -1205,6 +1216,7 @@
           currentLoudnessDb,
           currentBaseLoudnessDb,
           currentLiveLkfs,
+          readLiveLkfs,
           currentGain,
           audioChain: {
             connected: !!connectedVideo,
@@ -1256,7 +1268,7 @@
         return {
           currentChannel, currentChannelVideoId,
           currentGain, currentLoudnessDb, currentBaseLoudnessDb, currentLoudnessVideoId,
-          currentLiveLkfs, liveSaveBaseline, liveSaveInFlight, liveFollowTimer,
+          currentLiveLkfs, readLiveLkfs, liveSaveBaseline, liveSaveInFlight, liveFollowTimer,
           storedLiveGain, storedLiveGateOpenFor, liveGateOpenFor,
           currentVideoType, currentVideoTypeDetected, currentIsLiveNow, showGainOverlay,
           currentAutoApplyLoudnessVideo, currentAutoApplyLoudnessLive,
@@ -1306,7 +1318,9 @@
           case 'storageSettled': storageSettled = val; break;
           case 'storageMigrated': storageMigrated = val; break;
           case 'currentLoudnessVideoId': currentLoudnessVideoId = val; break;
-          case 'currentLiveLkfs': currentLiveLkfs = val; break;
+          // As a bridge message sets it: the level in hand goes with it.
+          case 'currentLiveLkfs': currentLiveLkfs = val; readLiveLkfs = val; break;
+          case 'readLiveLkfs': readLiveLkfs = val; break;
           case 'currentIsLiveNow': currentIsLiveNow = val; break;
           case 'liveSaveBaseline': liveSaveBaseline = val; break;
           case 'storedLiveGain': storedLiveGain = val; break;
