@@ -8,7 +8,7 @@ Chrome extension (Manifest V3) that remembers volume per YouTube channel and app
 
 - **Per-channel volume memory**: Set it once, and the saved volume applies every time you open a video from that channel
 - **Optimal volume from Content Loudness**: Reads the Content Loudness YouTube measures for each video and computes the optimal volume against the target LUFS. One click saves it to the channel
-- **Per-channel LUFS auto-apply**: The popup shows only the switch for the kind you are watching, Video or Live, and it toggles per channel and kind. For a kind that is on, any video whose LUFS is detected is adjusted to Target LUFS. On a live stream on air it follows that stream's own loudness, as the player's stats for nerds show it, and reads it again every 30 seconds
+- **Per-channel LUFS auto-apply**: The popup shows only the switch for the kind you are watching, Video or Live, and it toggles per channel and kind. For a kind that is on, any video whose LUFS is detected is adjusted to Target LUFS. On a live stream on air it follows that stream's own loudness, as the player's stats for nerds show it, and reads it again every 10 seconds
 - **Global defaults**: The settings page sets the LUFS auto-apply default separately for Video and Live. A channel and kind with no individual Auto setting inherits it
 - **Separate volume for Live and Video**: Within one channel, live streams (archives included) and ordinary videos can hold different volumes
 - **Manual volume**: Set 0–600 % from the slider or the preset buttons, except while Auto is applying a detected LUFS
@@ -47,7 +47,7 @@ Install from the [Chrome Web Store](https://chromewebstore.google.com/detail/yt-
 1. Open a video from the channel
 2. Turn on **Auto-apply LUFS** in the popup for the kind you are watching, Video or Live
 3. On a video whose LUFS can be detected, the gain that matches Target LUFS is applied automatically
-4. On a live stream on air, the stream's own loudness is followed and read again every 30 seconds. Where no loudness can be read, the saved channel volume keeps applying. At the start of a stream, a loudness that would turn the volume up by 10 dB or more over the saved channel volume is not applied: the saved volume keeps playing until the loudness comes within that, and the popup marks the volume as **Gated**. Turning **Auto-apply LUFS** off and on applies the loudness at once
+4. On a live stream on air, the stream's own loudness is followed and read again every 10 seconds. A loudness that calls for a lower volume is applied at once; one that calls for a higher volume raises it by no more than 1.5 dB every 30 seconds, so a short quiet stretch turns the volume up only a little before the stream gets loud again. Where no loudness can be read, the saved channel volume keeps applying. At the start of a stream, a loudness that would turn the volume up by 10 dB or more over the saved channel volume is not applied: the saved volume keeps playing until the loudness comes within that, and the popup marks the volume as **Gated**. Turning **Auto-apply LUFS** off and on applies the loudness at once
 
 ### 3. Settings
 
@@ -85,7 +85,7 @@ background.js (service worker)
 - At a gain of 1.0 (passthrough) the audio chain stays disconnected → avoids the Live Caption flicker
 - YouTube's CSP forbids inline script, so loudnessDb extraction runs in the MAIN world from `page-bridge.js`
 - The Loudness is the one of the audio the player is playing — the audio track, **Stable Volume** and **Voice boost** included, as the player's stats for nerds name it — and it is read again when the player switches that audio mid-video
-- On a live stream on air, the Loudness is the stream's own, as the player's stats for nerds show it. YouTube has not normalized it, so the gain takes it to Target LUFS as it stands. While LUFS auto-apply is on it is read again every 30 seconds, and the channel volume is saved again when it has moved 1 dB or more. While the popup is open it is read every second, so the popup's Loudness and Suggested, and what **Apply to channel** and turning LUFS auto-apply on apply, are the latest; LUFS auto-apply itself goes on playing the level it read last until its own next read
+- On a live stream on air, the Loudness is the stream's own, as the player's stats for nerds show it. YouTube has not normalized it, so the gain takes it to Target LUFS as it stands. While LUFS auto-apply is on it is read again every 10 seconds, and the channel volume is saved again when it has moved 1 dB or more. A volume that has to go up rises by no more than 1.5 dB every 30 seconds, so the popup's Current can stay under Suggested for a while. While the popup is open it is read every second, so the popup's Loudness and Suggested, and what **Apply to channel** and turning LUFS auto-apply on apply, are the latest; LUFS auto-apply itself goes on playing the level it read last until its own next read
 - A channel volume saved from this version on is kept for the video's regular audio, and adjusted to the audio playing; a live stream on air, which has neither a Content Loudness nor **Stable Volume**, plays it as it is. A volume saved on a stream on air, or by an earlier version, plays as it is on every video until it is saved again where the video's Loudness is known
 
 ## Build
