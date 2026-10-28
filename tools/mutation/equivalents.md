@@ -44,25 +44,25 @@ way.
 The navigation observer's watch-page check. `triggerApply` opens with the same
 one.
 
-- `content.js:1028` a guard is dropped ×1 — if (!isWatchPage()) return;
+- `content.js:1036` a guard is dropped ×1 — if (!isWatchPage()) return;
 
 `respondOnce`'s guard against a second answer, and `return true` after a
 synchronous `sendResponse`. Both were measured against Chrome rather than
 reasoned about: a response sent inside the listener is delivered whatever the
 listener returns, and a second one is dropped rather than delivered or thrown.
 
-- `content.js:1150` a guard is dropped ×1 — if (answered) return;
-- `content.js:1164` true becomes false ×1 — return true;
-- `content.js:1171` true becomes false ×1 — return true;
-- `content.js:1177` true becomes false ×1 — return true;
-- `content.js:1183` true becomes false ×1 — return true;
-- `content.js:1187` true becomes false ×1 — return true;
+- `content.js:1158` a guard is dropped ×1 — if (answered) return;
+- `content.js:1172` true becomes false ×1 — return true;
+- `content.js:1179` true becomes false ×1 — return true;
+- `content.js:1185` true becomes false ×1 — return true;
 - `content.js:1191` true becomes false ×1 — return true;
-- `content.js:1220` true becomes false ×1 — return true;
-- `content.js:1224` true becomes false ×1 — return true;
-- `content.js:1229` true becomes false ×1 — return true;
-- `content.js:1246` true becomes false ×1 — return true;
-- `content.js:1271` true becomes false ×1 — return true;
+- `content.js:1195` true becomes false ×1 — return true;
+- `content.js:1199` true becomes false ×1 — return true;
+- `content.js:1228` true becomes false ×1 — return true;
+- `content.js:1232` true becomes false ×1 — return true;
+- `content.js:1237` true becomes false ×1 — return true;
+- `content.js:1254` true becomes false ×1 — return true;
+- `content.js:1279` true becomes false ×1 — return true;
 
 ## popup.js
 

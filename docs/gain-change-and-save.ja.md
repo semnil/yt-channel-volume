@@ -533,7 +533,7 @@ sequenceDiagram
   end
 ```
 
-- きっかけ: `document` の `yt-navigate-finish`。`window` の `popstate`。ドキュメントを見張る `MutationObserver` は、再生ページで、ページの `<video>` 要素が前に処理したものと別になったとき、または URL の動画 ID が `_lastVideoId` と違うときに `triggerApply()` を呼ぶ。`visibilitychange` は、まだどの動画も処理していない再生ページでタブが表示されたときに `triggerApply()` を呼ぶ。最初の読み込みは次の節で説明する。
+- きっかけ: `document` の `yt-navigate-finish`。`window` の `popstate`。ドキュメントを見張る `MutationObserver` は、再生ページで、ページの `<video>` 要素が前に処理したものと別になったとき、または URL の動画 ID が `_lastVideoId` と違うときに `triggerApply()` を呼ぶ。`visibilitychange` は、まだどの動画も処理していない再生ページでタブが表示されたときに `triggerApply()` を呼ぶ。最初の読み込みは次の節で説明する。これらとは別に、ページの `<video>` の `play` は `applyPreferredGain('play')` だけを動かすので、適用のあとで再生が始まったタブは、そのときに Auto 自身の保存かライブの保存をする。
 - `triggerApply()` は `_applyRunning` を鍵にする。適用が動いている間に来た呼び出しはすぐに戻り、列に並ばない。debounce は無い。拡張機能とのつながりが切れていると、見張りを止める。
 - `detectChannel()` は UC の ID だけを返し、ドキュメントの最初の動画 (適用を始めたときに `_lastVideoId` が空) のときだけ聞く。移動のあとはページが離れた動画のチャンネルをまだ示していることがあるので、ブリッジがその動画のチャンネルを名乗るまでチャンネルは空のまま。ページに UC の ID が無いときも同じ。チャンネル ID が無いとき、`applyPreferredGain()` は保存内容を読まない。全チャンネル共通の既定値で Auto が ON でレベルを持っていれば Auto のゲインを、それ以外は 1.0 を鳴らし、何も保存しない。
 - 移動でブリッジ由来の状態を消したときは、ブリッジが `isLiveContent` を送るまで videoType は `'video'` なので、ライブ配信でも最初は動画用の保存ゲインが適用される。
@@ -713,6 +713,7 @@ sequenceDiagram
 | 音声の版の変更 (`audio-change`)、レベルが示された (`playing`) | ブリッジの返事の行と同じ | ブリッジの返事の行と同じ | `watchAudioChanges`、`followPlaying` |
 | ライブの追従タイマー (10 秒) | ブリッジの返事の行と同じ | ブリッジの返事の行と同じ | `syncLiveFollow`、`followLive` |
 | SPA 内の移動、見張り、`visibilitychange` | 変わる | 取り込み後に Auto が ON でレベルがあれば、Auto 自身の保存かライブの保存 | `triggerApply`、`applyVideoVolume`、`applyPreferredGain` |
+| ページの `<video>` の `play` | `applyPreferredGain` による | Auto が ON でレベルがあり、ミュートでないタブでは、Auto 自身の保存かライブの保存 | `play` の受け取り側、`applyPreferredGain` |
 | ポップアップを開く | `applyPreferredGain` による | SPA 内の移動と同じ | `handleMessage` (`forceDetect`) |
 | 起動時、設定画面を開いたとき | 変わらない | 目印が無ければ `channelVolumes` と `unifiedGains` | `foldLegacyGains`、`migrateLegacyAutoGains` |
 | service worker の起動 | 変わらない | local に残っている設定を sync へ移す | `moveSettingsToSync` |

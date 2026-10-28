@@ -10178,6 +10178,35 @@ async function runTests() {
       ytcv.syncLiveFollow();
     }
 
+    section('Auto\'s own save: a tab that starts playing makes it then');
+    {
+      const firePlay = async (target) => {
+        for (const fn of mockEventListeners['play'] || []) fn({ target });
+        await settle();
+      };
+      for (const [what, element, stores] of [
+        ['playing', { paused: false, muted: false }, true],
+        ['muted', { paused: false, muted: true }, false]
+      ]) {
+        await onVideo({ entry: { gainVideo: 0.5, autoApplyLoudnessVideo: true }, loudnessDb: -6 });
+        Object.assign(mockVideoEl, { paused: true, muted: false });
+        simulateBridgeMessage({ videoId: TT_VID, loudnessDb: -9, baseLoudnessDb: -9, isLiveContent: false, channelId: TT_CH });
+        await settle();
+        const auto = () => mockSentMessages.filter((m) => m?.type === 'store:saveChannelGain' && m.channelId === TT_CH);
+        assert(auto().length === 0, `nothing is stored while the video is paused (${JSON.stringify(auto())})`);
+        Object.assign(mockVideoEl, element);
+        await firePlay(mockVideoEl);
+        assert((auto().length === 1 && auto()[0].gain === calcGain(-9, -18)) === stores,
+          `the play of a tab ${what} ${stores ? 'stores Auto\'s gain' : 'stores nothing'} (${JSON.stringify(auto().map((m) => m.gain))})`);
+      }
+      // A play of another element is not this video starting.
+      await onVideo({ entry: { gainVideo: 0.5, autoApplyLoudnessVideo: true }, loudnessDb: -6 });
+      mockSentMessages.length = 0;
+      await firePlay({ id: 'an-ad-preview' });
+      assert(mockSentMessages.filter((m) => m?.type === 'store:saveChannelGain').length === 0,
+        'a play of another element applies nothing');
+    }
+
     section('Navigation: nothing a message brings is stored before the first apply for the new URL');
     {
       await onVideo({ entry: { gainVideo: 0.5, autoApplyLoudnessVideo: true } });

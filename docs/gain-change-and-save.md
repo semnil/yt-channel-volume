@@ -533,7 +533,7 @@ sequenceDiagram
   end
 ```
 
-- The triggers: `yt-navigate-finish` on `document`; `popstate` on `window`; a `MutationObserver` on the document, which on a watch page calls `triggerApply()` when the page's `<video>` element is a different one from the last processed, or the URL's video id differs from `_lastVideoId`; `visibilitychange`, which calls `triggerApply()` when the tab becomes visible on a watch page before any video was processed. The first load is described in the next section.
+- The triggers: `yt-navigate-finish` on `document`; `popstate` on `window`; a `MutationObserver` on the document, which on a watch page calls `triggerApply()` when the page's `<video>` element is a different one from the last processed, or the URL's video id differs from `_lastVideoId`; `visibilitychange`, which calls `triggerApply()` when the tab becomes visible on a watch page before any video was processed. The first load is described in the next section. Apart from these, a `play` of the page's `<video>` runs `applyPreferredGain('play')` alone, so a tab whose video starts playing after its applies makes Auto's own save or the live save then.
 - `triggerApply()` uses `_applyRunning` as a lock. A call that arrives while an apply runs returns at once and is not queued. There is no debounce. When the extension context is invalid, it disconnects the observer.
 - `detectChannel()` returns a UC id only, and it is asked for the document's first video alone (`_lastVideoId` empty when the apply begins). After a navigation the page can still name the channel of the video left, so the channel stays empty until the bridge names it for the video, and so it does where the page carries no UC id. With no channel id, `applyPreferredGain()` reads no entry: it plays the Auto gain where the all-channel default is on with a level held, 1.0 otherwise, and saves nothing.
 - When the navigation cleared the bridge state, videoType is `'video'` until the bridge sends `isLiveContent`, so on a live stream the gain stored for videos is applied first.
@@ -713,6 +713,7 @@ Drawn from: `options.js` `renderChannels` (the `.ch-del` click listener), the `c
 | Rendition change (`audio-change`), level named (`playing`) | As the bridge answer rows | As the bridge answer rows | `watchAudioChanges`, `followPlaying` |
 | Live follow timer (10 s) | As the bridge answer rows | As the bridge answer rows | `syncLiveFollow`, `followLive` |
 | SPA navigation, observer, `visibilitychange` | Yes | Auto's own save or the live save, with Auto on and a level, after the fold | `triggerApply`, `applyVideoVolume`, `applyPreferredGain` |
+| `play` of the page's `<video>` | Through `applyPreferredGain` | Auto's own save or the live save, with Auto on and a level, in a tab that is not muted | the `play` listener, `applyPreferredGain` |
 | Popup open | Through `applyPreferredGain` | As SPA navigation | `handleMessage` (`forceDetect`) |
 | Startup, settings page open | No | `channelVolumes` and `unifiedGains`, when the marker is absent | `foldLegacyGains`, `migrateLegacyAutoGains` |
 | Worker start | No | Settings still in local, moved to sync | `moveSettingsToSync` |

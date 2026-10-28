@@ -1011,6 +1011,14 @@
     return storageReady;
   }
 
+  // The page's video starting to play is applied again, and Auto's own save
+  // is made then.
+  document.addEventListener('play', (event) => {
+    if (!isWatchPage() || event.target !== document.querySelector('video.html5-main-video, video')) return;
+    applyPreferredGain('play').then(notifyPopup)
+      .catch(err => reportFailure('apply failed', err));
+  }, true);
+
   document.addEventListener('yt-navigate-finish', triggerApply);
   window.addEventListener('popstate', triggerApply);
   // Leaving a watch page ends the live follow without waiting for an apply,
