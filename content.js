@@ -70,17 +70,17 @@
   let liveSaveBaseline = null;
   let liveSaveInFlight = false;
   // When a live level last set the gain playing, and for which video; null
-  // until a live gain plays for the video, and again after a settings change.
-  // `at` is null from a message that names no live level until the next live
-  // gain, so a level coming back starts its count from there, and -Infinity
-  // after a settings change, so the next live gain plays as it stands.
+  // until a live gain plays for the video. `at` is null from a message that
+  // names no live level until the next live gain, so a level coming back
+  // starts its count from there, and -Infinity after a settings change, so
+  // the next live gain plays as it stands.
   let liveRaiseFrom = null;
   // The live level the bridge last named for the video, and how far the one it
   // names now rose over it (to 0.1 dB), or null.
   let liveLevelBefore = null;
   let liveLevelRise = null;
   // The gain the channel's entry holds for live, taken with the Auto flags;
-  // the first live gain a page plays is held to it (liveGainToPlay).
+  // the first live gain a page plays is held to 3 dB over it (liveGainToPlay).
   let storedLiveGain = null;
   let currentGain = 1.0;
   let targetLufs = DEFAULT_TARGET_LUFS;
