@@ -758,39 +758,33 @@
   // bridge message, another tab's write, a settings change, the live follow —
   // is held back rather than applied. The preview lasts until its gesture
   // ends: the save (setGain) arrives, or PREVIEW_IDLE_MS pass after the last
-  // preview. A gesture that ends with no save and a gain held back, and a save
-  // refused after a preview, apply what storage holds then. A preview whose
-  // state has moved holds nothing back.
+  // preview; the popup sends the preview again while the slider is held, so
+  // a gesture still held does not end. A gesture that ends with no save, and
+  // a save refused after a preview, apply what storage holds then. A preview
+  // whose state has moved holds nothing back.
   const PREVIEW_IDLE_MS = 2000;
   let preview = null;
 
   function startPreview(appliesTo) {
-    const held = preview?.appliesTo === appliesTo && preview.held;
     if (preview) clearTimeout(preview.timer);
-    preview = { appliesTo, held, timer: setTimeout(endIdlePreview, PREVIEW_IDLE_MS) };
+    preview = { appliesTo, timer: setTimeout(endIdlePreview, PREVIEW_IDLE_MS) };
   }
 
-  // Hands back whether a gain was held back during the preview.
   function endPreview() {
-    if (!preview) return false;
+    if (!preview) return;
     clearTimeout(preview.timer);
-    const { held } = preview;
     preview = null;
-    return held;
   }
 
   function endIdlePreview() {
-    if (!endPreview()) return;
+    endPreview();
     applyPreferredGain().then(notifyPopup)
       .catch(err => reportFailure('apply failed', err));
   }
 
-  // Whether a slider preview holds back a gain from elsewhere now; one it holds
-  // is recorded.
+  // Whether a slider preview holds back a gain from elsewhere now.
   function previewHoldsGain() {
-    if (!preview || preview.appliesTo !== currentGestureState()) return false;
-    preview.held = true;
-    return true;
+    return !!preview && preview.appliesTo === currentGestureState();
   }
 
   function commitGainFromElsewhere(value) {

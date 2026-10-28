@@ -314,6 +314,24 @@
   const releaseSliderPointer = () => { sliderPointerHeld = false; };
   volumeSlider.addEventListener('pointerup', releaseSliderPointer);
   volumeSlider.addEventListener('pointercancel', releaseSliderPointer);
+  // While the pointer is held on the slider after a preview it has not saved,
+  // the preview is sent again every PREVIEW_KEEP_ALIVE_MS, so the tab keeps
+  // the gesture for as long as it is held and ends it once the sending stops.
+  const PREVIEW_KEEP_ALIVE_MS = 1000;
+  let previewUnsaved = false;
+  let keepAliveSet = false;
+
+  function keepPreviewAlive() {
+    if (keepAliveSet) return;
+    keepAliveSet = true;
+    setTimeout(() => {
+      keepAliveSet = false;
+      if (!sliderPointerHeld || !previewUnsaved || !currentChannel.id) return;
+      sendManualGain({ type: 'setGainLive', appliesTo: sliderAppliesTo, gain: lastGain });
+      keepPreviewAlive();
+    }, PREVIEW_KEEP_ALIVE_MS);
+  }
+
   window.addEventListener('blur', () => {
     if (!sliderPointerHeld) return;
     sliderPointerHeld = false;
@@ -337,6 +355,8 @@
         appliesTo: sliderAppliesTo,
         gain
       });
+      previewUnsaved = true;
+      keepPreviewAlive();
     }
   });
 
@@ -345,6 +365,7 @@
     if (sliderGestureEnded) return;
     const appliesTo = sliderAppliesTo ?? currentAppliesTo;
     sliderAppliesTo = null;
+    previewUnsaved = false;
     if (currentChannel.id) {
       sendManualGain({
         type: 'setGain',

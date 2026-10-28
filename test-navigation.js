@@ -10048,6 +10048,70 @@ async function runTests() {
       ytcv.endPreview();
     }
 
+    section('Slider preview: a slider still held is sent again, and the tab waits for it');
+    {
+      // The popup: while the pointer stays down after a preview, the preview
+      // goes again once a second; let go of, it stops.
+      const popup = makePopup({
+        answer: async (message) => (message.type === 'setGainLive' || message.type === 'setGain'
+          ? { ok: true }
+          : {
+            isWatchPage: true,
+            channel: { id: TT_CH, name: 'Transit', url: TT_URL },
+            appliesTo: TT_CH + '|video|' + TT_VID,
+            loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0,
+            targetLufs: -18, videoType: 'video'
+          })
+      });
+      await popup.ready();
+      popup.asked.length = 0;
+      const previews = () => popup.asked.filter((m) => m.type === 'setGainLive');
+      popup.node('volumeSlider').value = '300';
+      await popup.fire('volumeSlider', 'pointerdown');
+      await popup.fire('volumeSlider', 'input');
+      await popup.runTimers();
+      await popup.runTimers();
+      assert(previews().length === 3 && previews().every((m) => m.gain === 3.0 && m.appliesTo === TT_CH + '|video|' + TT_VID),
+        `the held preview is sent again each second (${JSON.stringify(previews())})`);
+      await popup.fire('volumeSlider', 'pointerup');
+      await popup.runTimers();
+      await popup.runTimers();
+      assert(previews().length === 3, `and no longer once the pointer is let go of (${previews().length})`);
+      popup.asked.length = 0;
+      popup.node('volumeSlider').value = '200';
+      await popup.fire('volumeSlider', 'pointerdown');
+      await popup.fire('volumeSlider', 'input');
+      await popup.fire('volumeSlider', 'change');
+      await popup.runTimers();
+      assert(previews().length === 1, `nor after the preview is saved (${previews().length})`);
+      // Inputs one after another while held set one wait: the preview goes
+      // again once a second, not once for each input.
+      await popup.fire('volumeSlider', 'pointerup');
+      await popup.runTimers();
+      popup.asked.length = 0;
+      popup.node('volumeSlider').value = '250';
+      await popup.fire('volumeSlider', 'pointerdown');
+      await popup.fire('volumeSlider', 'input');
+      await popup.fire('volumeSlider', 'input');
+      await popup.fire('volumeSlider', 'input');
+      await popup.runTimers();
+      assert(previews().length === 4, `three inputs held a second send the preview again once (${previews().length})`);
+      await popup.fire('volumeSlider', 'pointerup');
+      await popup.runTimers();
+
+      // The tab: each preview starts the wait again, and once they stop the
+      // gesture ends 2 s after the last one with the stored gain.
+      await onVideo();
+      await popupGesture({ type: 'setGainLive', gain: 3.0 });
+      await popupGesture({ type: 'setGainLive', gain: 3.0 });
+      assert(heldPreviewEnds.length === 1 && ytcv.state.currentGain === 3.0,
+        `a preview sent again restarts the one wait (${heldPreviewEnds.length})`);
+      const ended = await runPreviewEnds();
+      await settle();
+      assert(ended === 1 && ytcv.state.currentGain === 0.5,
+        `a gesture whose previews stopped ends with the stored gain, nothing else having come (${ytcv.state.currentGain})`);
+    }
+
     section('Settings change: Auto\'s save dropped by a notification during its read is made again');
     {
       await onVideo({ entry: { gainVideo: 0.7, gainVideoPlain: true, autoApplyLoudnessVideo: true }, loudnessDb: -6 });

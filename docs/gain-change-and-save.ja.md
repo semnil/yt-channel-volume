@@ -191,10 +191,11 @@ sequenceDiagram
 - `pointerdown` も `keydown` も無いまま来た `input` は、その `input` 自身が `currentAppliesTo` の写しを取る。1 回のドラッグの間の `input` は、すべて同じ写しを運ぶ。
 - 「Manual Volume」(スライダーとプリセット) は、その種別の Auto が ON で Loudness が表示されている間はポップアップ側で操作できなくなり、`content.js` も同じ状態を断る。
 - `input` イベント 1 回ごとに `setGainLive` を 1 回送る。debounce は無い。
-- 試し聞きが続いていて、`currentGestureState()` がまだその `appliesTo` と同じ間は、ほかから来たゲインをかけずに取っておく: `applyPreferredGain`、`applyAutomaticLoudnessGain`、`channelVolumes` の変更の受け取り側は `commitGainFromElsewhere` を通してゲインを入れ、この関数はゲインをそのままにして、取っておいたことを記録する。`commitLiveGain` はライブのゲインを出す前に戻るので、ブリッジのメッセージでは `liveRaiseFrom` はそのまま残る。受け取り側は `liveGainToPlay` でライブのゲインを出してから取っておくので、別のタブの保存が届くと、`liveRaiseFrom` は試し聞きのゲインを基準に進む。それぞれのほかの仕事 (受け取る状態、Auto 自身の保存、ライブの保存の判定) は続ける。状態が動いた試し聞きは、何も取っておかない。
-- 試し聞きは、`setGain` が来たとき (次の節を参照) か、最後に受け付けた `setGainLive` から `PREVIEW_IDLE_MS` (2000 ms) たったときに終わる。後者で終わり、取っておいたゲインがあるときは、`applyPreferredGain()` がその時点の保存内容をかけ、ポップアップに知らせる。
+- 試し聞きが続いていて、`currentGestureState()` がまだその `appliesTo` と同じ間は、ほかから来たゲインをかけずに取っておく: `applyPreferredGain`、`applyAutomaticLoudnessGain`、`channelVolumes` の変更の受け取り側は `commitGainFromElsewhere` を通して (ライブのゲインは `commitLiveGain` を通して) ゲインを入れ、これらはゲインをそのままにする。`commitLiveGain` はライブのゲインを出す前に戻るので、ブリッジのメッセージでは `liveRaiseFrom` はそのまま残る。受け取り側は `liveGainToPlay` でライブのゲインを出してから取っておくので、別のタブの保存が届くと、`liveRaiseFrom` は試し聞きのゲインを基準に進む。それぞれのほかの仕事 (受け取る状態、Auto 自身の保存、ライブの保存の判定) は続ける。状態が動いた試し聞きは、何も取っておかない。
+- ポップアップが保存していない試し聞きのあとでスライダーをポインターで押さえ続けている間は、ポップアップはその試し聞きを `PREVIEW_KEEP_ALIVE_MS` (1000 ms、`keepPreviewAlive`) ごとに送り直し、タブはそれを受け付けるたびに待ち直す。送り直しは、ポインターを離したとき、試し聞きを保存したとき、ポップアップを閉じたときに止まる。
+- 試し聞きは、`setGain` が来たとき (次の節を参照) か、最後に受け付けた `setGainLive` から `PREVIEW_IDLE_MS` (2000 ms) たったときに終わる。後者で終わると、`applyPreferredGain()` がその時点の保存内容をかけ、ポップアップに知らせる。
 
-図のもと: `popup.js` の `beginSliderGesture`、`volumeSlider` の `input` の受け取り側、`sendManualGain`、`refreshDisplay`。`content.js` の `handleMessage` (`setGainLive`)、`currentGestureState`、`isCurrentManualGainLocked`、`commitGain`、`startPreview`、`endPreview`、`endIdlePreview`、`commitGainFromElsewhere`。
+図のもと: `popup.js` の `beginSliderGesture`、`volumeSlider` の `input` の受け取り側、`keepPreviewAlive`、`sendManualGain`、`refreshDisplay`。`content.js` の `handleMessage` (`setGainLive`)、`currentGestureState`、`isCurrentManualGainLocked`、`commitGain`、`startPreview`、`endPreview`、`endIdlePreview`、`commitGainFromElsewhere`。
 
 ## ポップアップ: スライダーを離したとき (`change`) とプリセットボタン
 
@@ -697,7 +698,7 @@ sequenceDiagram
 | ポップアップのスライダーの `change`、プリセットボタン | 変わる | される: Auto の状態をチャンネル個別のフラグにして `saveChannelGain` | `handleMessage` (`setGain`)、`saveManualChannelGain` |
 | `setGain` が `state moved` で断られた、または試し聞きのあとに `auto apply controls current gain` で断られた | `applyPreferredGain` が決める値に戻る | されない | `restoreGainAfterFailedSave` |
 | スライダーの試し聞きが続いている間に、ほかから来たゲイン | 操作が終わるまで変わらない | その出来事の行と同じ | `commitGainFromElsewhere` |
-| `setGain` の無いまま終わった試し聞きで、取っておいたゲインがある | `applyPreferredGain` が決める値に戻る | ブリッジの返事の行と同じ | `endIdlePreview` |
+| `setGain` の無いまま終わった試し聞き | `applyPreferredGain` が決める値に戻る | ブリッジの返事の行と同じ | `endIdlePreview` |
 | `loudnessDb` での「チャンネルに適用」 | 変わる | される: `calcGain(baseLoudnessDb)`、フラグ `false`、基準が分かれば印 | `handleMessage` (`applyLoudness`)、`saveManualChannelGain` |
 | ライブのレベルでの「チャンネルに適用」 | 変わる | される: ライブのゲイン、フラグ `false`、印なし | `handleMessage` (`applyLoudness`)、`saveLiveChannelGain` |
 | レベルがあるときに「LUFS 自動適用」を ON | 変わる | される: ゲインとフラグ `true` を 1 回で | `handleMessage` (`setAutoApplyLoudness`) |
