@@ -216,7 +216,9 @@
     const url = (typeof args[0] === 'string') ? args[0] : (args[0]?.url || '');
     if (url.includes('/youtubei/v1/player')) {
       result.then(resp => resp.clone().json()).then(data => {
-        if (isWatchPage() && isCurrentVideo(data)) {
+        // An answer is a response whose videoDetails name the video the URL
+        // does; one naming no video, an ad break's among them, is left alone.
+        if (isWatchPage() && data?.videoDetails?.videoId && isCurrentVideo(data)) {
           postResult(preferPlayingLevel(extractFromPlayerResponse(data), data), 'fetch');
         }
       }).catch(() => {});

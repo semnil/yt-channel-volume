@@ -10137,6 +10137,21 @@ async function runTests() {
       assert(answered.last()?.isLiveContent === false, 'a response that names the video still does');
     }
 
+    section('Bridge: a player response that names no video is not an answer');
+    {
+      const bridge = createBridge();
+      // A live stream's ad break comes back from /youtubei/v1/player/ad_break
+      // with no videoDetails.
+      const adBreak = { adBreakHeartbeatParams: 'x', playerAds: [] };
+      await bridge.fetchPlayer(adBreak, 'https://www.youtube.com/youtubei/v1/player/ad_break?prettyPrint=false');
+      assert(bridge.posted.length === 0, `an ad break's response is not passed on (${JSON.stringify(bridge.posted)})`);
+      await bridge.fetchPlayer({ videoDetails: {} });
+      assert(bridge.posted.length === 0, 'nor one whose videoDetails name no video');
+      await bridge.fetchPlayer(playerResponse({ loudnessDb: -3.25, isLiveContent: true }));
+      assert(bridge.posted.length === 1 && bridge.last()?.isLiveContent === true,
+        `while the player response for the URL's video is (${JSON.stringify(bridge.last())})`);
+    }
+
     section('Popup: a drag the popup loses focus during ends there');
     {
       const popup = makePopup({

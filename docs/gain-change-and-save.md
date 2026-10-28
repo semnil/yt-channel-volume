@@ -392,7 +392,7 @@ sequenceDiagram
   alt source define
     Y->>B: ytInitialPlayerResponse is assigned
   else source fetch
-    Y->>B: a /youtubei/v1/player response passes the fetch hook
+    Y->>B: a /youtubei/v1/player response naming the URL's video passes the fetch hook
   else source request
     C->>B: postMessage __yt_channel_volume_request__
     Note over B: watchAudioChanges() listens to onPlaybackAudioChange once per player element
@@ -432,7 +432,8 @@ sequenceDiagram
 
 The bridge posts under these conditions:
 
-- `define` and `fetch`: on a watch page (`/watch`, a path under `/live/`, or a channel's live URL whose canonical link names a stream), when the response's `videoDetails.videoId` is the URL's video or either is missing (`isCurrentVideo`).
+- `define`: on a watch page (`/watch`, a path under `/live/`, or a channel's live URL whose canonical link names a stream), when the response's `videoDetails.videoId` is the URL's video or either is missing (`isCurrentVideo`).
+- `fetch`: on a watch page, when the response carries a `videoDetails.videoId` and it is the URL's video (where the URL names none, whichever it is). A response with no video id there, such as the one from `/youtubei/v1/player/ad_break`, is not posted.
 - `request`: whenever `content.js` asks. The answer is taken from the response kept from load when it names the URL's video; where that gives neither a level nor a channel id, from the first of the page's responses (`ytd-watch-flexy`, then `movie_player.getPlayerResponse()`). `isLiveNow` comes from the newest of those that names the URL's video. Where none of them names the URL's video, the answer carries `isLiveContent: null`, which `content.js` does not take, so the tab keeps the type it holds.
 - `audio-change`: on a watch page, each time the player fires `onPlaybackAudioChange`.
 - `playing`: the first look that finds a `cont.` or `live.` level in the volume line.

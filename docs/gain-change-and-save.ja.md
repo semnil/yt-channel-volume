@@ -392,7 +392,7 @@ sequenceDiagram
   alt source define
     Y->>B: ytInitialPlayerResponse に値が入る
   else source fetch
-    Y->>B: /youtubei/v1/player の応答が fetch のフックを通る
+    Y->>B: URL の動画を示す /youtubei/v1/player の応答が fetch のフックを通る
   else source request
     C->>B: postMessage __yt_channel_volume_request__
     Note over B: watchAudioChanges() がプレイヤーの要素ごとに 1 回 onPlaybackAudioChange を受け取るようにする
@@ -432,7 +432,8 @@ sequenceDiagram
 
 ブリッジが送る条件:
 
-- `define` と `fetch`: 再生ページ (`/watch`、`/live/` の下のパス、または正規リンクが配信を示すチャンネルのライブ URL) で、応答の `videoDetails.videoId` が URL の動画であるか、どちらかが無いとき (`isCurrentVideo`)。
+- `define`: 再生ページ (`/watch`、`/live/` の下のパス、または正規リンクが配信を示すチャンネルのライブ URL) で、応答の `videoDetails.videoId` が URL の動画であるか、どちらかが無いとき (`isCurrentVideo`)。
+- `fetch`: 再生ページで、応答が `videoDetails.videoId` を持ち、それが URL の動画のとき (URL が動画を示さないときは、どの動画でもよい)。そこに動画 ID が無い応答 (`/youtubei/v1/player/ad_break` のものなど) は送らない。
 - `request`: `content.js` が聞いたときはいつでも。返事は、読み込み時に取っておいた応答が URL の動画のものならそれから取る。それでレベルもチャンネル ID も得られないときは、ページが持つ応答の 1 つ目 (`ytd-watch-flexy`、その次に `movie_player.getPlayerResponse()`) から取る。`isLiveNow` は、URL の動画を示すもののうち一番新しいものから取る。どれも URL の動画を示さないときは、返事は `isLiveContent: null` を運ぶ。`content.js` はこれを受け取らないので、タブは持っている種別のままになる。
 - `audio-change`: 再生ページで、プレイヤーが `onPlaybackAudioChange` を出すたび。
 - `playing`: 音量の行に `cont.` か `live.` のレベルを初めて見つけたとき。

@@ -98,8 +98,8 @@ second guards is inside a `try { } catch (_) {}`, which takes what a missing
 player or a missing method throws.
 
 - `page-bridge.js:178` a guard is always taken ×1 — if (window.ytInitialPlayerResponse) {
-- `page-bridge.js:244` && becomes || ×1 — &&
-- `page-bridge.js:244` a guard is always taken ×1 — if (player && typeof player.getPlayerResponse === 'function') {
+- `page-bridge.js:246` && becomes || ×1 — &&
+- `page-bridge.js:246` a guard is always taken ×1 — if (player && typeof player.getPlayerResponse === 'function') {
 
 The player's stable volume setting and its stats line are read the same way:
 each call is inside a `try { } catch (_) {}`, and what a missing player or a
@@ -110,8 +110,8 @@ stored setting, or a level or volume line of `null`.
 - `page-bridge.js:56` a guard is always taken ×1 — if (player && typeof player.getDrcUserPreference === 'function') {
 - `page-bridge.js:94` || becomes && ×1 — ||
 - `page-bridge.js:94` a guard is dropped ×1 — if (!player || typeof player.getStatsForNerds !== 'function') return nul
-- `page-bridge.js:421` && becomes || ×1 — &&
-- `page-bridge.js:421` a guard is always taken ×1 — if (moviePlayer && typeof moviePlayer.getStatsForNerds === 'function') {
+- `page-bridge.js:423` && becomes || ×1 — &&
+- `page-bridge.js:423` a guard is always taken ×1 — if (moviePlayer && typeof moviePlayer.getStatsForNerds === 'function') {
 
 ## tools/mutation/bail.mjs
 
