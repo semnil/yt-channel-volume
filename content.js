@@ -543,8 +543,11 @@
   // A live gain moves with the stream, so it is not stored on every apply: the
   // first one for a video is stored, and after that one that has moved
   // LIVE_SAVE_STEP_DB or more from the last gain stored, the move taken to the
-  // 0.1 dB the player names levels in. What was decided is handed back as it
-  // stands.
+  // 0.1 dB the player names levels in. Nothing is stored while the gain
+  // playing is under the one the level asks for (the start cap, the rise cut
+  // or the raise limit holding it); the gain stored is the one the level asks
+  // for, once the gain playing has reached it. What was decided is handed back
+  // as it stands.
   const LIVE_SAVE_STEP_DB = 1;
 
   async function evaluateLiveSave(source) {
@@ -573,6 +576,8 @@
       result.reason = 'not following';
     } else if (result.decision === 'skip') {
       result.reason = 'under step';
+    } else if (currentGain < gain * (1 - 1e-9)) {
+      result.reason = 'held under the level';
     } else if (!storageMigrated) {
       // A flagless gain stored before the fold reads as a manual save to it.
       result.reason = 'before fold';

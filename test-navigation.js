@@ -8696,7 +8696,7 @@ async function runTests() {
       await settle();
       assert(dbOver(ytcv.state.currentGain, capped) < 0.01,
         `the display unit changed under the cap leaves it (${dbOver(ytcv.state.currentGain, capped)})`);
-      assert(close(entryNow().gainLive, liveGain(-28)), `and the stored gain is the one the level asks for (${entryNow().gainLive})`);
+      assert(entryNow().gainLive === 1.0, `and nothing is stored while the cap holds it (${entryNow().gainLive})`);
 
       noRise();
       liveAnswer(-14);
@@ -8832,6 +8832,7 @@ async function runTests() {
       await settle();
       assert(liveSaves().length === 2 && close(entryNow().gainLive, liveGain(-23.7)),
         `1.1 dB from the stored gain is stored, though 0.3 dB from the last (${liveSaves().length} / ${entryNow().gainLive})`);
+      raiseInFull();
       liveAnswer(-24.8);
       await settle();
       assert(liveSaves().length === 3 && close(entryNow().gainLive, liveGain(-24.8)),
@@ -8939,6 +8940,7 @@ async function runTests() {
       // under it as the arithmetic comes out.
       const exact = gainChangeDb(liveGain(-44.5, -30), liveGain(-45.5, -30));
       assert(exact < 1 && exact > 0.999, `the exact change falls just short of 1 dB (${exact})`);
+      noRise();
       liveAnswer(-44.5);
       await settle();
       assert(liveSaves().length === 2 && close(entryNow().gainLive, liveGain(-44.5, -30)),
@@ -8960,6 +8962,7 @@ async function runTests() {
         `0.9 dB a hair over is a skip too (${over} / ${JSON.stringify(nearly)})`);
       ytcv._set('liveSaveBaseline', { videoId: LIVE_VID, videoType: 'live', gain: liveGain(-44.5, -30) });
       ytcv._set('currentLiveLkfs', -43.5);
+      ytcv._set('currentGain', liveGain(-43.5, -30));
       const at = await ytcv.evaluateLiveSave('check');
       assert(at.decision === 'delta' && at.deltaDb === 1 && at.saved === true && at.ok === true,
         `1.0 dB is a delta, and says 1 (${JSON.stringify(at)})`);
@@ -9014,7 +9017,8 @@ async function runTests() {
         assert(result.saved === false && result.reason === 'not following' && liveSaves().length === 0,
           `${what} nothing is stored (${JSON.stringify(result)} / ${liveSaves().length})`);
       }
-      // With all four in place it is.
+      // With all four in place, and the level's gain playing, it is.
+      ytcv._set('currentGain', liveGain(-20));
       const control = await ytcv.evaluateLiveSave('control');
       assert(control.saved === true && control.ok === true && liveSaves().length === 1,
         `with all of them in place it is stored (${JSON.stringify(control)} / ${liveSaves().length})`);
@@ -9153,8 +9157,8 @@ async function runTests() {
       const capped = await simulateRuntimeMessage({ type: 'getState' });
       assert(capped?.liveLkfs === -28 && capped?.contentLufs === -28 && !('liveGateHolds' in capped),
         `the level is shown as it is named (${capped?.liveLkfs} / ${capped?.contentLufs} / ${JSON.stringify(capped)})`);
-      assert(liveSaves().length === 1 && close(entryNow().gainLive, liveGain(-28)) && !('liveGateOpenFor' in entryNow()),
-        `the gain the level asks for is stored, naming no stream (${liveSaves().length} / ${JSON.stringify(entryNow())})`);
+      assert(liveSaves().length === 0 && entryNow().gainLive === 1.0,
+        `nothing is stored while the cap holds it (${liveSaves().length} / ${JSON.stringify(entryNow())})`);
       assert(heldLiveFollows.length === 1, `and the stream is followed on (${heldLiveFollows.length})`);
       const preview = await popupGesture({ type: 'setGainLive', gain: 0.8 });
       assert(preview?.ok === false && preview?.reason === 'auto apply controls current gain',
@@ -9163,8 +9167,14 @@ async function runTests() {
       ago(30000);
       liveAnswer(-28);
       await settle();
-      assert(close(dbOver(ytcv.state.currentGain, 1.0), 4.5),
-        `30 s on it has risen 1.5 dB more (${dbOver(ytcv.state.currentGain, 1.0)})`);
+      assert(close(dbOver(ytcv.state.currentGain, 1.0), 4.5) && liveSaves().length === 0,
+        `30 s on it has risen 1.5 dB more, and still nothing is stored (${dbOver(ytcv.state.currentGain, 1.0)} / ${liveSaves().length})`);
+      raiseInFull();
+      liveAnswer(-28);
+      await settle();
+      assert(close(ytcv.state.currentGain, liveGain(-28)) && liveSaves().length === 1
+        && close(entryNow().gainLive, liveGain(-28)) && !('liveGateOpenFor' in entryNow()),
+        `once it reaches the level, the level's gain is stored, naming no stream (${liveSaves().length} / ${JSON.stringify(entryNow())})`);
 
       // Within the cap, the first gain plays as it stands.
       onAir({ entry: { autoApplyLoudnessLive: true, gainLive: 1.0 } });
@@ -9223,6 +9233,41 @@ async function runTests() {
         `and is stored with the flag (${JSON.stringify(entryNow())})`);
     }
 
+    section('Start cap: what is stored while it holds is what plays when the level goes');
+    {
+      // The level lost: the stored gain plays, and it is the one from before.
+      onAir({ entry: { autoApplyLoudnessLive: true, gainLive: 1.0 } });
+      liveAnswer(-28);
+      await settle();
+      liveAnswer(null);
+      await settle();
+      assert(ytcv.state.currentGain === 1.0 && entryNow().gainLive === 1.0,
+        `with the level lost the stored gain from before plays (${ytcv.state.currentGain} / ${entryNow().gainLive})`);
+
+      // The stream opened again: the cap is taken from that same stored gain.
+      onAir({ entry: { autoApplyLoudnessLive: true, gainLive: entryNow().gainLive } });
+      liveAnswer(-28);
+      await settle();
+      assert(close(dbOver(ytcv.state.currentGain, 1.0), 3), `opened again it is capped again (${dbOver(ytcv.state.currentGain, 1.0)})`);
+
+      // Auto turned off: the stored gain from before plays.
+      const off = await popupGesture({ type: 'setAutoApplyLoudness', enabled: false });
+      await settle();
+      assert(off?.ok === true && ytcv.state.currentGain === 1.0, `with Auto off the stored gain from before plays (${ytcv.state.currentGain})`);
+
+      // An evaluation with the gain playing under the level's says so.
+      onAir({ entry: { autoApplyLoudnessLive: true } });
+      ytcv._set('currentLiveLkfs', -20);
+      ytcv._set('currentGain', liveGain(-20) * 0.99);
+      const held = await ytcv.evaluateLiveSave('held');
+      assert(held.decision === 'open' && held.saved === false && held.reason === 'held under the level' && liveSaves().length === 0,
+        `a gain held under the level's is not stored (${JSON.stringify(held)})`);
+      ytcv._set('currentGain', liveGain(-20));
+      const reached = await ytcv.evaluateLiveSave('reached');
+      assert(reached.saved === true && reached.ok === true && close(entryNow().gainLive, liveGain(-20)),
+        `the level's gain playing is stored (${JSON.stringify(reached)})`);
+    }
+
     section('Rise cut: a level 1 dB or more over the one named before it is taken 3 dB louder');
     {
       onAir({ entry: { autoApplyLoudnessLive: true } });
@@ -9233,7 +9278,7 @@ async function runTests() {
       await settle();
       assert(close(ytcv.state.currentGain, liveGain(-25.9)) && ytcv.state.liveLevelRise === 1.1,
         `1.1 dB up plays as if 3 dB louder (${ytcv.state.currentGain} / ${ytcv.state.liveLevelRise})`);
-      assert(close(entryNow().gainLive, liveGain(-28.9)), `while the gain the level asks for is stored (${entryNow().gainLive})`);
+      assert(close(entryNow().gainLive, liveGain(-30)), `and nothing is stored while the cut holds it (${entryNow().gainLive})`);
       liveAnswer(-28.9);
       await settle();
       assert(dbOver(ytcv.state.currentGain, liveGain(-25.9)) < 0.01,
@@ -9241,7 +9286,8 @@ async function runTests() {
       ago(60000);
       liveAnswer(-28.9);
       await settle();
-      assert(close(ytcv.state.currentGain, liveGain(-28.9)), `60 s on it is back at the level's gain (${ytcv.state.currentGain})`);
+      assert(close(ytcv.state.currentGain, liveGain(-28.9)) && close(entryNow().gainLive, liveGain(-28.9)),
+        `60 s on it is back at the level's gain, which is stored (${ytcv.state.currentGain} / ${entryNow().gainLive})`);
 
       // The rise is taken to 0.1 dB before it is compared.
       raiseInFull();
