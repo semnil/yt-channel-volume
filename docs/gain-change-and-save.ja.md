@@ -15,7 +15,7 @@
 | `background.js` | Manifest V3 (MV3、Chrome 拡張機能の今の形式) の service worker (拡張機能の裏側で動くスクリプト) | `channelVolumes` と設定への書き込みをすべて受け持つ。起動のたびに、`chrome.storage.local` に残っている設定を `chrome.storage.sync` へ移す |
 | `popup.js` | ツールバーのポップアップ | 視聴者の操作を、開いているタブの `content.js` に送る |
 | `options.js` | 設定画面。専用のタブで開く | 設定の書き込み、チャンネルの削除、旧形式の取り込みを `background.js` に頼む |
-| `chrome.storage.local`、`chrome.storage.sync` | ブラウザ | 下の保存キーを持つ。設定は sync (同じプロフィールでサインインしたどのマシンでも Chrome が同じ中身に保つ場所)、ほかは local に置く。`content.js` と `options.js` は、両方の場所の `chrome.storage.onChanged` (保存内容が変わったという知らせ) を受け取る |
+| `chrome.storage.local`、`chrome.storage.sync` | ブラウザ | 下の保存キーを持つ。設定は sync、ほかは local に置く。sync は、利用者が Chrome の同期を有効にしていれば、その利用者がサインインしているすべての Chrome と同期され、無効なら local と同じに振る舞う ([`chrome.storage`](https://developer.chrome.com/docs/extensions/reference/api/storage))。`content.js` と `options.js` は、両方の場所の `chrome.storage.onChanged` (保存内容が変わったという知らせ) を受け取る |
 | GainNode | タブの中の Web Audio API (ブラウザで音声を加工する仕組み) のつながり: `<video>`、`MediaElementSource`、`GainNode`、出力先 | 適用ゲインで音を鳴らす |
 
 ### 保存キー
@@ -653,7 +653,7 @@ sequenceDiagram
 
 - 操作するもの: 「Target LUFS」(スライダーの `change`)、「全チャンネルの LUFS 自動適用」(Video と Live のトグル)、「表示単位」(`%` / `dB` のボタン)、「ゲイン表示」。どれも 1 項目で `saveSetting` を呼ぶ。
 - `saveSetting` は、最初の読み込みが終わるまで (`settingsLoaded`) は書かずに戻り、それまでは画面の部品も操作できない状態で出てくる。その項目と値を `store:saveSetting` として `background.js` に送る。そこでは `SETTINGS_WRITES.saveSetting` が、5 つのどれでもない項目と、その項目が持てない値を断り (`write refused`)、`readSettings()` で読んだ設定を、その項目を置き換えて sync に書き戻す。この書き込みは、設定を sync へ移す処理と同じ列 `queueSettingsWrite()` に並ぶ。
-- 同じプロフィールでサインインしたほかのマシンが書いた設定も、同じく `chrome.storage.sync` の知らせで届く。
+- Chrome の同期が有効なら、同じアカウントでサインインしているほかの Chrome が書いた設定も、同じく `chrome.storage.sync` の知らせで届く ([`chrome.storage`](https://developer.chrome.com/docs/extensions/reference/api/storage))。
 - 2 つの既定値のトグルは、書き込みが終わるまで操作できなくなり、書き込みが失敗するとチェックを元に戻す。残りの 3 つも書き込みを待つ。失敗したときは、`readSettings()` で設定を読み直して、保存されている値を出す (その間に変更の知らせが来ていれば、そちらを残す)。設定の下の行には `settingsSaveFailed` (「設定を保存できませんでした。保存済みの値へ戻しました」) を出す。3 つのどれかの書き込みが成功すると、その行を消す。
 - この画面の操作は、どれも `channelVolumes` を書かない。YouTube の各タブでは `applyPreferredGain()` が新しい目標値と既定値を当てはめる。その種別の Auto が ON でレベルが分かっていれば、新しい Auto のゲインを適用して保存する (Auto 自身の保存、またはライブ保存の判定)。Auto が OFF かレベルが分からなければ、保存ゲインがこれまでどおり鳴る。その適用が項目を読んでいる間に変更の知らせが届いたときは、適用は何もかけず何も保存しないまま戻り (`STORAGE_MOVED`)、受け取り側がもう 1 回だけ動かす。
 - 全チャンネル共通の既定値を変えると、その種別に個別のフラグ (または古い形式のフラグ) を持たないチャンネルだけ、Auto が変わる。
