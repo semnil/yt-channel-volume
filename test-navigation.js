@@ -9660,6 +9660,140 @@ async function runTests() {
       }
     }
 
+    // tools/mutation/bail.mjs, the stop at a suite's first failed check. What it
+    // may change is when a run ends, never which way it ends: a run with no
+    // failure in it ends as the suite ended, and a run a signal took ends by
+    // that signal. The cases run side by side, since each is mostly waiting.
+    {
+      const nodePath = require('path');
+      const cp = require('child_process');
+      const box = fs.mkdtempSync(nodePath.join(require('os').tmpdir(), 'cv-bail-'));
+      const bailer = nodePath.resolve('tools/mutation/bail.mjs');
+      const write = (name, text) => fs.writeFileSync(nodePath.join(box, name), text);
+      const pidIn = (name) => {
+        try { return Number(fs.readFileSync(nodePath.join(box, name), 'utf8')); } catch { return 0; }
+      };
+      const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+      // A process just killed can still be in the table until it is reaped.
+      const gone = async (pid) => {
+        for (let turn = 0; turn < 100 && alive(pid); turn++) await tick();
+        return !alive(pid);
+      };
+      const bail = (args, { during } = {}) => new Promise((resolve) => {
+        const run = { stdout: '', stderr: '', timedOut: false };
+        const child = cp.spawn('node', [bailer, ...args], { cwd: box });
+        child.stdout.on('data', (chunk) => { run.stdout += chunk; });
+        child.stderr.on('data', (chunk) => { run.stderr += chunk; });
+        const guard = passedSetTimeout(() => { run.timedOut = true; child.kill('SIGKILL'); }, 15000);
+        child.on('close', (status, signal) => { passedClearTimeout(guard); resolve({ ...run, status, signal }); });
+        if (during) during(child, run);
+      });
+      const forever = 'setInterval(() => {}, 1000);\n';
+      try {
+        if (process.platform === 'win32') {
+          const refused = await bail(['^  FAIL:', 'node', '-e', '0']);
+          assert(refused.status === 2 && /Windows does not have/.test(refused.stderr),
+            `on Windows it refuses rather than leaving a suite running (${JSON.stringify(refused)})`);
+          console.log('  (the stop at the first failure skipped: Windows has no process groups)');
+        } else {
+          write('pass.js', "console.log('ok');\nconsole.error('a note:  FAIL: quoted, not reported');\n");
+          write('status.js', 'process.exitCode = 3;\n');
+          write('fail.js', [
+            "const cp = require('child_process');",
+            "const fs = require('fs');",
+            "const below = cp.spawn('node', ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });",
+            "fs.writeFileSync('below.pid', String(below.pid));",
+            "process.stderr.write('  FA');",
+            "setTimeout(() => process.stderr.write('IL: split across two writes\\n'), 50);",
+            forever
+          ].join('\n'));
+          write('self-signal.js', "process.kill(process.pid, 'SIGTERM');\n" + forever);
+          write('wait.js', "require('fs').writeFileSync('wait.pid', String(process.pid));\n" + forever);
+          write('answers.js', [
+            "require('fs').writeFileSync('answers.pid', String(process.pid));",
+            "process.on('SIGTERM', () => { console.error('  FAIL: on the way out'); process.exit(0); });",
+            forever
+          ].join('\n'));
+          // A suite that has ended while something it left in a group of its own
+          // still holds the output open: the run is still waiting on the output,
+          // and a signal that reaches it then finds no group to pass to.
+          write('gone.js', [
+            "const cp = require('child_process');",
+            "const fs = require('fs');",
+            "const left = cp.spawn('node', ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: ['ignore', 'inherit', 'ignore'] });",
+            "left.unref();",
+            "fs.writeFileSync('left.pid', String(left.pid));",
+            "fs.writeFileSync('gone.pid', String(process.pid));",
+            ''
+          ].join('\n'));
+          const [passed, status, failed, signalled, stopped, answered, late, badPattern, noCommand, unrunnable] = await Promise.all([
+            bail(['^  FAIL:', 'node', 'pass.js']),
+            bail(['^  FAIL:', 'node', 'status.js']),
+            bail(['^  FAIL:', 'node', 'fail.js']),
+            bail(['^  FAIL:', 'node', 'self-signal.js']),
+            bail(['^  FAIL:', 'node', 'wait.js'], {
+              during: async (child) => {
+                for (let turn = 0; turn < 500 && !pidIn('wait.pid'); turn++) await tick();
+                child.kill('SIGTERM');
+              }
+            }),
+            bail(['^  FAIL:', 'node', 'answers.js'], {
+              during: async (child) => {
+                for (let turn = 0; turn < 500 && !pidIn('answers.pid'); turn++) await tick();
+                child.kill('SIGTERM');
+              }
+            }),
+            bail(['^  FAIL:', 'node', 'gone.js'], {
+              during: async (child, run) => {
+                for (let turn = 0; turn < 500 && !(pidIn('left.pid') && pidIn('gone.pid') && !alive(pidIn('gone.pid'))); turn++) await tick();
+                child.kill('SIGTERM');
+                for (let turn = 0; turn < 500 && !run.stderr.includes('SIGTERM passed on'); turn++) await tick();
+                if (pidIn('left.pid')) process.kill(pidIn('left.pid'), 'SIGKILL');
+              }
+            }),
+            bail(['(', 'node', 'pass.js']),
+            bail(['^  FAIL:']),
+            bail(['^  FAIL:', 'no-such-command-for-bail'])
+          ]);
+          assert(passed.status === 0 && passed.signal === null && passed.stdout === 'ok\n'
+            && passed.stderr === 'a note:  FAIL: quoted, not reported\n',
+            `a run with no failure in it exits as the suite did, its output passed through (${JSON.stringify(passed)})`);
+          assert(status.status === 3, `a suite's own status is the run's (${JSON.stringify(status)})`);
+          assert(!failed.timedOut && failed.status === 1 && failed.signal === null
+            && failed.stderr.includes('  FAIL: split across two writes'),
+            `the first failure ends a run that would go on for ever, as failed (${JSON.stringify(failed)})`);
+          assert(pidIn('below.pid') > 0 && await gone(pidIn('below.pid')),
+            `and what the suite started goes with it (${pidIn('below.pid')})`);
+          assert(signalled.status === null && signalled.signal === 'SIGTERM',
+            `a suite a signal took ends the run by that signal (${JSON.stringify(signalled)})`);
+          assert(!stopped.timedOut && stopped.status === null && stopped.signal === 'SIGTERM',
+            `a signal sent to the run ends it by that signal (${JSON.stringify(stopped)})`);
+          assert(pidIn('wait.pid') > 0 && await gone(pidIn('wait.pid')),
+            `and reaches the suite (${pidIn('wait.pid')})`);
+          assert(!answered.timedOut && answered.status === null && answered.signal === 'SIGTERM',
+            `a suite that answers the signal by exiting 0, a failure on its way out, still ends the run by it (${JSON.stringify(answered)})`);
+          assert(!late.timedOut && late.status === null && late.signal === 'SIGTERM'
+            && late.stderr === 'bail.mjs: SIGTERM passed on to the suite\n',
+            `a signal that finds the suite's group gone still ends the run by it (${JSON.stringify(late)})`);
+          assert(badPattern.status === 2 && /is not a regular expression/.test(badPattern.stderr),
+            `a pattern that is not one is refused (${JSON.stringify(badPattern)})`);
+          assert(noCommand.status === 2 && /^usage:/.test(noCommand.stderr),
+            `a run with no suite is refused (${JSON.stringify(noCommand)})`);
+          assert(unrunnable.status === 127 && /could not be run \(ENOENT\)/.test(unrunnable.stderr),
+            `a suite that cannot be started is said to be one (${JSON.stringify(unrunnable)})`);
+        }
+      } finally {
+        // What a stop that did not take left running, and only where the
+        // process under that pid is still the one these cases started.
+        for (const [name, started] of [['below.pid', 'setInterval'], ['wait.pid', 'wait.js'], ['answers.pid', 'answers.js'], ['left.pid', 'setInterval']]) {
+          const pid = pidIn(name);
+          const now = pid && alive(pid) ? cp.spawnSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8' }).stdout || '' : '';
+          if (now.includes(started)) process.kill(pid, 'SIGKILL');
+        }
+        fs.rmSync(box, { recursive: true, force: true });
+      }
+    }
+
     // A copy of the sweeper and a list written for the occasion, so that what the
     // check refuses can be asked without touching the tree this suite runs in.
     const equivalentsBox = (entries, sources) => {
