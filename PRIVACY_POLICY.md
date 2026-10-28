@@ -2,7 +2,7 @@
 
 [日本語版はこちら (Japanese)](PRIVACY_POLICY_JA.md)
 
-Last updated: 2026-10-26
+Last updated: 2026-10-28
 
 ## Overview
 
@@ -12,7 +12,7 @@ YT Channel Volume is a Chrome extension that remembers and auto-applies volume s
 
 ### Channel Volume Settings
 
-- **What**: YouTube channel IDs, display names, channel URLs, the volume (gain) values you set for each kind (video / live), the loudness auto-apply switch for each kind, the gain the extension works out for itself while that switch is on, and the video ID of the channel's live stream whose level was last applied.
+- **What**: YouTube channel IDs, display names, channel URLs, the volume (gain) values you set for each kind (video / live), the loudness auto-apply switch for each kind, and the gain the extension works out for itself while that switch is on.
 - **Purpose**: Used to automatically apply your preferred volume when you visit a video from a saved channel.
 - **Storage**: Saved locally in `chrome.storage.local` on your device, and never transmitted to any external server. The gain you set is written when you set it. While auto-apply is on, the extension may also write the gain it calculates from a Content Loudness value or from a live stream's level, without an additional action from you.
 
@@ -26,12 +26,12 @@ YT Channel Volume is a Chrome extension that remembers and auto-applies volume s
 
 - **What**: Content Loudness (`loudnessDb`), `isLiveContent`, `isLive`, `channelId`, `videoId`, and the channel name from YouTube's player response; and the level of what is playing from the volume line of the player's stats for nerds (`cont.`, and on a live stream `live.`).
 - **Purpose**: Display loudness information and calculate suggested volume. Determine whether content is a live stream or a regular video.
-- **Storage**: `channelId` is the key a channel's settings are kept under, so it stays on your device once that channel is saved, and the channel name read beside it is saved as that channel's display name. The Content Loudness value, the level read from the stats for nerds, `isLiveContent`, `isLive` and `videoId` are held in memory only while the video page is open and are discarded on navigation. The gain worked out from the Content Loudness value or the live level, however, is saved with the channel's settings, and so is the `videoId` of the live stream that gain was worked out from, so that the stream is not held back at its start when it is opened again.
+- **Storage**: `channelId` is the key a channel's settings are kept under, so it stays on your device once that channel is saved, and the channel name read beside it is saved as that channel's display name. The Content Loudness value, the level read from the stats for nerds, `isLiveContent`, `isLive` and `videoId` are held in memory only while the video page is open and are discarded on navigation. The gain worked out from the Content Loudness value or the live level, however, is saved with the channel's settings.
 
 ## Data NOT Collected
 
 - The extension does **not** collect browsing history, analytics, or telemetry.
-- The extension does **not** track which pages you visit on YouTube or any other site. The only video ID it saves is the one listed under Channel Volume Settings: for each saved channel, the video ID of the channel's live stream whose level was last applied. The next stream whose level is applied replaces it.
+- The extension does **not** track which pages you visit on YouTube or any other site.
 - The extension developer does **not** receive, store, or have access to any of your data.
 - No data is sold, shared with third parties, or used for advertising.
 
