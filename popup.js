@@ -15,7 +15,6 @@
   const suggestedVolEl = document.getElementById('suggestedVol');
   const currentVolEl = document.getElementById('currentVol');
   const fallbackBadge = document.getElementById('fallbackBadge');
-  const liveGateBadge = document.getElementById('liveGateBadge');
   const applyBtn = document.getElementById('applyBtn');
   const applyHint = document.getElementById('applyHint');
   const autoVideoControl = document.getElementById('autoVideoControl');
@@ -50,9 +49,6 @@
   // A live stream's own level, where the player names one; it goes before the
   // response's level.
   let currentLiveLkfs = null;
-  // The start gate holds the live level back: the level is shown, and the
-  // stored gain plays.
-  let liveGateHolds = false;
   let currentContentLufs = null;
   let currentTargetLufs = DEFAULT_TARGET_LUFS;
   let lastGain = 1.0;
@@ -110,7 +106,6 @@
       ? autoApplyLoudnessLive
       : autoApplyLoudnessVideo;
     fallbackBadge.style.display = autoApplyCurrentType && !hasLoudness ? '' : 'none';
-    liveGateBadge.style.display = autoApplyCurrentType && liveGateHolds ? '' : 'none';
     const manualGainLocked = isManualGainLocked(autoApplyCurrentType, hasLoudness);
     volumeSlider.disabled = manualGainLocked;
     presetButtons.forEach(btn => { btn.disabled = manualGainLocked; });
@@ -138,7 +133,6 @@
     hasLoudness = state.contentLufs !== null && state.contentLufs !== undefined;
     currentLoudnessDb = state.loudnessDb;
     currentLiveLkfs = Number.isFinite(state.liveLkfs) ? state.liveLkfs : null;
-    liveGateHolds = state.liveGateHolds === true;
     currentContentLufs = hasLoudness ? state.contentLufs : null;
     lastGain = state.gain ?? 1.0;
     currentVideoType = state.videoType || 'video';

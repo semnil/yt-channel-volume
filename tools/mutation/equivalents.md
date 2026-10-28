@@ -32,13 +32,13 @@ message handler starts the evaluation without reading what it hands back, so
 which text it carries changes nothing the handler does: the gain applied, the
 write sent and the follow set are the same either way.
 
-- `content.js:317` === becomes !== ×1 — ===
+- `content.js:320` === becomes !== ×1 — ===
 
 `ensureAudioChain`'s check before the teardown. The disconnect it guards is
 inside a `try`, so a null source is caught, and the assignment below runs either
 way.
 
-- `content.js:687` a guard is always taken ×1 — if (sourceNode) {
+- `content.js:677` a guard is always taken ×1 — if (sourceNode) {
 
 
 The dropped await before `notifyPopup` in the retry's callback. Measured by
@@ -48,56 +48,56 @@ run by the time the callback is reached — every notification carries the level
 beside the gain that goes with it whether the await is there or not. With Auto
 off the gain does not move at all.
 
-- `content.js:816` an await is dropped ×1 — await
+- `content.js:806` an await is dropped ×1 — await
 
 The navigation observer's watch-page check. `triggerApply` opens with the same
 one.
 
-- `content.js:952` a guard is dropped ×1 — if (!isWatchPage()) return;
+- `content.js:941` a guard is dropped ×1 — if (!isWatchPage()) return;
 
 `respondOnce`'s guard against a second answer, and `return true` after a
 synchronous `sendResponse`. Both were measured against Chrome rather than
 reasoned about: a response sent inside the listener is delivered whatever the
 listener returns, and a second one is dropped rather than delivered or thrown.
 
-- `content.js:1068` a guard is dropped ×1 — if (answered) return;
+- `content.js:1055` a guard is dropped ×1 — if (answered) return;
+- `content.js:1069` true becomes false ×1 — return true;
+- `content.js:1076` true becomes false ×1 — return true;
 - `content.js:1082` true becomes false ×1 — return true;
-- `content.js:1089` true becomes false ×1 — return true;
-- `content.js:1095` true becomes false ×1 — return true;
-- `content.js:1101` true becomes false ×1 — return true;
-- `content.js:1105` true becomes false ×1 — return true;
-- `content.js:1109` true becomes false ×1 — return true;
-- `content.js:1138` true becomes false ×1 — return true;
-- `content.js:1142` true becomes false ×1 — return true;
+- `content.js:1088` true becomes false ×1 — return true;
+- `content.js:1092` true becomes false ×1 — return true;
+- `content.js:1096` true becomes false ×1 — return true;
+- `content.js:1125` true becomes false ×1 — return true;
+- `content.js:1129` true becomes false ×1 — return true;
+- `content.js:1133` true becomes false ×1 — return true;
 - `content.js:1146` true becomes false ×1 — return true;
-- `content.js:1159` true becomes false ×1 — return true;
-- `content.js:1178` true becomes false ×1 — return true;
+- `content.js:1165` true becomes false ×1 — return true;
 
 ## popup.js
 
 `setCardValue`'s unit check. Every one of the five calls passes a unit
 (`' LUFS'`, `' dB'`, `'%'`), so there is no call it refuses.
 
-- `popup.js:78` a guard is always taken ×1 — if (unitText) {
+- `popup.js:74` a guard is always taken ×1 — if (unitText) {
 
 `resyncFromContent`'s answer check. The `.catch` beside it runs the same four
 lines the false branch does, and reading a field of `undefined` is what sends it
 there.
 
-- `popup.js:251` a guard is always taken ×1 — if (state) {
+- `popup.js:245` a guard is always taken ×1 — if (state) {
 
 The retry loop. `hasLoudness` is set from the same response the check reads, the
 timer body opens with its own `hasLoudness` check, the recursion is bounded by
 `remaining > 1`, and the `catch (_) {}` takes what reading a field of
 `undefined` throws.
 
-- `popup.js:396` === becomes !== ×1 — ===
-- `popup.js:396` a guard is always taken ×1 — if (resp.contentLufs === null || resp.contentLufs === undefined) {
-- `popup.js:414` a guard is dropped ×1 — if (remaining <= 0 || hasLoudness) return;
-- `popup.js:414` || becomes && ×1 — ||
-- `popup.js:419` a guard is always taken ×1 — if (resp) {
-- `popup.js:421` && becomes || ×1 — &&
-- `popup.js:421` a guard is always taken ×1 — if (!hasLoudness && remaining > 1) {
+- `popup.js:390` === becomes !== ×1 — ===
+- `popup.js:390` a guard is always taken ×1 — if (resp.contentLufs === null || resp.contentLufs === undefined) {
+- `popup.js:408` a guard is dropped ×1 — if (remaining <= 0 || hasLoudness) return;
+- `popup.js:408` || becomes && ×1 — ||
+- `popup.js:413` a guard is always taken ×1 — if (resp) {
+- `popup.js:415` && becomes || ×1 — &&
+- `popup.js:415` a guard is always taken ×1 — if (!hasLoudness && remaining > 1) {
 
 ## page-bridge.js
 
