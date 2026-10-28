@@ -9541,7 +9541,7 @@ async function runTests() {
       // that sweep asked for rather than what the case asks for.
       const boxEnv = (extra) => {
         const env = { ...process.env, ...extra };
-        for (const knob of ['MUTATE_LINES', 'MUTATE_COUNT', 'MUTATE_CONFIRM', 'MUTATE_OPTIONAL']) {
+        for (const knob of ['MUTATE_LINES', 'MUTATE_COUNT', 'MUTATE_CONFIRM', 'MUTATE_OPTIONAL', 'MUTATE_SHARD']) {
           if (!extra || !(knob in extra)) delete env[knob];
         }
         return env;
@@ -9571,6 +9571,31 @@ async function runTests() {
         const after = box.sweep('src.js', 'node', 'suite.js');
         assert(after.status === 0 && /src\.js is back as it was/.test(after.stdout),
           `so the tree takes a sweep afterwards (exit ${after.status}, ${(after.stderr || after.stdout).trim()})`);
+
+        // Shards share a sweep between trees: between them they run each mutant
+        // once, and a shard that cannot be one is refused before anything runs.
+        // The box's suite passes every mutant, so what a run lists standing is
+        // what it ran.
+        const standing = (run) => run.stdout.split('\n').filter((line) => line.startsWith('SURVIVED')).sort();
+        const halves = ['0/2', '1/2'].map((k) => box.sweepWith({ MUTATE_SHARD: k }, 'src.js', 'node', 'suite.js'));
+        const shared = halves.flatMap(standing).sort();
+        assert(standing(after).length === 2,
+          `the whole sweep runs both mutants (${standing(after).join(' | ')})`);
+        assert(halves.every((half) => half.status === 0 && standing(half).length === 1
+          && /shard [01]\/2: 1 of 2 mutants/.test(half.stderr)),
+          `each of two shards runs one of them (${halves.map((half) => `exit ${half.status}, ${half.stderr.trim()}`).join(' / ')})`);
+        assert(JSON.stringify(shared) === JSON.stringify(standing(after)),
+          `and the two shards together run what the whole sweep runs (${shared.join(' | ')})`);
+        // Listed in the order they ran: shard k takes the kth of every n.
+        const listed = (run) => run.stdout.split('\n').filter((line) => line.startsWith('SURVIVED'));
+        assert(listed(halves[0])[0] === listed(after)[0] && listed(halves[1])[0] === listed(after)[1],
+          `shard 0/2 runs the first and shard 1/2 the second (${listed(halves[0])} / ${listed(halves[1])})`);
+        for (const wrong of ['2/2', '-1/2']) {
+          const refused = box.sweepWith({ MUTATE_SHARD: wrong }, 'src.js', 'node', 'suite.js');
+          assert(refused.status === 2 && refused.stderr.includes(`MUTATE_SHARD wants <k>/<n> with 0 <= k < n, got ${wrong}`)
+            && refused.stdout === '' && box.locked() === false,
+            `a shard of ${wrong} is refused, and the tree left unmarked (exit ${refused.status}, ${refused.stderr.trim()})`);
+        }
     
           // The two ends of the marker's life, made to fail the way a full disk and a
         // read-only directory make them fail. What the run is holding is the file
