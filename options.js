@@ -288,8 +288,9 @@
     // reload it. What another tab writes after that would stand on a page whose
     // own read never landed, so none of it is taken.
     if (loadFailed) return;
-    // The settings live in sync, and so do the ones another machine writes. The
-    // settings key in local is only the copy the worker moves out of it.
+    // The settings live in sync, and so do the ones another Chrome the user is
+    // signed in to writes with Chrome sync on. The settings key in local is only
+    // the copy the worker moves out of it.
     if (area === 'sync') {
       if (changes[SETTINGS_KEY]) {
         settingsRevision++;

@@ -1054,10 +1054,10 @@
     triggerApply();
   }
 
-  // React to settings changes (e.g. overlay toggle from options page, or from
-  // another machine the profile syncs with). The settings live in sync; the
-  // settings key in local is only the copy the worker moves out of it, and its
-  // removal is not a change of settings.
+  // React to settings changes (e.g. overlay toggle from options page, or, with
+  // Chrome sync on, from another Chrome the user is signed in to). The settings
+  // live in sync; the settings key in local is only the copy the worker moves
+  // out of it, and its removal is not a change of settings.
   if (isContextValid()) {
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area === 'sync') {
