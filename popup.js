@@ -362,7 +362,11 @@
 
   // change: save to storage on slider release
   volumeSlider.addEventListener('change', () => {
-    if (sliderGestureEnded) return;
+    if (sliderGestureEnded) {
+      // The thumb goes back to the gain the blur saved.
+      volumeSlider.value = gainToPercent(lastGain);
+      return;
+    }
     const appliesTo = sliderAppliesTo ?? currentAppliesTo;
     sliderAppliesTo = null;
     previewUnsaved = false;

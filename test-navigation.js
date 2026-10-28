@@ -10305,6 +10305,35 @@ async function runTests() {
       mockDOMElements = {};
     }
 
+    section('Popup: the thumb goes back to the gain a blur saved');
+    {
+      const popup = makePopup({
+        answer: async (message) => (message.type === 'setGainLive' || message.type === 'setGain'
+          ? { ok: true }
+          : {
+            isWatchPage: true,
+            channel: { id: TT_CH, name: 'Transit', url: TT_URL },
+            appliesTo: TT_CH + '|video|' + TT_VID,
+            loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0,
+            targetLufs: -18, videoType: 'video'
+          })
+      });
+      await popup.ready();
+      popup.node('volumeSlider').value = '165';
+      await popup.fire('volumeSlider', 'pointerdown');
+      await popup.fire('volumeSlider', 'input');
+      await popup.fire('volumeSlider', 'change');
+      await popup.blurWindow();
+      // Focus comes back with the button held and the thumb moves on; the
+      // release's change is not taken.
+      popup.node('volumeSlider').value = '210';
+      await popup.fire('volumeSlider', 'input');
+      await popup.fire('volumeSlider', 'change');
+      assert(Number(popup.node('volumeSlider').value) === 165,
+        `the thumb shows the gain the blur saved (${popup.node('volumeSlider').value})`);
+      assert(popup.node('volumeValue').textContent === '165%', 'and so does the figure beside it');
+    }
+
     section('Popup: a drag the popup loses focus during ends there');
     {
       const popup = makePopup({
