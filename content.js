@@ -72,7 +72,7 @@
   // When a live level last set the gain playing, and for which video; null
   // until a live gain plays for the video. `at` is null from a message that
   // names no live level until the next live gain, so a level coming back
-  // starts its count from there, and -Infinity after a settings change, so
+  // starts its count from there, and -Infinity after Target LUFS changes, so
   // the next live gain plays as it stands.
   let liveRaiseFrom = null;
   // The live level the bridge last named for the video, and how far the one it
@@ -969,8 +969,9 @@
         if (!changes[SETTINGS_KEY]) return;
         storageRevision++;
         settingsRevision++;
+        const targetBefore = targetLufs;
         takeSettings(changes[SETTINGS_KEY].newValue || {});
-        if (liveRaiseFrom) liveRaiseFrom = { ...liveRaiseFrom, at: -Infinity };
+        if (liveRaiseFrom && targetLufs !== targetBefore) liveRaiseFrom = { ...liveRaiseFrom, at: -Infinity };
         applyPreferredGain().then(() => {
           updateGainOverlay();
           notifyPopup();

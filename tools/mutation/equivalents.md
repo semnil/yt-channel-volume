@@ -60,18 +60,18 @@ synchronous `sendResponse`. Both were measured against Chrome rather than
 reasoned about: a response sent inside the listener is delivered whatever the
 listener returns, and a second one is dropped rather than delivered or thrown.
 
-- `content.js:1055` a guard is dropped ×1 — if (answered) return;
-- `content.js:1069` true becomes false ×1 — return true;
-- `content.js:1076` true becomes false ×1 — return true;
-- `content.js:1082` true becomes false ×1 — return true;
-- `content.js:1088` true becomes false ×1 — return true;
-- `content.js:1092` true becomes false ×1 — return true;
-- `content.js:1096` true becomes false ×1 — return true;
-- `content.js:1125` true becomes false ×1 — return true;
-- `content.js:1129` true becomes false ×1 — return true;
-- `content.js:1133` true becomes false ×1 — return true;
-- `content.js:1146` true becomes false ×1 — return true;
-- `content.js:1165` true becomes false ×1 — return true;
+- `content.js:1056` a guard is dropped ×1 — if (answered) return;
+- `content.js:1070` true becomes false ×1 — return true;
+- `content.js:1077` true becomes false ×1 — return true;
+- `content.js:1083` true becomes false ×1 — return true;
+- `content.js:1089` true becomes false ×1 — return true;
+- `content.js:1093` true becomes false ×1 — return true;
+- `content.js:1097` true becomes false ×1 — return true;
+- `content.js:1126` true becomes false ×1 — return true;
+- `content.js:1130` true becomes false ×1 — return true;
+- `content.js:1134` true becomes false ×1 — return true;
+- `content.js:1147` true becomes false ×1 — return true;
+- `content.js:1166` true becomes false ×1 — return true;
 
 ## popup.js
 

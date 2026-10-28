@@ -8682,6 +8682,41 @@ async function runTests() {
       setURL('/watch', LIVE_VID);
     }
 
+    section('Live level: a settings change that leaves Target LUFS alone does not lift the gain');
+    {
+      const settings = (over) => simulateStorageChange({
+        autoLoudnessSettings: { newValue: { targetLufs: -18, displayUnit: '%', showGainOverlay: false, ...over } }
+      });
+      onAir({ entry: { autoApplyLoudnessLive: true, gainLive: 1.0 } });
+      liveAnswer(-28);
+      await settle();
+      const capped = ytcv.state.currentGain;
+      assert(close(dbOver(capped, 1.0), 3), `the first gain is capped (${dbOver(capped, 1.0)})`);
+      settings({ displayUnit: 'dB' });
+      await settle();
+      assert(dbOver(ytcv.state.currentGain, capped) < 0.01,
+        `the display unit changed under the cap leaves it (${dbOver(ytcv.state.currentGain, capped)})`);
+      assert(close(entryNow().gainLive, liveGain(-28)), `and the stored gain is the one the level asks for (${entryNow().gainLive})`);
+
+      noRise();
+      liveAnswer(-14);
+      await settle();
+      ago(10000);
+      liveAnswer(-28);
+      await settle();
+      const rising = ytcv.state.currentGain;
+      settings({ displayUnit: 'dB', showGainOverlay: true });
+      await settle();
+      assert(dbOver(ytcv.state.currentGain, rising) < 0.01,
+        `the gain overlay turned on while it rises leaves it (${dbOver(ytcv.state.currentGain, rising)})`);
+
+      settings({ targetLufs: -16, displayUnit: 'dB', showGainOverlay: true });
+      await settle();
+      assert(close(ytcv.state.currentGain, liveGain(-28, -16)), `a new target plays as it stands (${ytcv.state.currentGain})`);
+      settings({});
+      await settle();
+    }
+
     section('Live level: after a message with no live level, a rise counts again from the level coming back');
     {
       onAir({ entry: { autoApplyLoudnessLive: true } });
