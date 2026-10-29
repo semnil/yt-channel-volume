@@ -77,7 +77,9 @@
   // until a live gain plays for the video. `at` is null from a message that
   // names no live level until the next live gain, so a level coming back
   // starts its count from there, and -Infinity after Target LUFS changes, so
-  // the next live gain plays as it stands.
+  // the next live gain plays as it stands. It is kept only while the channel
+  // in hand is named for the URL's video, and null again once the bridge names
+  // another channel.
   let liveRaiseFrom = null;
   // The live level the bridge last named for the video, and how far the one it
   // names now rose over it (to 0.1 dB), or null.
@@ -292,6 +294,7 @@
       const idChanged = oldId !== bridgeChId;
       if (idChanged) {
         currentChannel.id = bridgeChId;
+        liveRaiseFrom = null;
         currentChannel.url = 'https://www.youtube.com/channel/' + bridgeChId;
         currentAutoApplyLoudnessVideo = false;
         currentAutoApplyLoudnessLive = false;
@@ -459,7 +462,9 @@
   // there over the follows that come after. The first live gain played for a
   // video in this page is held to LIVE_START_CAP_DB over the gain the
   // channel's entry holds for live, where it holds one above 0 and the video
-  // plays as live. One over a gain of 0 plays as it stands.
+  // plays as live. One over a gain of 0 plays as it stands. Until the channel
+  // in hand is named for the URL's video, a live gain neither reads the count
+  // nor starts it, so the first one once a channel is named is held by the cap.
   const LIVE_RAISE_DB = 1.5;
   const LIVE_RAISE_PERIOD_MS = 30000;
   const LIVE_START_CAP_DB = 3;
@@ -471,8 +476,9 @@
     const gain = calcGainFromLiveLevel(currentLiveLkfs + ahead);
     const videoId = getUrlVideoId();
     const now = Date.now();
-    const from = liveRaiseFrom;
-    liveRaiseFrom = { videoId, at: now };
+    const named = channelNamedForUrlVideo();
+    const from = named ? liveRaiseFrom : null;
+    if (named) liveRaiseFrom = { videoId, at: now };
     if (!from || from.videoId !== videoId) {
       return currentVideoType === 'live' && storedLiveGain > 0
         ? Math.min(gain, storedLiveGain * Math.pow(10, LIVE_START_CAP_DB / 20))
@@ -898,12 +904,16 @@
     return currentChannel.id + '|' + currentVideoType + '|' + getUrlVideoId();
   }
 
+  // Whether the channel in hand was named for the video the URL names.
+  function channelNamedForUrlVideo() {
+    return !!currentChannel.id && currentChannelVideoId === getUrlVideoId();
+  }
+
   // A gesture is made against the channel in hand only once that channel was
   // named for the video the URL names; before that it can be the channel of
   // the page the tab left.
   function gestureStateMoved(msg) {
-    return msg.appliesTo !== currentGestureState() ||
-      !currentChannel.id || currentChannelVideoId !== getUrlVideoId();
+    return msg.appliesTo !== currentGestureState() || !channelNamedForUrlVideo();
   }
 
   function getState() {

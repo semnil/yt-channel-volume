@@ -10334,6 +10334,120 @@ async function runTests() {
       mockDOMElements = {};
     }
 
+    section('Start cap: the first live gain once a navigation names the channel is held by it');
+    {
+      // Stream B stores 0.5 for live and follows Auto there. Its level of
+      // -19.6 asks for more than 3 dB over 0.5, so the cap holds the first
+      // gain to 0.5 at 3 dB over.
+      const B_CH = 'UCstreamB';
+      const B_VID = 'streamBVid';
+      const B_ENTRY = { name: 'Stream B', url: 'https://www.youtube.com/channel/' + B_CH, gainLive: 0.5, autoApplyLoudnessLive: true };
+      const capped = 0.5 * Math.pow(10, 3 / 20);
+      const close = (a, b) => typeof a === 'number' && Math.abs(a - b) < 1e-9;
+      const toStreamB = () => {
+        setURL('/watch', B_VID);
+        mockVideoEl = { id: 'stream-b-video' };
+      };
+      // What the bridge answers before a player response names the video: no
+      // type, no channel, and the live level where the player already names it.
+      const unnamedAnswer = (liveLkfs) => simulateBridgeMessage({ videoId: B_VID, loudnessDb: null, baseLoudnessDb: null,
+        isLiveContent: null, isLiveNow: false, channelId: '', author: '', liveLkfs, source: 'playing' });
+      const streamBAnswer = (liveLkfs) => simulateBridgeMessage({ videoId: B_VID, loudnessDb: null, baseLoudnessDb: null,
+        isLiveContent: true, isLiveNow: true, channelId: B_CH, author: 'Stream B', liveLkfs, source: 'request' });
+      const raiseFrom = () => JSON.stringify(ytcv.state.liveRaiseFrom);
+      // The first live gain once the channel is named is the cap's; the apply
+      // the navigation runs after the bridge answers can raise it from there by
+      // no more than the raise limit for the time since.
+      let since = 0;
+      const heldByCap = () => ytcv.state.currentGain >= capped - 1e-9 &&
+        ytcv.state.currentGain <= capped * Math.pow(10, 1.5 * (Date.now() - since) / 30000 / 20) + 1e-9;
+
+      // A live level that reaches the tab after the URL moved and before the
+      // channel is named for it, while the channel left follows Auto for the
+      // type in hand (videos here).
+      await onVideo({ entry: { gainVideo: 0.5, autoApplyLoudnessVideo: true } });
+      mockStorage.channelVolumes[B_CH] = { ...B_ENTRY };
+      toStreamB();
+      unnamedAnswer(-19.6);
+      await settle();
+      assert(ytcv.state.liveRaiseFrom === null,
+        `a live gain played before the channel is named starts no raise count (${raiseFrom()})`);
+      since = Date.now();
+      await ytcv.applyVideoVolume();
+      streamBAnswer(-19.6);
+      await settle();
+      assert(ytcv.state.currentChannel.id === B_CH && heldByCap(),
+        `the first live gain once B is named is held by B's start cap (${ytcv.state.currentGain} / ${capped})`);
+
+      // From one stream to another: the unknown type keeps the stream left's
+      // live type, and its channel stores 3.0, a cap that holds nothing.
+      await onVideo({ entry: { gainLive: 3.0, autoApplyLoudnessLive: true } });
+      mockStorage.channelVolumes[B_CH] = { ...B_ENTRY };
+      simulateBridgeMessage({ videoId: TT_VID, loudnessDb: null, baseLoudnessDb: null, isLiveContent: true,
+        isLiveNow: true, channelId: TT_CH, author: 'Transit', liveLkfs: -19.6, source: 'request' });
+      await settle();
+      assert(ytcv.state.currentVideoType === 'live' && ytcv.state.liveRaiseFrom?.videoId === TT_VID,
+        `the stream left plays its live level (${ytcv.state.currentVideoType} / ${raiseFrom()})`);
+      toStreamB();
+      unnamedAnswer(-19.6);
+      await settle();
+      assert(ytcv.state.currentVideoType === 'live' && ytcv.state.liveRaiseFrom?.videoId !== B_VID,
+        `the level before B is named starts no count for B's stream (${ytcv.state.currentVideoType} / ${raiseFrom()})`);
+      since = Date.now();
+      await ytcv.applyVideoVolume();
+      streamBAnswer(-19.6);
+      await settle();
+      assert(heldByCap(),
+        `B's first live gain is held by B's start cap (${ytcv.state.currentGain} / ${capped})`);
+
+      // A stream visited before in the page, after another channel's video in
+      // between: the count from that visit is gone with the channel.
+      await onVideo();
+      mockStorage.channelVolumes[B_CH] = { ...B_ENTRY };
+      toStreamB();
+      await ytcv.applyVideoVolume();
+      streamBAnswer(-19.6);
+      await settle();
+      streamBAnswer(null);
+      await settle();
+      assert(ytcv.state.liveRaiseFrom?.videoId === B_VID,
+        `the first visit counts from B's stream (${raiseFrom()})`);
+      setURL('/watch', TT_VID);
+      mockVideoEl = { id: 'transit-video-again' };
+      await ytcv.applyVideoVolume();
+      simulateBridgeMessage({ videoId: TT_VID, loudnessDb: -6, isLiveContent: false, channelId: TT_CH, author: 'Transit' });
+      await settle();
+      assert(ytcv.state.currentChannel.id === TT_CH && ytcv.state.liveRaiseFrom === null,
+        `another channel named drops the count (${raiseFrom()})`);
+      toStreamB();
+      since = Date.now();
+      await ytcv.applyVideoVolume();
+      streamBAnswer(-19.6);
+      await settle();
+      assert(heldByCap(),
+        `back on B's stream, its first live gain is held by the start cap again (${ytcv.state.currentGain} / ${capped})`);
+
+      // From a channel's video to its own stream, the bridge naming the same
+      // channel for the stream before the navigation's apply: the level before
+      // that, played as a video, starts no count either.
+      const SAME_STREAM = 'transitStreamVid';
+      await onVideo({ entry: { gainVideo: 0.5, autoApplyLoudnessVideo: true, gainLive: 0.5, autoApplyLoudnessLive: true } });
+      setURL('/watch', SAME_STREAM);
+      mockVideoEl = { id: 'transit-stream-video' };
+      simulateBridgeMessage({ videoId: SAME_STREAM, loudnessDb: null, baseLoudnessDb: null, isLiveContent: null,
+        isLiveNow: false, channelId: '', author: '', liveLkfs: -19.6, source: 'playing' });
+      await settle();
+      simulateBridgeMessage({ videoId: SAME_STREAM, loudnessDb: null, baseLoudnessDb: null, isLiveContent: true,
+        isLiveNow: true, channelId: TT_CH, author: 'Transit', liveLkfs: -19.6, source: 'request' });
+      await settle();
+      assert(ytcv.state.currentVideoType === 'live' && close(ytcv.state.currentGain, capped),
+        `the stream's first live gain once named is held by the start cap (${ytcv.state.currentGain} / ${capped})`);
+      ytcv._set('currentLiveLkfs', null);
+      ytcv._set('currentAutoApplyLoudnessLive', false);
+      ytcv._set('currentIsLiveNow', false);
+      ytcv.syncLiveFollow();
+    }
+
     section('Popup: the thumb goes back to the gain a blur saved');
     {
       const popup = makePopup({
