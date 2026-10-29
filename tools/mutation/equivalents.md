@@ -64,6 +64,17 @@ listener returns, and a second one is dropped rather than delivered or thrown.
 - `content.js:1264` true becomes false ×1 — return true;
 - `content.js:1289` true becomes false ×1 — return true;
 
+The level in hand taken as Auto's when Auto is turned on with a level known.
+Where no live level is in hand (`readLiveLkfs` null) the level known is the
+response's, and Auto's live level is null already: a bridge message sets the
+two together, the popup's read sets the one in hand only to a level, a
+navigation clears both, and turning Auto on sets Auto's from the one in hand.
+`liveLevelRise` is read only by `liveGainToPlay`, which runs only with Auto's
+level set, and every way that level is set also sets the rise. Taking the
+branch then writes values nothing reads differently.
+
+- `content.js:1303` a guard is always taken ×1 — if (live) {
+
 ## popup.js
 
 `setCardValue`'s unit check. Every one of the five calls passes a unit
