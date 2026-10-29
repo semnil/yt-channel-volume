@@ -9863,7 +9863,11 @@ async function runTests() {
         child.on('close', (status, signal) => { passedClearTimeout(guard); resolve({ ...run, status, signal }); });
         if (during) during(child, run);
       });
-      const forever = 'setInterval(() => {}, 1000);\n';
+      // What these cases start runs until a stop takes it, and each of them also
+      // ends once this suite's process is gone: a run of this suite stopped while
+      // these cases are under way leaves none of them running.
+      const idle = `setInterval(() => { try { process.kill(${process.pid}, 0); } catch { process.exit(); } }, 100)`;
+      const forever = `${idle};\n`;
       try {
         if (process.platform === 'win32') {
           const refused = await bail(['^  FAIL:', 'node', '-e', '0']);
@@ -9876,7 +9880,7 @@ async function runTests() {
           write('fail.js', [
             "const cp = require('child_process');",
             "const fs = require('fs');",
-            "const below = cp.spawn('node', ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });",
+            `const below = cp.spawn('node', ['-e', ${JSON.stringify(idle)}], { stdio: 'ignore' });`,
             "fs.writeFileSync('below.pid', String(below.pid));",
             "process.stderr.write('  FA');",
             "setTimeout(() => process.stderr.write('IL: split across two writes\\n'), 50);",
@@ -9896,7 +9900,7 @@ async function runTests() {
           write('gone.js', [
             "const cp = require('child_process');",
             "const fs = require('fs');",
-            "const left = cp.spawn('node', ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: ['ignore', 'inherit', 'inherit'] });",
+            `const left = cp.spawn('node', ['-e', ${JSON.stringify(idle)}], { detached: true, stdio: ['ignore', 'inherit', 'inherit'] });`,
             "left.unref();",
             "fs.writeFileSync('left.pid', String(left.pid));",
             "fs.writeFileSync('gone.pid', String(process.pid));",
@@ -9906,7 +9910,7 @@ async function runTests() {
           // holds the output open and does not end on that signal.
           write('deaf-below.js', [
             "const cp = require('child_process');",
-            "cp.spawn('node', ['-e', \"process.on('SIGTERM', () => {}); require('fs').writeFileSync('deaf.pid', String(process.pid)); setInterval(() => {}, 1000)\"], { stdio: ['ignore', 'inherit', 'inherit'] });",
+            `cp.spawn('node', ['-e', ${JSON.stringify(`process.on('SIGTERM', () => {}); require('fs').writeFileSync('deaf.pid', String(process.pid)); ${idle}`)}], { stdio: ['ignore', 'inherit', 'inherit'] });`,
             forever
           ].join('\n'));
           // A suite that prints on its way out to a reader that has gone, as the
