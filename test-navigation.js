@@ -9716,7 +9716,7 @@ async function runTests() {
       // that sweep asked for rather than what the case asks for.
       const boxEnv = (extra) => {
         const env = { ...process.env, ...extra };
-        for (const knob of ['MUTATE_LINES', 'MUTATE_COUNT', 'MUTATE_CONFIRM', 'MUTATE_OPTIONAL']) {
+        for (const knob of ['MUTATE_LINES', 'MUTATE_COUNT', 'MUTATE_CONFIRM', 'MUTATE_OPTIONAL', 'MUTATE_SHARD']) {
           if (!extra || !(knob in extra)) delete env[knob];
         }
         return env;
@@ -9746,6 +9746,31 @@ async function runTests() {
         const after = box.sweep('src.js', 'node', 'suite.js');
         assert(after.status === 0 && /src\.js is back as it was/.test(after.stdout),
           `so the tree takes a sweep afterwards (exit ${after.status}, ${(after.stderr || after.stdout).trim()})`);
+
+        // Shards share a sweep between trees: between them they run each mutant
+        // once, and a shard that cannot be one is refused before anything runs.
+        // The box's suite passes every mutant, so what a run lists standing is
+        // what it ran.
+        const standing = (run) => run.stdout.split('\n').filter((line) => line.startsWith('SURVIVED')).sort();
+        const halves = ['0/2', '1/2'].map((k) => box.sweepWith({ MUTATE_SHARD: k }, 'src.js', 'node', 'suite.js'));
+        const shared = halves.flatMap(standing).sort();
+        assert(standing(after).length === 2,
+          `the whole sweep runs both mutants (${standing(after).join(' | ')})`);
+        assert(halves.every((half) => half.status === 0 && standing(half).length === 1
+          && /shard [01]\/2: 1 of 2 mutants/.test(half.stderr)),
+          `each of two shards runs one of them (${halves.map((half) => `exit ${half.status}, ${half.stderr.trim()}`).join(' / ')})`);
+        assert(JSON.stringify(shared) === JSON.stringify(standing(after)),
+          `and the two shards together run what the whole sweep runs (${shared.join(' | ')})`);
+        // Listed in the order they ran: shard k takes the kth of every n.
+        const listed = (run) => run.stdout.split('\n').filter((line) => line.startsWith('SURVIVED'));
+        assert(listed(halves[0])[0] === listed(after)[0] && listed(halves[1])[0] === listed(after)[1],
+          `shard 0/2 runs the first and shard 1/2 the second (${listed(halves[0])} / ${listed(halves[1])})`);
+        for (const wrong of ['2/2', '-1/2']) {
+          const refused = box.sweepWith({ MUTATE_SHARD: wrong }, 'src.js', 'node', 'suite.js');
+          assert(refused.status === 2 && refused.stderr.includes(`MUTATE_SHARD wants <k>/<n> with 0 <= k < n, got ${wrong}`)
+            && refused.stdout === '' && box.locked() === false,
+            `a shard of ${wrong} is refused, and the tree left unmarked (exit ${refused.status}, ${refused.stderr.trim()})`);
+        }
     
           // The two ends of the marker's life, made to fail the way a full disk and a
         // read-only directory make them fail. What the run is holding is the file
@@ -9807,6 +9832,208 @@ async function runTests() {
         }
       } finally {
         box.remove();
+      }
+    }
+
+    // tools/mutation/bail.mjs, the stop at a suite's first failed check. What it
+    // may change is when a run ends, never which way it ends: a run with no
+    // failure in it ends as the suite ended, and a run a signal took ends by
+    // that signal. The cases run side by side, since each is mostly waiting.
+    {
+      const nodePath = require('path');
+      const cp = require('child_process');
+      const box = fs.mkdtempSync(nodePath.join(require('os').tmpdir(), 'cv-bail-'));
+      const bailer = nodePath.resolve('tools/mutation/bail.mjs');
+      const write = (name, text) => fs.writeFileSync(nodePath.join(box, name), text);
+      const pidIn = (name) => {
+        try { return Number(fs.readFileSync(nodePath.join(box, name), 'utf8')); } catch { return 0; }
+      };
+      const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+      // A process just killed can still be in the table until it is reaped.
+      const gone = async (pid) => {
+        for (let turn = 0; turn < 100 && alive(pid); turn++) await tick();
+        return !alive(pid);
+      };
+      const bail = (args, { during } = {}) => new Promise((resolve) => {
+        const run = { stdout: '', stderr: '', timedOut: false };
+        const child = cp.spawn('node', [bailer, ...args], { cwd: box });
+        child.stdout.on('data', (chunk) => { run.stdout += chunk; });
+        child.stderr.on('data', (chunk) => { run.stderr += chunk; });
+        const guard = passedSetTimeout(() => { run.timedOut = true; child.kill('SIGKILL'); }, 15000);
+        child.on('close', (status, signal) => { passedClearTimeout(guard); resolve({ ...run, status, signal }); });
+        if (during) during(child, run);
+      });
+      const forever = 'setInterval(() => {}, 1000);\n';
+      try {
+        if (process.platform === 'win32') {
+          const refused = await bail(['^  FAIL:', 'node', '-e', '0']);
+          assert(refused.status === 2 && /Windows does not have/.test(refused.stderr),
+            `on Windows it refuses rather than leaving a suite running (${JSON.stringify(refused)})`);
+          console.log('  (the stop at the first failure skipped: Windows has no process groups)');
+        } else {
+          write('pass.js', "console.log('ok');\nconsole.error('a note:  FAIL: quoted, not reported');\n");
+          write('status.js', 'process.exitCode = 3;\n');
+          write('fail.js', [
+            "const cp = require('child_process');",
+            "const fs = require('fs');",
+            "const below = cp.spawn('node', ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });",
+            "fs.writeFileSync('below.pid', String(below.pid));",
+            "process.stderr.write('  FA');",
+            "setTimeout(() => process.stderr.write('IL: split across two writes\\n'), 50);",
+            forever
+          ].join('\n'));
+          write('self-signal.js', "process.kill(process.pid, 'SIGTERM');\n" + forever);
+          write('wait.js', "require('fs').writeFileSync('wait.pid', String(process.pid));\n" + forever);
+          write('answers.js', [
+            "require('fs').writeFileSync('answers.pid', String(process.pid));",
+            "process.on('SIGTERM', () => { console.error('  FAIL: on the way out'); process.exit(0); });",
+            forever
+          ].join('\n'));
+          // A suite that has ended while something it left in a group of its own
+          // still holds the output open: the run is still waiting on the output,
+          // a signal that reaches it then finds no group to pass to, and the run
+          // ends without waiting on the output any longer.
+          write('gone.js', [
+            "const cp = require('child_process');",
+            "const fs = require('fs');",
+            "const left = cp.spawn('node', ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: ['ignore', 'inherit', 'inherit'] });",
+            "left.unref();",
+            "fs.writeFileSync('left.pid', String(left.pid));",
+            "fs.writeFileSync('gone.pid', String(process.pid));",
+            ''
+          ].join('\n'));
+          // A suite the signal takes while something it started in its group
+          // holds the output open and does not end on that signal.
+          write('deaf-below.js', [
+            "const cp = require('child_process');",
+            "cp.spawn('node', ['-e', \"process.on('SIGTERM', () => {}); require('fs').writeFileSync('deaf.pid', String(process.pid)); setInterval(() => {}, 1000)\"], { stdio: ['ignore', 'inherit', 'inherit'] });",
+            forever
+          ].join('\n'));
+          // A suite that prints on its way out to a reader that has gone, as the
+          // sweep's timeout leaves it.
+          write('unread.js', [
+            "process.on('SIGTERM', () => { console.log('on the way out'); process.exit(0); });",
+            "require('fs').writeFileSync('unread.pid', String(process.pid));",
+            forever
+          ].join('\n'));
+          // A suite that ends with no signal while something it started in its
+          // group has a line still to print.
+          write('after.js', [
+            "const cp = require('child_process');",
+            "cp.spawn('node', ['-e', \"setTimeout(() => console.log('later'), 100)\"], { stdio: ['ignore', 'inherit', 'inherit'] }).unref();",
+            ''
+          ].join('\n'));
+          // A suite that ends having printed more than the reader has taken in,
+          // so that the run is still passing it on once the suite is gone. The
+          // reader takes the rest in once the suite has ended, or, where a
+          // signal is sent then, once the run has said it passed the signal on.
+          write('big.js', "require('fs').writeFileSync(process.argv[2], String(process.pid));\nprocess.stdout.write('x'.repeat(4 * 1024 * 1024));\n");
+          const slowReader = (pidFile, signalled) => async (child, run) => {
+            child.stdout.pause();
+            for (let turn = 0; turn < 500 && !(pidIn(pidFile) && !alive(pidIn(pidFile))); turn++) await tick();
+            if (!signalled) {
+              child.stdout.resume();
+              return;
+            }
+            child.stderr.on('data', () => { if (run.stderr.includes('passed on')) child.stdout.resume(); });
+            child.kill('SIGTERM');
+          };
+          const [passed, status, failed, signalled, stopped, answered, late, held, unread, after, drained, drainedLate, badPattern, noCommand, unrunnable] = await Promise.all([
+            bail(['^  FAIL:', 'node', 'pass.js']),
+            bail(['^  FAIL:', 'node', 'status.js']),
+            bail(['^  FAIL:', 'node', 'fail.js']),
+            bail(['^  FAIL:', 'node', 'self-signal.js']),
+            bail(['^  FAIL:', 'node', 'wait.js'], {
+              during: async (child) => {
+                for (let turn = 0; turn < 500 && !pidIn('wait.pid'); turn++) await tick();
+                child.kill('SIGTERM');
+              }
+            }),
+            bail(['^  FAIL:', 'node', 'answers.js'], {
+              during: async (child) => {
+                for (let turn = 0; turn < 500 && !pidIn('answers.pid'); turn++) await tick();
+                child.kill('SIGTERM');
+              }
+            }),
+            bail(['^  FAIL:', 'node', 'gone.js'], {
+              during: async (child) => {
+                for (let turn = 0; turn < 500 && !(pidIn('left.pid') && pidIn('gone.pid') && !alive(pidIn('gone.pid'))); turn++) await tick();
+                child.kill('SIGTERM');
+              }
+            }),
+            bail(['^  FAIL:', 'node', 'deaf-below.js'], {
+              during: async (child) => {
+                for (let turn = 0; turn < 500 && !pidIn('deaf.pid'); turn++) await tick();
+                child.kill('SIGTERM');
+              }
+            }),
+            bail(['^  FAIL:', 'node', 'unread.js'], {
+              during: async (child) => {
+                for (let turn = 0; turn < 500 && !pidIn('unread.pid'); turn++) await tick();
+                child.stdout.destroy();
+                child.stderr.destroy();
+                child.kill('SIGTERM');
+              }
+            }),
+            bail(['^  FAIL:', 'node', 'after.js']),
+            bail(['^  FAIL:', 'node', 'big.js', 'big.pid'], { during: slowReader('big.pid', false) }),
+            bail(['^  FAIL:', 'node', 'big.js', 'big-late.pid'], { during: slowReader('big-late.pid', true) }),
+            bail(['(', 'node', 'pass.js']),
+            bail(['^  FAIL:']),
+            bail(['^  FAIL:', 'no-such-command-for-bail'])
+          ]);
+          assert(passed.status === 0 && passed.signal === null && passed.stdout === 'ok\n'
+            && passed.stderr === 'a note:  FAIL: quoted, not reported\n',
+            `a run with no failure in it exits as the suite did, its output passed through (${JSON.stringify(passed)})`);
+          assert(status.status === 3, `a suite's own status is the run's (${JSON.stringify(status)})`);
+          assert(!failed.timedOut && failed.status === 1 && failed.signal === null
+            && failed.stderr.includes('  FAIL: split across two writes'),
+            `the first failure ends a run that would go on for ever, as failed (${JSON.stringify(failed)})`);
+          assert(pidIn('below.pid') > 0 && await gone(pidIn('below.pid')),
+            `and what the suite started goes with it (${pidIn('below.pid')})`);
+          assert(signalled.status === null && signalled.signal === 'SIGTERM',
+            `a suite a signal took ends the run by that signal (${JSON.stringify(signalled)})`);
+          assert(!stopped.timedOut && stopped.status === null && stopped.signal === 'SIGTERM',
+            `a signal sent to the run ends it by that signal (${JSON.stringify(stopped)})`);
+          assert(pidIn('wait.pid') > 0 && await gone(pidIn('wait.pid')),
+            `and reaches the suite (${pidIn('wait.pid')})`);
+          assert(!answered.timedOut && answered.status === null && answered.signal === 'SIGTERM',
+            `a suite that answers the signal by exiting 0, a failure on its way out, still ends the run by it (${JSON.stringify(answered)})`);
+          assert(!late.timedOut && late.status === null && late.signal === 'SIGTERM'
+            && late.stderr === 'bail.mjs: SIGTERM passed on to the suite\n',
+            `a signal that finds the suite's group gone still ends the run by it, though what the suite left holds the output (${JSON.stringify(late)})`);
+          assert(!held.timedOut && held.status === null && held.signal === 'SIGTERM',
+            `a signal ends the run once the suite has ended, though what it started holds the output and outlives the signal (${JSON.stringify(held)})`);
+          assert(pidIn('deaf.pid') > 0 && await gone(pidIn('deaf.pid')),
+            `and that goes with the rest of the suite's group (${pidIn('deaf.pid')})`);
+          assert(!unread.timedOut && unread.status === null && unread.signal === 'SIGTERM',
+            `a run whose reader has gone still ends by the signal, whatever the suite prints on its way out (${JSON.stringify(unread)})`);
+          assert(after.status === 0 && after.signal === null && after.stdout === 'later\n',
+            `a run no signal reached waits on the output of what the suite left, as the suite's own caller would (${JSON.stringify(after)})`);
+          const sized = (run) => JSON.stringify({ ...run, stdout: run.stdout.length });
+          assert(!drained.timedOut && drained.status === 0 && drained.signal === null
+            && drained.stdout.length === 4 * 1024 * 1024,
+            `a run whose reader is slow to take the output in ends as the suite did, all of it passed on (${sized(drained)})`);
+          assert(!drainedLate.timedOut && drainedLate.status === null && drainedLate.signal === 'SIGTERM'
+            && drainedLate.stdout.length === 4 * 1024 * 1024
+            && drainedLate.stderr === 'bail.mjs: SIGTERM passed on to the suite\n',
+            `a signal that comes once the suite has ended, while its output is still being passed on, ends the run by it (${sized(drainedLate)})`);
+          assert(badPattern.status === 2 && /is not a regular expression/.test(badPattern.stderr),
+            `a pattern that is not one is refused (${JSON.stringify(badPattern)})`);
+          assert(noCommand.status === 2 && /^usage:/.test(noCommand.stderr),
+            `a run with no suite is refused (${JSON.stringify(noCommand)})`);
+          assert(unrunnable.status === 127 && /could not be run \(ENOENT\)/.test(unrunnable.stderr),
+            `a suite that cannot be started is said to be one (${JSON.stringify(unrunnable)})`);
+        }
+      } finally {
+        // What a stop that did not take left running, and only where the
+        // process under that pid is still the one these cases started.
+        for (const [name, started] of [['below.pid', 'setInterval'], ['wait.pid', 'wait.js'], ['answers.pid', 'answers.js'], ['left.pid', 'setInterval'], ['deaf.pid', 'setInterval'], ['unread.pid', 'unread.js']]) {
+          const pid = pidIn(name);
+          const now = pid && alive(pid) ? cp.spawnSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8' }).stdout || '' : '';
+          if (now.includes(started)) process.kill(pid, 'SIGKILL');
+        }
+        fs.rmSync(box, { recursive: true, force: true });
       }
     }
 
