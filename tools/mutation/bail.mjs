@@ -14,10 +14,11 @@
 // The suite runs in a process group of its own, and the stop takes the whole
 // group, so nothing the suite started goes on writing after the run is over.
 // A signal that reaches this process — Ctrl-C, or the sweep's timeout — is
-// passed to that group, said on stderr, and once the suite has ended and its
-// output has closed this process ends by the same signal, whatever the suite
-// did with it: a run a signal took is not a verdict, and the sweep reading it
-// has to see the signal rather than an exit status.
+// passed to that group and said on stderr. Once the suite itself has ended,
+// what is left of its group is killed, its output is waited on no longer, and
+// this process ends by the same signal, whatever the suite did with it: a run
+// a signal took is not a verdict, and the sweep reading it has to see the
+// signal rather than an exit status.
 //
 // What the suite prints is passed through as it was printed, up to the stop.
 // A suite stopped this way runs none of its own clean-up.
@@ -47,18 +48,29 @@ try {
 const child = spawn(command[0], command.slice(1), { stdio: ['ignore', 'pipe', 'pipe'], detached: true });
 let bailed = false;
 let stopping = null;
+let ended = false;
 const SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'];
 
 function stopGroup(signal) {
   try { process.kill(-child.pid, signal); } catch (err) { if (err.code !== 'ESRCH') throw err; }
 }
+function letGo() {
+  stopGroup('SIGKILL');
+  child.stdout.destroy();
+  child.stderr.destroy();
+}
 for (const signal of SIGNALS) {
   process.on(signal, () => {
     stopping = stopping || signal;
-    if (child.pid) stopGroup(signal);
+    if (ended) letGo();
+    else if (child.pid) stopGroup(signal);
     console.error(`bail.mjs: ${signal} passed on to the suite`);
   });
 }
+child.on('exit', () => {
+  ended = true;
+  if (stopping) letGo();
+});
 
 // A line is matched once it is whole, and a chunk boundary can fall anywhere in
 // one. A last line with no newline is the end of the run, and is not matched.

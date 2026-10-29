@@ -9716,17 +9716,32 @@ async function runTests() {
           ].join('\n'));
           // A suite that has ended while something it left in a group of its own
           // still holds the output open: the run is still waiting on the output,
-          // and a signal that reaches it then finds no group to pass to.
+          // a signal that reaches it then finds no group to pass to, and the run
+          // ends without waiting on the output any longer.
           write('gone.js', [
             "const cp = require('child_process');",
             "const fs = require('fs');",
-            "const left = cp.spawn('node', ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: ['ignore', 'inherit', 'ignore'] });",
+            "const left = cp.spawn('node', ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: ['ignore', 'inherit', 'inherit'] });",
             "left.unref();",
             "fs.writeFileSync('left.pid', String(left.pid));",
             "fs.writeFileSync('gone.pid', String(process.pid));",
             ''
           ].join('\n'));
-          const [passed, status, failed, signalled, stopped, answered, late, badPattern, noCommand, unrunnable] = await Promise.all([
+          // A suite the signal takes while something it started in its group
+          // holds the output open and does not end on that signal.
+          write('deaf-below.js', [
+            "const cp = require('child_process');",
+            "cp.spawn('node', ['-e', \"process.on('SIGTERM', () => {}); require('fs').writeFileSync('deaf.pid', String(process.pid)); setInterval(() => {}, 1000)\"], { stdio: ['ignore', 'inherit', 'inherit'] });",
+            forever
+          ].join('\n'));
+          // A suite that ends with no signal while something it started in its
+          // group has a line still to print.
+          write('after.js', [
+            "const cp = require('child_process');",
+            "cp.spawn('node', ['-e', \"setTimeout(() => console.log('later'), 100)\"], { stdio: ['ignore', 'inherit', 'inherit'] }).unref();",
+            ''
+          ].join('\n'));
+          const [passed, status, failed, signalled, stopped, answered, late, held, after, badPattern, noCommand, unrunnable] = await Promise.all([
             bail(['^  FAIL:', 'node', 'pass.js']),
             bail(['^  FAIL:', 'node', 'status.js']),
             bail(['^  FAIL:', 'node', 'fail.js']),
@@ -9744,13 +9759,18 @@ async function runTests() {
               }
             }),
             bail(['^  FAIL:', 'node', 'gone.js'], {
-              during: async (child, run) => {
+              during: async (child) => {
                 for (let turn = 0; turn < 500 && !(pidIn('left.pid') && pidIn('gone.pid') && !alive(pidIn('gone.pid'))); turn++) await tick();
                 child.kill('SIGTERM');
-                for (let turn = 0; turn < 500 && !run.stderr.includes('SIGTERM passed on'); turn++) await tick();
-                if (pidIn('left.pid')) process.kill(pidIn('left.pid'), 'SIGKILL');
               }
             }),
+            bail(['^  FAIL:', 'node', 'deaf-below.js'], {
+              during: async (child) => {
+                for (let turn = 0; turn < 500 && !pidIn('deaf.pid'); turn++) await tick();
+                child.kill('SIGTERM');
+              }
+            }),
+            bail(['^  FAIL:', 'node', 'after.js']),
             bail(['(', 'node', 'pass.js']),
             bail(['^  FAIL:']),
             bail(['^  FAIL:', 'no-such-command-for-bail'])
@@ -9774,7 +9794,13 @@ async function runTests() {
             `a suite that answers the signal by exiting 0, a failure on its way out, still ends the run by it (${JSON.stringify(answered)})`);
           assert(!late.timedOut && late.status === null && late.signal === 'SIGTERM'
             && late.stderr === 'bail.mjs: SIGTERM passed on to the suite\n',
-            `a signal that finds the suite's group gone still ends the run by it (${JSON.stringify(late)})`);
+            `a signal that finds the suite's group gone still ends the run by it, though what the suite left holds the output (${JSON.stringify(late)})`);
+          assert(!held.timedOut && held.status === null && held.signal === 'SIGTERM',
+            `a signal ends the run once the suite has ended, though what it started holds the output and outlives the signal (${JSON.stringify(held)})`);
+          assert(pidIn('deaf.pid') > 0 && await gone(pidIn('deaf.pid')),
+            `and that goes with the rest of the suite's group (${pidIn('deaf.pid')})`);
+          assert(after.status === 0 && after.signal === null && after.stdout === 'later\n',
+            `a run no signal reached waits on the output of what the suite left, as the suite's own caller would (${JSON.stringify(after)})`);
           assert(badPattern.status === 2 && /is not a regular expression/.test(badPattern.stderr),
             `a pattern that is not one is refused (${JSON.stringify(badPattern)})`);
           assert(noCommand.status === 2 && /^usage:/.test(noCommand.stderr),
@@ -9785,7 +9811,7 @@ async function runTests() {
       } finally {
         // What a stop that did not take left running, and only where the
         // process under that pid is still the one these cases started.
-        for (const [name, started] of [['below.pid', 'setInterval'], ['wait.pid', 'wait.js'], ['answers.pid', 'answers.js'], ['left.pid', 'setInterval']]) {
+        for (const [name, started] of [['below.pid', 'setInterval'], ['wait.pid', 'wait.js'], ['answers.pid', 'answers.js'], ['left.pid', 'setInterval'], ['deaf.pid', 'setInterval']]) {
           const pid = pidIn(name);
           const now = pid && alive(pid) ? cp.spawnSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8' }).stdout || '' : '';
           if (now.includes(started)) process.kill(pid, 'SIGKILL');
