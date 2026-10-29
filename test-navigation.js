@@ -7975,6 +7975,8 @@ async function runTests() {
         return deleteButtons.get(id);
       },
       async settle() { await settle(); },
+      // Reads of either area fail from here on.
+      failReads() { failStorageGet = true; },
       async releaseStorage() {
         assert(pendingReads.length > 0, 'a read is being held');
         for (const resolve of pendingReads.splice(0)) resolve();
@@ -9885,6 +9887,19 @@ async function runTests() {
       assert(options.synced[SETTINGS_KEY].targetLufs === -20 &&
         options.node('settingsError').classList.contains('hidden') === true,
         'a setting that is saved takes the line down');
+    }
+    {
+      // A write that fails, with the read back failing as well: nothing is put
+      // back, and the line asks for a reload instead.
+      const options = makeOptions({ settings: { targetLufs: -18 }, failStorageSet: true });
+      await options.settle();
+      options.failReads();
+      options.node('targetSlider').value = '-24';
+      await options.fire('targetSlider', 'input');
+      await options.fire('targetSlider', 'change');
+      assert(options.node('settingsError').classList.contains('hidden') === false &&
+        options.node('settingsError').textContent === 'settingsLoadFailed',
+        `a failed save that could not be read back asks for a reload (${options.node('settingsError').textContent})`);
     }
 
     section('Audio chain refused: the gain in hand stays the one playing');

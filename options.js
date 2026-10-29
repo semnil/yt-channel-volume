@@ -98,7 +98,9 @@
   }
 
   // A write that did not land leaves the control showing a value nothing holds,
-  // so the page goes back to what storage holds and says that it did.
+  // so the page goes back to what storage holds and says that it did. Where
+  // the settings cannot be read back either, nothing goes back, and the line
+  // asks for a reload.
   async function saveSettingOrRestore(key, value) {
     if (!settingsLoaded) return;
     try {
@@ -106,14 +108,16 @@
       showSettingsError(false);
     } catch (err) {
       const revision = settingsRevision;
+      let shown = 'settingsSaveFailed';
       try {
         const settings = await readSettings();
         if (revision === settingsRevision) applySettings(settings);
         renderChannels(channelVolumes);
       } catch (readErr) {
+        shown = 'settingsLoadFailed';
         console.error('[YTCV] settings not read back after a failed save', readErr);
       }
-      showSettingsError(true);
+      showSettingsError(true, shown);
       console.error('[YTCV] setting not saved', err);
     }
   }
