@@ -9748,7 +9748,22 @@ async function runTests() {
             "cp.spawn('node', ['-e', \"setTimeout(() => console.log('later'), 100)\"], { stdio: ['ignore', 'inherit', 'inherit'] }).unref();",
             ''
           ].join('\n'));
-          const [passed, status, failed, signalled, stopped, answered, late, held, unread, after, badPattern, noCommand, unrunnable] = await Promise.all([
+          // A suite that ends having printed more than the reader has taken in,
+          // so that the run is still passing it on once the suite is gone. The
+          // reader takes the rest in once the suite has ended, or, where a
+          // signal is sent then, once the run has said it passed the signal on.
+          write('big.js', "require('fs').writeFileSync(process.argv[2], String(process.pid));\nprocess.stdout.write('x'.repeat(4 * 1024 * 1024));\n");
+          const slowReader = (pidFile, signalled) => async (child, run) => {
+            child.stdout.pause();
+            for (let turn = 0; turn < 500 && !(pidIn(pidFile) && !alive(pidIn(pidFile))); turn++) await tick();
+            if (!signalled) {
+              child.stdout.resume();
+              return;
+            }
+            child.stderr.on('data', () => { if (run.stderr.includes('passed on')) child.stdout.resume(); });
+            child.kill('SIGTERM');
+          };
+          const [passed, status, failed, signalled, stopped, answered, late, held, unread, after, drained, drainedLate, badPattern, noCommand, unrunnable] = await Promise.all([
             bail(['^  FAIL:', 'node', 'pass.js']),
             bail(['^  FAIL:', 'node', 'status.js']),
             bail(['^  FAIL:', 'node', 'fail.js']),
@@ -9786,6 +9801,8 @@ async function runTests() {
               }
             }),
             bail(['^  FAIL:', 'node', 'after.js']),
+            bail(['^  FAIL:', 'node', 'big.js', 'big.pid'], { during: slowReader('big.pid', false) }),
+            bail(['^  FAIL:', 'node', 'big.js', 'big-late.pid'], { during: slowReader('big-late.pid', true) }),
             bail(['(', 'node', 'pass.js']),
             bail(['^  FAIL:']),
             bail(['^  FAIL:', 'no-such-command-for-bail'])
@@ -9818,6 +9835,14 @@ async function runTests() {
             `a run whose reader has gone still ends by the signal, whatever the suite prints on its way out (${JSON.stringify(unread)})`);
           assert(after.status === 0 && after.signal === null && after.stdout === 'later\n',
             `a run no signal reached waits on the output of what the suite left, as the suite's own caller would (${JSON.stringify(after)})`);
+          const sized = (run) => JSON.stringify({ ...run, stdout: run.stdout.length });
+          assert(!drained.timedOut && drained.status === 0 && drained.signal === null
+            && drained.stdout.length === 4 * 1024 * 1024,
+            `a run whose reader is slow to take the output in ends as the suite did, all of it passed on (${sized(drained)})`);
+          assert(!drainedLate.timedOut && drainedLate.status === null && drainedLate.signal === 'SIGTERM'
+            && drainedLate.stdout.length === 4 * 1024 * 1024
+            && drainedLate.stderr === 'bail.mjs: SIGTERM passed on to the suite\n',
+            `a signal that comes once the suite has ended, while its output is still being passed on, ends the run by it (${sized(drainedLate)})`);
           assert(badPattern.status === 2 && /is not a regular expression/.test(badPattern.stderr),
             `a pattern that is not one is refused (${JSON.stringify(badPattern)})`);
           assert(noCommand.status === 2 && /^usage:/.test(noCommand.stderr),

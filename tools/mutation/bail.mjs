@@ -97,26 +97,22 @@ watch(child.stdout, process.stdout);
 watch(child.stderr, process.stderr);
 
 // What this process prints goes down a pipe, which Node writes asynchronously
-// on some platforms; the exit waits for both to drain.
-function leave(end) {
-  process.stdout.write('', () => process.stderr.write('', end));
+// on some platforms; the exit waits for both to drain. How the run ends is
+// read once they have, so a signal that arrives while they drain ends the run
+// by that signal.
+function leave(code, signal) {
+  process.stdout.write('', () => process.stderr.write('', () => {
+    const by = stopping || (bailed ? null : signal);
+    if (by) {
+      for (const s of SIGNALS) process.removeAllListeners(s);
+      process.kill(process.pid, by);
+      return;
+    }
+    process.exit(bailed ? 1 : code);
+  }));
 }
 child.on('error', (err) => {
   console.error(`${command[0]} could not be run (${err.code || err.message})`);
-  leave(() => process.exit(127));
+  leave(127, null);
 });
-child.on('close', (code, signal) => {
-  if (bailed && !stopping) {
-    leave(() => process.exit(1));
-    return;
-  }
-  const by = stopping || signal;
-  if (by) {
-    leave(() => {
-      for (const s of SIGNALS) process.removeAllListeners(s);
-      process.kill(process.pid, by);
-    });
-    return;
-  }
-  leave(() => process.exit(code));
-});
+child.on('close', leave);
