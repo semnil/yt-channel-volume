@@ -20,8 +20,9 @@
 // a signal took is not a verdict, and the sweep reading it has to see the
 // signal rather than an exit status.
 //
-// What the suite prints is passed through as it was printed, up to the stop.
-// A suite stopped this way runs none of its own clean-up.
+// What the suite prints is passed through as it was printed, up to the stop,
+// and to a reader that is still there. A suite stopped this way runs none of
+// its own clean-up.
 //
 // Windows has no process groups to stop, and there it refuses to run at all:
 // exit 2, which a sweep reads as a baseline that is not green.
@@ -71,6 +72,9 @@ child.on('exit', () => {
   ended = true;
   if (stopping) letGo();
 });
+// What is written for a reader that has gone away is lost, and the run goes on
+// to its end.
+for (const out of [process.stdout, process.stderr]) out.on('error', () => {});
 
 // A line is matched once it is whole, and a chunk boundary can fall anywhere in
 // one. A last line with no newline is the end of the run, and is not matched.
