@@ -8449,6 +8449,19 @@ async function runTests() {
 
     assert(options.listMarkup().includes('200%') && !options.listMarkup().includes('labelAuto'),
       'a change that is not the mark does not move the table onto the new rule');
+
+    await options.fireStorage({ [CHANNEL_VOLUMES_KEY]: { newValue: { UC1: { name: 'Alpha', gain: 2 } } } });
+    assert(options.listMarkup().includes('200%') && !options.listMarkup().includes('labelAuto'),
+      'nor does a change of the channels');
+  }
+
+  {
+    // A change in an area other than sync and local is not this extension's.
+    const options = makeOptions({ channels: { UC1: { name: 'Alpha', gainVideo: 2 } } });
+    await options.settle();
+    await options.fireStorage({ [CHANNEL_VOLUMES_KEY]: { newValue: { UC2: { name: 'Beta', gainVideo: 3 } } } }, 'session');
+    assert(options.listMarkup().includes('Alpha') && !options.listMarkup().includes('Beta'),
+      'a channel map in another area draws nothing');
   }
 
   {
@@ -10461,6 +10474,65 @@ async function runTests() {
       ytcv._set('currentAutoApplyLoudnessLive', false);
       ytcv._set('currentIsLiveNow', false);
       ytcv.syncLiveFollow();
+    }
+
+    section('Extension reload: a failed save it causes is not reported');
+    {
+      await onVideo();
+      const watched = watchFailures();
+      const realId = chrome.runtime.id;
+      const realSet = chrome.storage.local.set;
+      chrome.storage.local.set = () => {
+        // The reload is what makes the write fail, so it is gone by the rejection.
+        chrome.runtime.id = undefined;
+        return Promise.reject(new Error('storage write failed'));
+      };
+      const answer = await popupGesture({ type: 'setGain', gain: 0.8 });
+      await settle();
+      chrome.storage.local.set = realSet;
+      chrome.runtime.id = realId;
+      watched.stop();
+      assert(answer?.ok === false && !watched.reported.some((m) => m.includes('setGain failed')),
+        `a save the reload failed is answered and not reported (${JSON.stringify(answer)} / ${JSON.stringify(watched.reported)})`);
+    }
+
+    section('Live level: a message that names no video is the URL\'s video\'s');
+    {
+      await onVideo({ entry: { autoApplyLoudnessLive: true } });
+      const liveAnswer = (over) => simulateBridgeMessage({ loudnessDb: null, baseLoudnessDb: null,
+        isLiveContent: true, isLiveNow: true, channelId: TT_CH, author: 'Transit', source: 'request', ...over });
+      liveAnswer({ videoId: TT_VID, liveLkfs: -20 });
+      await settle();
+      liveAnswer({ liveLkfs: -18 });
+      await settle();
+      assert(ytcv.state.liveLevelRise === 2 && Math.abs(ytcv.state.currentGain - calcLiveGain(-15, -18)) < 1e-9,
+        `the level it names rose over the one the URL's video named, and is taken 3 dB louder (${ytcv.state.liveLevelRise} / ${ytcv.state.currentGain})`);
+      ytcv._set('currentLiveLkfs', null);
+      ytcv._set('currentAutoApplyLoudnessLive', false);
+      ytcv._set('currentIsLiveNow', false);
+      ytcv.syncLiveFollow();
+    }
+
+    section('Storage: a change in an area other than sync and local is not this extension\'s');
+    {
+      await onVideo();
+      const elsewhere = { [CHANNEL_VOLUMES_KEY]: {
+        oldValue: {}, newValue: { [TT_CH]: { name: 'Transit', url: TT_URL, gainVideo: 2.0 } }
+      } };
+      for (const fn of chrome.storage.onChanged._listeners) fn(elsewhere, 'session');
+      await settle();
+      assert(ytcv.state.currentGain === 0.5, `a channel map in another area moves nothing (${ytcv.state.currentGain})`);
+    }
+
+    section('Fold: a local change that is not the mark leaves a failed fold on the old rule');
+    {
+      await onVideo();
+      ytcv._set('storageMigrated', false);
+      const entry = mockStorage.channelVolumes[TT_CH];
+      simulateStorageChange({ [CHANNEL_VOLUMES_KEY]: { oldValue: { [TT_CH]: entry }, newValue: { [TT_CH]: { ...entry } } } });
+      await settle();
+      assert(ytcv.state.storageMigrated === false, 'a change of the channels is not the mark');
+      ytcv._set('storageMigrated', true);
     }
 
     section('Popup: the thumb goes back to the gain a blur saved');
