@@ -1850,6 +1850,14 @@ assert(!packaged.includes('.DS_Store'),
     assert(at > -1, `the release build runs what CI runs: ${check}`);
     assert(at < packs, `the release build runs ${check} before it packs`);
   }
+  // A failed upload ends the job, so every check runs ahead of it, and an upload
+  // that fails never hides whether the tree passes the checks.
+  const testJob = jobIn('ci.yaml', 'test');
+  const uploads = testJob.indexOf('uses: codecov/codecov-action@');
+  assert(uploads > -1, 'the CI job uploads coverage');
+  for (const check of ci) {
+    assert(testJob.indexOf(`run: ${check}`) < uploads, `CI runs ${check} before it uploads coverage`);
+  }
 }
 
 // The archive the build packed has to come back from the download under the
