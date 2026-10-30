@@ -223,14 +223,77 @@
 
   // ── Events ─────────────────────────────────────────────────────────
 
-  targetSlider.addEventListener('input', () => {
-    targetValueEl.textContent = targetSlider.value + ' LUFS';
+  // A key held on the slider changes the label alone, and the target is
+  // written once, when the last key that moves the value is let go, or where
+  // the slider loses focus first; a key that moves no value (Tab, a modifier)
+  // leaves the hold as it is. A drag ends where the slider or the page's
+  // window loses focus during it: Chrome fires `change` at that blur, ahead
+  // of the blur itself, and that change writes. After a blur that ends a drag
+  // or a key hold, input and change belong to no gesture until the next press
+  // (a pointerdown, or a keydown that is not a repeat), and the change puts
+  // the slider back to the target.
+  let targetKeyHeld = false;
+  let targetKeyMoved = false;
+  let targetPointerHeld = false;
+  let targetGestureEnded = false;
+  const targetKeysDown = new Set();
+
+  targetSlider.addEventListener('pointerdown', () => {
+    targetPointerHeld = true;
+    targetGestureEnded = false;
+  });
+  const releaseTargetPointer = () => { targetPointerHeld = false; };
+  targetSlider.addEventListener('pointerup', releaseTargetPointer);
+  targetSlider.addEventListener('pointercancel', releaseTargetPointer);
+
+  targetSlider.addEventListener('keydown', (e) => {
+    if (e.repeat || !isSliderMoveKey(e.key)) return;
+    targetKeysDown.add(e.key);
+    if (targetKeyHeld) return;
+    targetKeyHeld = true;
+    targetKeyMoved = false;
+    targetGestureEnded = false;
   });
 
-  targetSlider.addEventListener('change', () => {
+  targetSlider.addEventListener('input', () => {
+    if (targetGestureEnded) return;
+    targetValueEl.textContent = targetSlider.value + ' LUFS';
+    if (targetKeyHeld) targetKeyMoved = true;
+  });
+
+  function saveTarget() {
     targetLufs = Number(targetSlider.value);
     saveSettingOrRestore('targetLufs', targetLufs);
+  }
+
+  targetSlider.addEventListener('change', () => {
+    if (targetGestureEnded) {
+      targetSlider.value = targetLufs;
+      return;
+    }
+    if (targetKeyHeld) return;
+    saveTarget();
   });
+
+  function endTargetKeyHold() {
+    targetKeysDown.clear();
+    if (!targetKeyHeld) return;
+    targetKeyHeld = false;
+    if (targetKeyMoved) saveTarget();
+  }
+  targetSlider.addEventListener('keyup', (e) => {
+    if (!targetKeysDown.delete(e.key)) return;
+    if (targetKeysDown.size === 0) endTargetKeyHold();
+  });
+
+  function endTargetGestureOnBlur() {
+    if (!targetPointerHeld && !targetKeyHeld) return;
+    endTargetKeyHold();
+    targetPointerHeld = false;
+    targetGestureEnded = true;
+  }
+  targetSlider.addEventListener('blur', endTargetGestureOnBlur);
+  window.addEventListener('blur', endTargetGestureOnBlur);
 
   defaultAutoVideoToggle.addEventListener('change', async () => {
     const previous = defaultAutoApplyVideo;
@@ -278,6 +341,8 @@
   unitToggle.addEventListener('click', (e) => {
     const btn = e.target.closest('button');
     if (!btn || !btn.dataset.unit) return;
+    // The unit already in use is not written again.
+    if (btn.dataset.unit === displayUnit) return;
     displayUnit = btn.dataset.unit;
     updateUnitButtons();
     renderChannels(channelVolumes);

@@ -7207,12 +7207,13 @@ async function runTests() {
     assert(saves.length === 1 && saves[0].appliesTo === 'UCsecond|video|second',
       `and saves against it (${JSON.stringify(saves)})`);
 
-    // The keyboard begins one the same way.
+    // The keyboard begins one the same way, and saves when the key is let go.
     popup.asked.length = 0;
     popup.node('volumeSlider').value = '250';
-    await popup.fire('volumeSlider', 'keydown');
+    await popup.fire('volumeSlider', 'keydown', { key: 'ArrowRight' });
     await popup.fire('volumeSlider', 'input');
     await popup.fire('volumeSlider', 'change');
+    await popup.fire('volumeSlider', 'keyup', { key: 'ArrowRight' });
     const byKey = popup.asked.filter((m) => m.type === 'setGain');
     assert(byKey.length === 1 && byKey[0].appliesTo === 'UCsecond|video|second',
       `a key on the slider saves against the video on screen (${JSON.stringify(byKey)})`);
@@ -7890,6 +7891,7 @@ async function runTests() {
       return element;
     });
 
+    const windowListeners = {};
     const storageArea = (held) => ({
       get: async (keys) => {
         if (deferStorageGet) {
@@ -7912,6 +7914,7 @@ async function runTests() {
     });
 
     const sandbox = {
+      window: { addEventListener: (type, fn) => (windowListeners[type] ||= []).push(fn) },
       console: { log() {}, warn() {}, error: (...args) => errors.push(args) },
       Promise, Math, JSON, Date, Object, Array, Number, String, Boolean, isNaN, parseFloat, parseInt,
       setTimeout: (fn) => { fn(); return 0; },
@@ -7982,8 +7985,8 @@ async function runTests() {
         for (const resolve of pendingReads.splice(0)) resolve();
         await settle();
       },
-      async fire(id, type) {
-        for (const fn of node(id).listeners[type] || []) await fn({ target: node(id) });
+      async fire(id, type, event = {}) {
+        for (const fn of node(id).listeners[type] || []) await fn({ target: node(id), ...event });
         await settle();
       },
       async clickUnit(unit) {
@@ -8005,6 +8008,11 @@ async function runTests() {
         assert(!!button, `there is a delete button for ${id}`);
         if (!button) return;
         for (const fn of button.listeners.click || []) await fn({ target: button });
+        await settle();
+      },
+      // The page's own window losing focus.
+      async blurWindow() {
+        for (const fn of windowListeners.blur || []) await fn({});
         await settle();
       },
       // Named, the area is the one every change is fired in; otherwise each key
@@ -10535,6 +10543,362 @@ async function runTests() {
       ytcv._set('storageMigrated', true);
     }
 
+    section('Settings page: the unit already in use writes nothing');
+    {
+      const options = makeOptions({ settings: { displayUnit: 'dB' }, channels: { UCsaved: { name: 'Saved', gainVideo: 2 } } });
+      await options.settle();
+      options.sent.length = 0;
+      await options.clickUnit('dB');
+      assert(options.sent.filter((m) => m.type === 'store:saveSetting').length === 0,
+        `clicking the active unit writes nothing (${JSON.stringify(options.sent)})`);
+      assert(options.unitButtons.find((b) => b.dataset.unit === 'dB').classList.contains('active') &&
+        options.listMarkup().includes('6.0 dB'), 'and the page stays as it was');
+      await options.clickUnit('%');
+      assert(options.sent.filter((m) => m.type === 'store:saveSetting' && m.value === '%').length === 1,
+        'while the other unit is written');
+    }
+
+    section('Popup: a key held on the slider previews each repeat and saves once');
+    {
+      const popup = makePopup({
+        answer: async (message) => (message.type === 'setGainLive' || message.type === 'setGain'
+          ? { ok: true }
+          : {
+            isWatchPage: true,
+            channel: { id: TT_CH, name: 'Transit', url: TT_URL },
+            appliesTo: TT_CH + '|video|' + TT_VID,
+            loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0,
+            targetLufs: -18, videoType: 'video'
+          })
+      });
+      await popup.ready();
+      const press = async (values) => {
+        // A held key: one keydown, then for each repeat an input and a change.
+        await popup.fire('volumeSlider', 'keydown', { key: 'ArrowRight' });
+        for (const value of values) {
+          popup.node('volumeSlider').value = String(value);
+          await popup.fire('volumeSlider', 'input');
+          await popup.fire('volumeSlider', 'change');
+        }
+      };
+      popup.asked.length = 0;
+      await press([105, 110, 115, 120, 125, 130, 135, 140, 145, 150]);
+      assert(popup.asked.filter((m) => m.type === 'setGain').length === 0,
+        `nothing is saved while the key is held (${JSON.stringify(popup.asked.filter((m) => m.type === 'setGain'))})`);
+      await popup.fire('volumeSlider', 'keyup', { key: 'ArrowRight' });
+      const previews = popup.asked.filter((m) => m.type === 'setGainLive');
+      const saves = popup.asked.filter((m) => m.type === 'setGain');
+      assert(previews.length === 10 && saves.length === 1 && saves[0].gain === 1.5,
+        `each repeat previews and the release saves the gain reached, once (${previews.length} / ${JSON.stringify(saves)})`);
+
+      // A single press is one gesture of one repeat.
+      popup.asked.length = 0;
+      await press([155]);
+      await popup.fire('volumeSlider', 'keyup', { key: 'ArrowRight' });
+      assert(popup.asked.filter((m) => m.type === 'setGain' && m.gain === 1.55).length === 1,
+        `a single press saves once (${JSON.stringify(popup.asked)})`);
+
+      // A key held at a value the repeats no longer move keeps its preview
+      // alive the way a held pointer does, until the key is let go.
+      popup.asked.length = 0;
+      await press([160]);
+      await popup.runTimers();
+      await popup.runTimers();
+      assert(popup.asked.filter((m) => m.type === 'setGainLive' && m.gain === 1.6).length === 3,
+        `the held key's preview is sent again each second (${JSON.stringify(popup.asked)})`);
+      await popup.fire('volumeSlider', 'keyup', { key: 'ArrowRight' });
+      await popup.runTimers();
+      assert(popup.asked.filter((m) => m.type === 'setGainLive').length === 3 &&
+        popup.asked.filter((m) => m.type === 'setGain' && m.gain === 1.6).length === 1,
+        `and the keyup saves it and ends the sending (${JSON.stringify(popup.asked)})`);
+
+      // A press that does not move the value saves nothing.
+      popup.asked.length = 0;
+      await popup.fire('volumeSlider', 'keydown', { key: 'ArrowRight' });
+      await popup.fire('volumeSlider', 'keyup', { key: 'ArrowRight' });
+      assert(popup.asked.length === 0, `a press at an end sends nothing (${JSON.stringify(popup.asked)})`);
+
+      // The popup losing focus while the key is held ends the gesture there.
+      popup.asked.length = 0;
+      await press([160, 165]);
+      await popup.blurWindow();
+      popup.node('volumeSlider').value = '170';
+      await popup.fire('volumeSlider', 'input');
+      await popup.fire('volumeSlider', 'change');
+      await popup.fire('volumeSlider', 'keyup', { key: 'ArrowRight' });
+      const atBlur = popup.asked.filter((m) => m.type === 'setGain');
+      assert(atBlur.length === 1 && atBlur[0].gain === 1.65 &&
+        popup.asked.filter((m) => m.type === 'setGainLive').length === 2,
+        `the gain reached at the blur is saved, and nothing after it is sent (${JSON.stringify(popup.asked)})`);
+
+      // The mouse after a key: a drag saves at its release as before.
+      popup.asked.length = 0;
+      popup.node('volumeSlider').value = '200';
+      await popup.fire('volumeSlider', 'pointerdown');
+      await popup.fire('volumeSlider', 'input');
+      await popup.fire('volumeSlider', 'change');
+      await popup.fire('volumeSlider', 'pointerup');
+      assert(popup.asked.filter((m) => m.type === 'setGain' && m.gain === 2.0).length === 1,
+        `a drag after it saves at its release (${JSON.stringify(popup.asked)})`);
+    }
+
+    section('Settings page: a key held on Target LUFS writes once');
+    {
+      const options = makeOptions({ settings: { targetLufs: -18 } });
+      await options.settle();
+      const writes = () => options.sent.filter((m) => m.type === 'store:saveSetting');
+      const hold = async (values) => {
+        await options.fire('targetSlider', 'keydown', { key: 'ArrowRight' });
+        for (const value of values) {
+          options.node('targetSlider').value = String(value);
+          await options.fire('targetSlider', 'input');
+          await options.fire('targetSlider', 'change');
+        }
+      };
+      await hold([-19, -20, -21, -22, -23]);
+      assert(writes().length === 0 && options.node('targetValue').textContent === '-23 LUFS',
+        `while the key is held only the label moves (${writes().length} / ${options.node('targetValue').textContent})`);
+      await options.fire('targetSlider', 'keyup', { key: 'ArrowRight' });
+      assert(writes().length === 1 && writes()[0].value === -23 && options.synced[SETTINGS_KEY].targetLufs === -23,
+        `the release writes the target reached, once (${JSON.stringify(writes())})`);
+
+      // Losing focus with the key held writes there.
+      options.sent.length = 0;
+      await hold([-24, -25]);
+      await options.blurWindow();
+      await options.fire('targetSlider', 'keyup', { key: 'ArrowRight' });
+      assert(writes().length === 1 && writes()[0].value === -25,
+        `a blur during the hold writes the target reached, once (${JSON.stringify(writes())})`);
+
+      // A repeat at the slider's end moves no value, and the hold still writes
+      // what the repeats before it moved to.
+      options.sent.length = 0;
+      await hold([-26]);
+      await options.fire('targetSlider', 'keydown', { key: 'ArrowRight' });
+      await options.fire('targetSlider', 'keyup', { key: 'ArrowRight' });
+      assert(writes().length === 1 && writes()[0].value === -26,
+        `a repeat that moves nothing keeps the hold's write (${JSON.stringify(writes())})`);
+
+      // A drag still writes at its change.
+      options.sent.length = 0;
+      options.node('targetSlider').value = '-12';
+      await options.fire('targetSlider', 'input');
+      await options.fire('targetSlider', 'change');
+      assert(writes().length === 1 && writes()[0].value === -12, `a drag writes at its end (${JSON.stringify(writes())})`);
+    }
+
+    section('Settings page: a drag on Target LUFS that loses focus ends there');
+    {
+      const options = makeOptions({ settings: { targetLufs: -18 } });
+      await options.settle();
+      const writes = () => options.sent.filter((m) => m.type === 'store:saveSetting');
+      const slider = () => options.node('targetSlider');
+      const move = async (value) => {
+        slider().value = String(value);
+        await options.fire('targetSlider', 'input');
+      };
+      // Chrome fires the change at the blur, ahead of the blur itself, and that
+      // change writes.
+      await options.fire('targetSlider', 'pointerdown');
+      await move(-21);
+      await options.fire('targetSlider', 'change');
+      await options.blurWindow();
+      assert(writes().length === 1 && writes()[0].value === -21,
+        `the change at the blur writes the value reached, once (${JSON.stringify(writes())})`);
+      // Focus comes back with the button held and the thumb moves on: the
+      // release's change writes nothing and puts the slider back.
+      await move(-25);
+      await options.fire('targetSlider', 'change');
+      await options.fire('targetSlider', 'pointerup');
+      assert(writes().length === 1 && Number(slider().value) === -21 && options.node('targetValue').textContent === '-21 LUFS',
+        `after the blur the drag writes nothing more, and the slider and its label go back (${writes().length} / ${slider().value} / ${options.node('targetValue').textContent})`);
+
+      // The next press is a drag of its own.
+      options.sent.length = 0;
+      await options.fire('targetSlider', 'pointerdown');
+      await move(-12);
+      await options.fire('targetSlider', 'change');
+      await options.fire('targetSlider', 'pointerup');
+      assert(writes().length === 1 && writes()[0].value === -12, `the next press writes at its change (${JSON.stringify(writes())})`);
+
+      // A blur with nothing pressed ends nothing: the change after it writes.
+      options.sent.length = 0;
+      await options.blurWindow();
+      await options.fire('targetSlider', 'blur');
+      await move(-15);
+      await options.fire('targetSlider', 'change');
+      assert(writes().length === 1 && writes()[0].value === -15,
+        `a change after a blur with nothing pressed writes as before (${JSON.stringify(writes())})`);
+
+      // A key held when the window loses focus writes there, and a repeat of
+      // that key is no new press: what it moves goes back, and nothing more is
+      // written.
+      options.sent.length = 0;
+      await options.fire('targetSlider', 'keydown', { key: 'ArrowRight' });
+      await move(-16);
+      await options.fire('targetSlider', 'change');
+      await options.blurWindow();
+      await options.fire('targetSlider', 'keydown', { key: 'ArrowRight', repeat: true });
+      await move(-17);
+      await options.fire('targetSlider', 'change');
+      await options.fire('targetSlider', 'keyup', { key: 'ArrowRight' });
+      assert(writes().length === 1 && writes()[0].value === -16 && Number(slider().value) === -16,
+        `a key held through a blur writes once there, and its repeats after it do not (${JSON.stringify(writes())} / ${slider().value})`);
+    }
+
+    section('Slider keys: a key that moves no value is no hold, and a hold ends with the last key let go');
+    {
+      const key = (name, repeat = false) => ({ key: name, repeat });
+      // The popup.
+      const popup = makePopup({
+        answer: async (message) => (message.type === 'setGainLive' || message.type === 'setGain'
+          ? { ok: true }
+          : {
+            isWatchPage: true,
+            channel: { id: TT_CH, name: 'Transit', url: TT_URL },
+            appliesTo: TT_CH + '|video|' + TT_VID,
+            loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0,
+            targetLufs: -18, videoType: 'video'
+          })
+      });
+      await popup.ready();
+      const saves = () => popup.asked.filter((m) => m.type === 'setGain').map((m) => m.gain);
+      const slide = async (value) => {
+        popup.node('volumeSlider').value = String(value);
+        await popup.fire('volumeSlider', 'input');
+      };
+      // Tab during a drag: the change ahead of the blur saves the value shown.
+      popup.asked.length = 0;
+      await popup.fire('volumeSlider', 'pointerdown');
+      await slide(150);
+      await popup.fire('volumeSlider', 'keydown', key('Tab'));
+      await popup.fire('volumeSlider', 'change');
+      await popup.fire('volumeSlider', 'blur');
+      await popup.fire('volumeSlider', 'pointerup');
+      assert(JSON.stringify(saves()) === '[1.5]' && Number(popup.node('volumeSlider').value) === 150,
+        `popup: Tab during a drag leaves the drag to save the gain shown (${JSON.stringify(saves())} / ${popup.node('volumeSlider').value})`);
+      // Two arrow keys over each other: one save, when the last is let go.
+      popup.asked.length = 0;
+      await popup.fire('volumeSlider', 'keydown', key('ArrowRight'));
+      await slide(155);
+      await popup.fire('volumeSlider', 'change');
+      await popup.fire('volumeSlider', 'keydown', key('ArrowLeft'));
+      await slide(150);
+      await popup.fire('volumeSlider', 'change');
+      await popup.fire('volumeSlider', 'keyup', key('ArrowLeft'));
+      for (const value of [155, 160, 165]) {
+        await popup.fire('volumeSlider', 'keydown', key('ArrowRight', true));
+        await slide(value);
+        await popup.fire('volumeSlider', 'change');
+      }
+      await popup.fire('volumeSlider', 'keyup', key('ArrowRight'));
+      assert(JSON.stringify(saves()) === '[1.65]',
+        `popup: two arrow keys held over each other save once, at the last let go (${JSON.stringify(saves())})`);
+      // Tab alone saves nothing, and a press after it saves as before.
+      popup.asked.length = 0;
+      await popup.fire('volumeSlider', 'keydown', key('Tab'));
+      await popup.fire('volumeSlider', 'keyup', key('Tab'));
+      assert(popup.asked.length === 0, `popup: Tab alone sends nothing (${JSON.stringify(popup.asked)})`);
+      await popup.fire('volumeSlider', 'keydown', key('ArrowRight'));
+      await slide(170);
+      await popup.fire('volumeSlider', 'change');
+      await popup.fire('volumeSlider', 'keyup', key('ArrowRight'));
+      assert(JSON.stringify(saves()) === '[1.7]', `popup: a press after it saves as before (${JSON.stringify(saves())})`);
+      // A second key pressed during a hold is part of it: one that moves
+      // nothing (↑ at the top, after End) leaves the move made before it saved.
+      popup.asked.length = 0;
+      await popup.fire('volumeSlider', 'keydown', key('End'));
+      await slide(600);
+      await popup.fire('volumeSlider', 'change');
+      await popup.fire('volumeSlider', 'keydown', key('ArrowUp'));
+      await popup.fire('volumeSlider', 'keyup', key('ArrowUp'));
+      await popup.fire('volumeSlider', 'keyup', key('End'));
+      assert(JSON.stringify(saves()) === '[6]',
+        `popup: a second key that moves nothing leaves the hold's move saved (${JSON.stringify(saves())})`);
+
+      // The settings page.
+      const options = makeOptions({ settings: { targetLufs: -18 } });
+      await options.settle();
+      const writes = () => options.sent.filter((m) => m.type === 'store:saveSetting').map((m) => m.value);
+      const target = () => options.node('targetSlider');
+      const move = async (value) => {
+        target().value = String(value);
+        await options.fire('targetSlider', 'input');
+      };
+      await options.fire('targetSlider', 'pointerdown');
+      await move(-21);
+      await options.fire('targetSlider', 'keydown', key('Tab'));
+      await options.fire('targetSlider', 'change');
+      await options.fire('targetSlider', 'blur');
+      await options.fire('targetSlider', 'pointerup');
+      assert(JSON.stringify(writes()) === '[-21]' && Number(target().value) === -21 &&
+        options.node('targetValue').textContent === '-21 LUFS',
+        `settings: Tab during a drag leaves the drag to write the target shown (${JSON.stringify(writes())} / ${target().value} / ${options.node('targetValue').textContent})`);
+      options.sent.length = 0;
+      await options.fire('targetSlider', 'keydown', key('ArrowRight'));
+      await move(-17);
+      await options.fire('targetSlider', 'change');
+      await options.fire('targetSlider', 'keydown', key('ArrowLeft'));
+      await move(-18);
+      await options.fire('targetSlider', 'change');
+      await options.fire('targetSlider', 'keyup', key('ArrowLeft'));
+      for (const value of [-17, -16, -15]) {
+        await options.fire('targetSlider', 'keydown', key('ArrowRight', true));
+        await move(value);
+        await options.fire('targetSlider', 'change');
+      }
+      await options.fire('targetSlider', 'keyup', key('ArrowRight'));
+      assert(JSON.stringify(writes()) === '[-15]',
+        `settings: two arrow keys held over each other write once, at the last let go (${JSON.stringify(writes())})`);
+      options.sent.length = 0;
+      await options.fire('targetSlider', 'keydown', key('Tab'));
+      await options.fire('targetSlider', 'keyup', key('Tab'));
+      assert(writes().length === 0, `settings: Tab alone writes nothing (${JSON.stringify(writes())})`);
+      await options.fire('targetSlider', 'keydown', key('ArrowRight'));
+      await move(-14);
+      await options.fire('targetSlider', 'change');
+      await options.fire('targetSlider', 'keyup', key('ArrowRight'));
+      assert(JSON.stringify(writes()) === '[-14]', `settings: a press after it writes as before (${JSON.stringify(writes())})`);
+    }
+
+    section('Settings change: Auto\'s own save follows the target and the defaults alone');
+    for (const [what, next, stores] of [
+      ['the display unit', { targetLufs: -18, displayUnit: 'dB' }, false],
+      ['the gain overlay', { targetLufs: -18, showGainOverlay: true }, false],
+      ['the target', { targetLufs: -22 }, true],
+      ['the Video default', { targetLufs: -18, autoApplyLoudnessVideoDefault: true }, true],
+      ['the Live default', { targetLufs: -18, autoApplyLoudnessLiveDefault: true }, true]
+    ]) {
+      await onVideo({ entry: { gainVideo: 0.5, autoApplyLoudnessVideo: true }, loudnessDb: -6 });
+      mockSyncStorage.autoLoudnessSettings = { ...next };
+      simulateStorageChange({ [SETTINGS_KEY]: { oldValue: { targetLufs: -18 }, newValue: { ...next } } });
+      await settle();
+      const saves = mockSentMessages.filter((m) => m?.type === 'store:saveChannelGain');
+      assert((saves.length > 0) === stores,
+        `a change of ${what} ${stores ? 'stores' : 'stores nothing'} (${JSON.stringify(saves.map((m) => m.gain))})`);
+      assert(ytcv.state.currentGain === calcGain(-6, next.targetLufs),
+        `and the gain is applied again either way (${ytcv.state.currentGain})`);
+      ytcv._set('targetLufs', -18);
+    }
+    {
+      // The live save the same way: a first live level is stored only for a
+      // change that moves what Auto works out.
+      await onVideo({ entry: { gainVideo: 0.5, autoApplyLoudnessVideo: true } });
+      ytcv._set('currentLiveLkfs', -20);
+      simulateStorageChange({ [SETTINGS_KEY]: { oldValue: { targetLufs: -18 }, newValue: { targetLufs: -18, displayUnit: 'dB' } } });
+      await settle();
+      assert(mockSentMessages.filter((m) => m?.type === 'store:saveChannelGain').length === 0,
+        'a change of the unit makes no live save');
+      simulateStorageChange({ [SETTINGS_KEY]: { oldValue: { targetLufs: -18 }, newValue: { targetLufs: -20, displayUnit: 'dB' } } });
+      await settle();
+      assert(mockSentMessages.filter((m) => m?.type === 'store:saveChannelGain').length === 1,
+        'while a change of the target does');
+      ytcv._set('currentLiveLkfs', null);
+      ytcv._set('currentAutoApplyLoudnessVideo', false);
+      ytcv._set('targetLufs', -18);
+      ytcv.syncLiveFollow();
+    }
+
     section('Popup: the thumb goes back to the gain a blur saved');
     {
       const popup = makePopup({
@@ -10618,15 +10982,15 @@ async function runTests() {
       await popup.blurWindow();
       popup.asked.length = 0;
       popup.node('volumeSlider').value = '125';
-      await popup.fire('volumeSlider', 'keydown', { repeat: true });
+      await popup.fire('volumeSlider', 'keydown', { key: 'ArrowRight', repeat: true });
       await popup.fire('volumeSlider', 'input');
       await popup.fire('volumeSlider', 'change');
       assert(popup.asked.length === 0, `a key repeat after the blur sends nothing (${JSON.stringify(popup.asked)})`);
       popup.node('volumeSlider').value = '130';
-      await popup.fire('volumeSlider', 'keydown');
+      await popup.fire('volumeSlider', 'keydown', { key: 'ArrowRight' });
       await popup.fire('volumeSlider', 'input');
       await popup.fire('volumeSlider', 'change');
-      await popup.fire('volumeSlider', 'keyup');
+      await popup.fire('volumeSlider', 'keyup', { key: 'ArrowRight' });
       assert(popup.asked.filter((m) => m.type === 'setGain' && m.gain === 1.3).length === 1,
         `while a new key press saves again (${JSON.stringify(popup.asked)})`);
 
