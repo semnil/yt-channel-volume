@@ -87,9 +87,9 @@ const SYMLINK_SKIP = (() => {
     fs.rmSync(box, { recursive: true, force: true });
   }
 })();
-// Replace const/let with var so eval exposes to global scope
-const src = fs.readFileSync('./utils.js', 'utf8').replace(/^(const|let) /gm, 'var ');
-eval(src);
+// utils.js as it stands on disk and under its own name, so its top-level
+// declarations are this suite's globals and the coverage report counts the run.
+require('vm').runInThisContext(fs.readFileSync('./utils.js', 'utf8'), { filename: 'utils.js' });
 
 section('msg');
 {
