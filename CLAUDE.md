@@ -115,7 +115,7 @@ flowchart LR
 - Saved Channels table (Video / Live in two columns. Under Auto it reads `Auto (saved gain)`, with a channel link, deletable)
 - Ships with the screen hidden until the load finishes and with the settings controls and the deletions (clear all, the × on a row) disabled
 - The first read takes the settings (sync) and the channels (local) in one load and loses to a newer change notification through a per-type revision
-- Real-time sync through storage.onChanged (renders the list the notification carried, as it is; settings from the sync area, channels from local)
+- Real-time sync through storage.onChanged (renders the list the notification carried, as it is; settings from the sync area, channels from local). A settings change that arrives while a key or the pointer is held on the Target LUFS slider takes the target and leaves the slider and its label to the gesture, whose end writes its own value, or draws the target where it moved nothing
 
 ## i18n
 
