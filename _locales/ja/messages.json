@@ -3,7 +3,7 @@
     "message": "YT Channel Volume"
   },
   "extDescription": {
-    "message": "YouTube チャンネルごとに音量を記憶・自動適用。Content Loudness による最適音量の算出にも対応"
+    "message": "YouTube の音量をチャンネルごとに目標ラウドネス (LUFS) へ揃え、ライブ配信の音量変化にも追従。チャンネルごとの音量も記憶"
   },
   "channelNotDetected": {
     "message": "チャンネル未検出"
