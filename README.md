@@ -1,12 +1,12 @@
 # YT Channel Volume
 
-Chrome extension (Manifest V3) that remembers volume per YouTube channel and applies it automatically when you open a video.
+Chrome extension (Manifest V3) that balances YouTube volume per channel. With LUFS auto-apply on, it brings each video to a target loudness (Target LUFS) from the loudness YouTube measures for it, and follows a live stream's loudness while it is on air. Otherwise it applies the volume saved for the channel when you open a video.
 
 > 日本語版は [README.ja.md](README.ja.md) を参照してください.
 
 ## Features
 
-- **Per-channel volume memory**: Set it once, and the saved volume applies every time you open a video from that channel
+- **Per-channel volume memory**: Set it once, and the saved volume applies every time you open a video from that channel, unless LUFS auto-apply is adjusting it to a detected LUFS
 - **Optimal volume from Content Loudness**: Reads the Content Loudness YouTube measures for each video and computes the optimal volume against the target LUFS. One click saves it to the channel
 - **Per-channel LUFS auto-apply**: The popup shows only the switch for the kind you are watching, Video or Live, and it toggles per channel and kind. For a kind that is on, any video whose LUFS is detected is adjusted to Target LUFS. On a live stream on air it follows that stream's own loudness, as the player's stats for nerds show it, and reads it again every 10 seconds
 - **Global defaults**: The settings page sets the LUFS auto-apply default separately for Video and Live. A channel and kind with no individual Auto setting inherits it
@@ -14,7 +14,7 @@ Chrome extension (Manifest V3) that remembers volume per YouTube channel and app
 - **Manual volume**: Set 0–600 % from the slider or the preset buttons, except while Auto is applying a detected LUFS
 - **Gain overlay**: Shows the gain in force next to the player's volume bar (toggled in Settings)
 - **Settings shared across computers**: when you have turned on Chrome sync, Target LUFS, the global defaults, the display unit and the gain overlay are shared by every computer where you are signed in to Chrome with the same account and have the extension installed. With Chrome sync off, they stay on this computer. Saved channels stay on each computer
-- **One gain per channel and kind**: Auto and manual both update that single gain, so turning LUFS auto-apply on or off leaves the volume where it was. With no LUFS detected the popup marks Current as Fallback, and Saved Channels shows it in the form `Auto (70%)`
+- **One gain per channel and kind**: Auto and manual both update that single gain. Turning LUFS auto-apply on where LUFS is detected applies and saves the gain that matches Target LUFS; turning it off goes on with the saved gain, and where no LUFS is detected, turning it on or off leaves the volume where it was. With no LUFS detected the popup marks Current as Fallback, and Saved Channels shows it in the form `Auto (70%)`
 - **Japanese / English**: Follows the browser's language setting, and English for any other language
 - **No external dependencies**: No npm packages, no CDN. All code written from scratch
 
@@ -70,8 +70,8 @@ page-bridge.js (MAIN world, document_start)
   → relays them to content.js with postMessage
 
 content.js (ISOLATED world, document_idle)
-  → receives loudnessDb over postMessage
-  → with the channel's LUFS auto-apply on, computes and applies a per-video gain
+  → receives loudnessDb and a live stream's loudness over postMessage
+  → with the channel's LUFS auto-apply on, computes and applies the gain that brings the video or live stream to Target LUFS
   → with it off, or with no LUFS detected, applies the saved channel gain
   → drives the volume through a Web Audio API GainNode
   → hands saving the channel settings to the service worker
@@ -115,7 +115,7 @@ python3 pack.py
 ```
 yt-channel-volume/
 ├── manifest.json         # Manifest V3 settings
-├── page-bridge.js        # MAIN world — loudnessDb extraction
+├── page-bridge.js        # MAIN world — loudnessDb and live stream loudness extraction
 ├── content.js            # ISOLATED world — gain management, channel detection
 ├── background.js         # service worker — single writer for the channel settings
 ├── utils.js              # shared constants and utilities (content/popup/options/service worker)
@@ -123,12 +123,14 @@ yt-channel-volume/
 ├── options.html/js       # settings page
 ├── _locales/             # i18n (ja, en)
 ├── icons/                # extension icons (16/48/128 px)
+├── docs/*.md             # every path that changes the gain, and which of them save channel settings (en, ja)
 ├── docs/screenshots/     # screenshots for the README and the store listing (ja, en)
 ├── tools/*.sh            # what the release workflows run: the tag a merged version bump asks for, the tag check and the version check
 ├── tools/fonts/          # M PLUS 1p (OFL), the face the screenshots are drawn in
-├── test.js               # utils unit tests
+├── tools/mutation/       # mutation sweeps that check the test suites catch changes to the code
+├── test.js               # utils unit tests, packaging and README checks, the single-writer contract
 ├── test-navigation.js    # navigation and data integrity tests
-├── test-screenshots.py   # path tests for the screenshot output directory
+├── test-screenshots.py   # tests for gen_screenshots.py's arguments, output directory and --check
 ├── gen_icons.py          # icon generation (Python pillow)
 ├── gen_screenshots.py    # screenshot generation (writes into docs/screenshots/)
 ├── pack.py               # zip packaging

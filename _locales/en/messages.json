@@ -3,7 +3,7 @@
     "message": "YT Channel Volume"
   },
   "extDescription": {
-    "message": "Remember and auto-apply volume per YouTube channel. Calculate optimal volume from Content Loudness"
+    "message": "Balance YouTube volume per channel to a target loudness (LUFS), following live streams, and remember the volume per channel"
   },
   "channelNotDetected": {
     "message": "Channel not detected"

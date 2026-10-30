@@ -1,5 +1,5 @@
 // page-bridge.js — Runs in MAIN world (page context)
-// Extracts loudnessDb from YouTube's player response and relays to content script.
+// Extracts loudnessDb and the live level (player response, stats for nerds) and relays them to content script.
 
 (() => {
   'use strict';

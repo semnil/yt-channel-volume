@@ -1,4 +1,4 @@
-// utils.js — Shared constants and utilities for popup / options pages
+// utils.js — Shared constants and utilities for content / popup / options / service worker
 
 const SETTINGS_KEY = 'autoLoudnessSettings';
 const CHANNEL_VOLUMES_KEY = 'channelVolumes';

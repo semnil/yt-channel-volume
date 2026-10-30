@@ -1,6 +1,6 @@
 // content.js — YT Channel Volume
-// Reads YouTube's Content Loudness and applies automatic or saved per-channel gain.
-// loudnessDb extraction is handled by page-bridge.js (MAIN world).
+// Applies Auto's gain, from Content Loudness or a live stream's level, or the saved per-channel gain.
+// loudnessDb and live level extraction is handled by page-bridge.js (MAIN world).
 
 (() => {
   'use strict';
