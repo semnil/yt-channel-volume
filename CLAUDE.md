@@ -107,7 +107,7 @@ flowchart LR
 
 **options.html / options.js (settings screen, opened in its own tab)**
 
-- Target LUFS slider (-30 to -6 LUFS, default -18). A key held on it changes the label alone and writes once, at `keyup` or at a `blur` that comes first
+- Target LUFS slider (-30 to -6 LUFS, default -18). A key held on it changes the label alone and writes once, at `keyup` or at a `blur` that comes first. A drag ends at a `blur` during it, where Chrome's `change` writes; until the next press (a `pointerdown`, or a `keydown` that is not a repeat) the `input` and `change` after a blur that ended a drag or a key hold move nothing, and the `change` puts the slider back to the target
 - Auto-apply LUFS for all channels (Video / Live separately, default OFF, inherited by a type with no individual Auto flag)
 - Display unit toggle (% / dB). The button already active writes nothing
 - Gain overlay toggle (shown next to the player's volume bar, default OFF)

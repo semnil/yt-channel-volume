@@ -224,17 +224,34 @@
   // ── Events ─────────────────────────────────────────────────────────
 
   // A key held on the slider changes the label alone, and the target is
-  // written once, at keyup, or where the slider loses focus first.
+  // written once, at keyup, or where the slider loses focus first. A drag
+  // ends where the slider or the page's window loses focus during it: Chrome
+  // fires `change` at that blur, ahead of the blur itself, and that change
+  // writes. After a blur that ends a drag or a key hold, input and change
+  // belong to no gesture until the next press (a pointerdown, or a keydown
+  // that is not a repeat), and the change puts the slider back to the target.
   let targetKeyHeld = false;
   let targetKeyMoved = false;
+  let targetPointerHeld = false;
+  let targetGestureEnded = false;
 
-  targetSlider.addEventListener('keydown', () => {
-    if (targetKeyHeld) return;
+  targetSlider.addEventListener('pointerdown', () => {
+    targetPointerHeld = true;
+    targetGestureEnded = false;
+  });
+  const releaseTargetPointer = () => { targetPointerHeld = false; };
+  targetSlider.addEventListener('pointerup', releaseTargetPointer);
+  targetSlider.addEventListener('pointercancel', releaseTargetPointer);
+
+  targetSlider.addEventListener('keydown', (e) => {
+    if (e.repeat || targetKeyHeld) return;
     targetKeyHeld = true;
     targetKeyMoved = false;
+    targetGestureEnded = false;
   });
 
   targetSlider.addEventListener('input', () => {
+    if (targetGestureEnded) return;
     targetValueEl.textContent = targetSlider.value + ' LUFS';
     if (targetKeyHeld) targetKeyMoved = true;
   });
@@ -245,6 +262,10 @@
   }
 
   targetSlider.addEventListener('change', () => {
+    if (targetGestureEnded) {
+      targetSlider.value = targetLufs;
+      return;
+    }
     if (targetKeyHeld) return;
     saveTarget();
   });
@@ -255,8 +276,15 @@
     if (targetKeyMoved) saveTarget();
   }
   targetSlider.addEventListener('keyup', endTargetKeyHold);
-  targetSlider.addEventListener('blur', endTargetKeyHold);
-  window.addEventListener('blur', endTargetKeyHold);
+
+  function endTargetGestureOnBlur() {
+    if (!targetPointerHeld && !targetKeyHeld) return;
+    endTargetKeyHold();
+    targetPointerHeld = false;
+    targetGestureEnded = true;
+  }
+  targetSlider.addEventListener('blur', endTargetGestureOnBlur);
+  window.addEventListener('blur', endTargetGestureOnBlur);
 
   defaultAutoVideoToggle.addEventListener('change', async () => {
     const previous = defaultAutoApplyVideo;

@@ -10687,6 +10687,65 @@ async function runTests() {
       assert(writes().length === 1 && writes()[0].value === -12, `a drag writes at its end (${JSON.stringify(writes())})`);
     }
 
+    section('Settings page: a drag on Target LUFS that loses focus ends there');
+    {
+      const options = makeOptions({ settings: { targetLufs: -18 } });
+      await options.settle();
+      const writes = () => options.sent.filter((m) => m.type === 'store:saveSetting');
+      const slider = () => options.node('targetSlider');
+      const move = async (value) => {
+        slider().value = String(value);
+        await options.fire('targetSlider', 'input');
+      };
+      // Chrome fires the change at the blur, ahead of the blur itself, and that
+      // change writes.
+      await options.fire('targetSlider', 'pointerdown');
+      await move(-21);
+      await options.fire('targetSlider', 'change');
+      await options.blurWindow();
+      assert(writes().length === 1 && writes()[0].value === -21,
+        `the change at the blur writes the value reached, once (${JSON.stringify(writes())})`);
+      // Focus comes back with the button held and the thumb moves on: the
+      // release's change writes nothing and puts the slider back.
+      await move(-25);
+      await options.fire('targetSlider', 'change');
+      await options.fire('targetSlider', 'pointerup');
+      assert(writes().length === 1 && Number(slider().value) === -21 && options.node('targetValue').textContent === '-21 LUFS',
+        `after the blur the drag writes nothing more, and the slider and its label go back (${writes().length} / ${slider().value} / ${options.node('targetValue').textContent})`);
+
+      // The next press is a drag of its own.
+      options.sent.length = 0;
+      await options.fire('targetSlider', 'pointerdown');
+      await move(-12);
+      await options.fire('targetSlider', 'change');
+      await options.fire('targetSlider', 'pointerup');
+      assert(writes().length === 1 && writes()[0].value === -12, `the next press writes at its change (${JSON.stringify(writes())})`);
+
+      // A blur with nothing pressed ends nothing: the change after it writes.
+      options.sent.length = 0;
+      await options.blurWindow();
+      await options.fire('targetSlider', 'blur');
+      await move(-15);
+      await options.fire('targetSlider', 'change');
+      assert(writes().length === 1 && writes()[0].value === -15,
+        `a change after a blur with nothing pressed writes as before (${JSON.stringify(writes())})`);
+
+      // A key held when the window loses focus writes there, and a repeat of
+      // that key is no new press: what it moves goes back, and nothing more is
+      // written.
+      options.sent.length = 0;
+      await options.fire('targetSlider', 'keydown');
+      await move(-16);
+      await options.fire('targetSlider', 'change');
+      await options.blurWindow();
+      for (const fn of slider().listeners.keydown || []) await fn({ target: slider(), repeat: true });
+      await move(-17);
+      await options.fire('targetSlider', 'change');
+      await options.fire('targetSlider', 'keyup');
+      assert(writes().length === 1 && writes()[0].value === -16 && Number(slider().value) === -16,
+        `a key held through a blur writes once there, and its repeats after it do not (${JSON.stringify(writes())} / ${slider().value})`);
+    }
+
     section('Settings change: Auto\'s own save follows the target and the defaults alone');
     for (const [what, next, stores] of [
       ['the display unit', { targetLufs: -18, displayUnit: 'dB' }, false],
