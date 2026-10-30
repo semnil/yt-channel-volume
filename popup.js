@@ -304,28 +304,38 @@
   let sliderPointerHeld = false;
   let sliderGestureEnded = false;
   // A key held on the slider is one gesture as well: each repeat previews,
-  // and the gain is saved once, at keyup. Losing focus while the key is held
-  // ends it there, as a blur ends a drag, and saves the gain reached.
+  // and the gain is saved once, when the last key that moves the value is let
+  // go. Losing focus while a key is held ends it there, as a blur ends a drag,
+  // and saves the gain reached. A key that moves no value (Tab, a modifier)
+  // leaves the gesture as it is.
   let sliderKeyHeld = false;
   let sliderKeyMoved = false;
+  const sliderKeysDown = new Set();
   volumeSlider.addEventListener('pointerdown', () => {
     sliderPointerHeld = true;
     sliderKeyHeld = false;
+    sliderKeysDown.clear();
     beginSliderGesture();
   });
   // A key repeat is not a new press, and does not end what a blur ended.
   volumeSlider.addEventListener('keydown', (e) => {
-    if (e.repeat || sliderKeyHeld) return;
+    if (e.repeat || !isSliderMoveKey(e.key)) return;
+    sliderKeysDown.add(e.key);
+    if (sliderKeyHeld) return;
     sliderKeyHeld = true;
     sliderKeyMoved = false;
     beginSliderGesture();
   });
   const endSliderKeyHold = () => {
+    sliderKeysDown.clear();
     if (!sliderKeyHeld) return;
     sliderKeyHeld = false;
     if (sliderKeyMoved) saveSliderGain();
   };
-  volumeSlider.addEventListener('keyup', endSliderKeyHold);
+  volumeSlider.addEventListener('keyup', (e) => {
+    if (!sliderKeysDown.delete(e.key)) return;
+    if (sliderKeysDown.size === 0) endSliderKeyHold();
+  });
   const releaseSliderPointer = () => { sliderPointerHeld = false; };
   volumeSlider.addEventListener('pointerup', releaseSliderPointer);
   volumeSlider.addEventListener('pointercancel', releaseSliderPointer);
