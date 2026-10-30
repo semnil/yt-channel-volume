@@ -191,7 +191,7 @@ sequenceDiagram
 - `pointerdown` も `keydown` も無いまま来た `input` は、その `input` 自身が `currentAppliesTo` の写しを取る。1 回のドラッグの間の `input` は、すべて同じ写しを運ぶ。
 - 「Manual Volume」(スライダーとプリセット) は、その種別の Auto が ON で Loudness が表示されている間はポップアップ側で操作できなくなり、`content.js` も同じ状態を断る。
 - `input` イベント 1 回ごとに `setGainLive` を 1 回送る。debounce は無い。
-- 試し聞きが続いていて、`currentGestureState()` がまだその `appliesTo` と同じ間は、ほかから来たゲインをかけずに取っておく: `applyPreferredGain`、`applyAutomaticLoudnessGain`、`channelVolumes` の変更の受け取り側は `commitGainFromElsewhere` を通して (ライブのゲインは `commitLiveGain` を通して) ゲインを入れ、これらはゲインをそのままにする。`commitLiveGain` はライブのゲインを出す前に戻るので、ブリッジのメッセージでは `liveRaiseFrom` はそのまま残る。受け取り側は `liveGainToPlay` でライブのゲインを出してから取っておくので、別のタブの保存が届くと、`liveRaiseFrom` は試し聞きのゲインを基準に進む。それぞれのほかの仕事 (受け取る状態、Auto 自身の保存、ライブの保存の判定) は続ける。状態が動いた試し聞きは、何も取っておかない。
+- 試し聞きが続いていて、`currentGestureState()` がまだその `appliesTo` と同じ間は、ほかから来たゲインをかけずに取っておく: `applyPreferredGain`、`applyAutomaticLoudnessGain`、`channelVolumes` の変更の受け取り側は `commitGainFromElsewhere` を通して (ライブのゲインは `commitLiveGain` を通して) ゲインを入れ、これらはゲインをそのままにして、ページが今鳴らしている要素にかけ直す。このため、試し聞きの間に作り直されたプレイヤーも、試し聞きのゲインでつながる。`commitLiveGain` はライブのゲインを出す前に戻るので、ブリッジのメッセージでは `liveRaiseFrom` はそのまま残る。受け取り側は `liveGainToPlay` でライブのゲインを出してから取っておくので、別のタブの保存が届くと、`liveRaiseFrom` は試し聞きのゲインを基準に進む。それぞれのほかの仕事 (受け取る状態、Auto 自身の保存、ライブの保存の判定) は続ける。状態が動いた試し聞きは、何も取っておかない。
 - ポップアップが保存していない試し聞きのあとでスライダーをポインターで押さえ続けている間は、ポップアップはその試し聞きを `PREVIEW_KEEP_ALIVE_MS` (1000 ms、`keepPreviewAlive`) ごとに送り直し、タブはそれを受け付けるたびに待ち直す。送り直しは、ポインターを離したとき、試し聞きを保存したとき、ポップアップを閉じたときに止まる。
 - 試し聞きは、`setGain` が来たとき (次の節を参照) か、最後に受け付けた `setGainLive` から `PREVIEW_IDLE_MS` (2000 ms) たったときに終わる。後者で終わると、`applyPreferredGain()` がその時点の保存内容をかけ、ポップアップに知らせる。
 

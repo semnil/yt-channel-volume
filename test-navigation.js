@@ -10000,6 +10000,27 @@ async function runTests() {
         `the release saves the gain the slider was moved to (${JSON.stringify(saved)} / ${mockStorage.channelVolumes[TT_CH].gainVideo})`);
       ytcv._set('targetLufs', -18);
 
+      // The player puts another element in place while the slider is held:
+      // the chain moves to it at the preview's gain, as it does with no preview.
+      await onVideo();
+      const unheld = { id: 'replaced-without-preview' };
+      mockVideoEl = unheld;
+      fireObserver();
+      await settle();
+      assert(ytcv.state.connectedVideo === unheld,
+        `with no preview the chain moves to the element put in place (${ytcv.state.connectedVideo?.id})`);
+      await onVideo();
+      await popupGesture({ type: 'setGainLive', gain: 3.0 });
+      const replaced = { id: 'replaced-during-preview' };
+      mockVideoEl = replaced;
+      fireObserver();
+      await settle();
+      assert(ytcv.state.connectedVideo === replaced && ytcv.state.gainNode.gain.value === 3.0
+        && ytcv.state.currentGain === 3.0,
+        `during a preview it moves there too, at the preview's gain (${ytcv.state.connectedVideo?.id} / ${ytcv.state.gainNode.gain.value})`);
+      await popupGesture({ type: 'setGain', gain: 3.0 });
+      await settle();
+
       // A gesture whose input stops without a save: once it has been quiet for
       // PREVIEW_IDLE_MS, what storage holds is applied.
       await onVideo();

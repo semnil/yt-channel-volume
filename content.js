@@ -490,9 +490,13 @@
   }
 
   // While a slider preview holds gains back, no live gain is worked out, so
-  // liveRaiseFrom stays where it was.
+  // liveRaiseFrom stays where it was; the preview's gain is set again on the
+  // element the page plays now.
   function commitLiveGain() {
-    if (previewHoldsGain()) return;
+    if (previewHoldsGain()) {
+      applyGainToAudio(currentGain);
+      return;
+    }
     commitGain(liveGainToPlay());
   }
 
@@ -796,8 +800,13 @@
     return !!preview && preview.appliesTo === currentGestureState();
   }
 
+  // A gain held back leaves the preview's gain playing, set again on the
+  // element the page plays now, so a player rebuilt under the preview is
+  // connected at it.
   function commitGainFromElsewhere(value) {
-    return previewHoldsGain() ? currentGain : commitGain(value);
+    if (!previewHoldsGain()) return commitGain(value);
+    applyGainToAudio(currentGain);
+    return currentGain;
   }
 
   // ── Gain overlay on YouTube player ──────────────────────────────────
