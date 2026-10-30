@@ -1,12 +1,12 @@
 # YT Channel Volume
 
-YouTube チャンネルごとに音量を記憶し、動画を開いた時に自動で適用する Chrome 拡張機能 (Manifest V3)。
+YouTube の音量をチャンネルごとに揃える Chrome 拡張機能 (Manifest V3)。LUFS 自動適用を ON にすると、YouTube が動画ごとに測った loudness をもとに、それぞれの動画を目標の音量 (Target LUFS) に合わせ、配信中のライブではその配信の loudness の変化に合わせる。それ以外では、動画を開いた時にそのチャンネルで保存した音量を適用する。
 
 > For the English version, see [README.md](README.md).
 
 ## 特徴
 
-- **チャンネル単位の音量記憶**: 一度設定すれば、同じチャンネルの動画を開くたびに保存済みの音量が自動適用
+- **チャンネル単位の音量記憶**: 一度設定すれば、同じチャンネルの動画を開くたびに保存済みの音量が自動適用 (LUFS 自動適用が、検出した LUFS に合わせて調整している場合を除く)
 - **Content Loudness からの最適音量算出**: YouTube が動画ごとに測定した Content Loudness を読み取り、ターゲット LUFS に基づいて最適なボリュームを算出。ワンクリックでチャンネルに保存
 - **チャンネル別 LUFS 自動適用**: ポップアップには現在視聴中のVideo / Liveに対応するスイッチだけを表示し、チャンネル・種別別にON/OFF。ONの種別ではLUFSを検出できた動画をTarget LUFSに自動調整。配信中のライブでは、プレーヤーの詳細統計情報が示すその配信の loudness に合わせ、10 秒ごとに読み直す
 - **全チャンネル既定値**: オプション画面でVideo / Live別にLUFS自動適用の既定値を設定可能。個別Auto設定のないチャンネル・種別が継承
@@ -14,7 +14,7 @@ YouTube チャンネルごとに音量を記憶し、動画を開いた時に自
 - **手動ボリューム調整**: Autoが検出済みLUFSを適用している場合を除き、0〜600% の範囲でスライダーまたはプリセットボタンから設定
 - **ゲイン表示**: プレイヤーの音量バーの横に現在のゲイン値を表示 (設定で ON/OFF)
 - **設定をパソコン間で共有**: Chrome の同期を有効にしていれば、Target LUFS・全チャンネル既定値・表示単位・ゲイン表示は、同じアカウントで Chrome にログインしてこの拡張機能を導入しているすべてのパソコンで共有。同期が無効なら、このパソコンだけに保存。保存済みチャンネルは各パソコンに留まる
-- **単一のチャンネルゲイン**: AutoでもManualでもチャンネル・種別ごとに1つのゲインを更新するため、LUFS自動適用をON/OFFしても音量は変わらない。LUFS未検出時はポップアップのCurrentにFallbackを表示し、Saved Channelsでは`Auto (70%)`の形式で確認可能
+- **単一のチャンネルゲイン**: AutoでもManualでもチャンネル・種別ごとに1つのゲインを更新する。LUFSを検出している動画でLUFS自動適用をONにすると、Target LUFSに合わせたゲインを適用して保存する。OFFにすると保存済みのゲインで再生を続け、LUFSを検出していない動画ではON/OFFしても音量は変わらない。LUFS未検出時はポップアップのCurrentにFallbackを表示し、Saved Channelsでは`Auto (70%)`の形式で確認可能
 - **日本語/英語**: ブラウザ言語設定で自動切替 (それ以外の言語では英語)
 - **外部依存ゼロ**: npm パッケージ・CDN なし。全コード自作
 
@@ -70,8 +70,8 @@ page-bridge.js (MAIN world, document_start)
   → postMessage で content.js に中継
 
 content.js (ISOLATED world, document_idle)
-  → postMessage で loudnessDb を受信
-  → チャンネルの LUFS 自動適用が ON なら動画ごとのゲインを算出・適用
+  → postMessage で loudnessDb とライブ配信の loudness を受信
+  → チャンネルの LUFS 自動適用が ON なら、動画やライブ配信を Target LUFS に合わせるゲインを算出・適用
   → OFF または LUFS 未検出なら保存済みチャンネルゲインを適用
   → Web Audio API GainNode で音量を制御
   → チャンネル設定の保存は service worker に依頼
@@ -115,7 +115,7 @@ python3 pack.py
 ```
 yt-channel-volume/
 ├── manifest.json         # Manifest V3 設定
-├── page-bridge.js        # MAIN world — loudnessDb 抽出
+├── page-bridge.js        # MAIN world — loudnessDb とライブ配信の loudness の抽出
 ├── content.js            # ISOLATED world — ゲイン管理・チャンネル検出
 ├── background.js         # service worker — チャンネル設定の単一 writer
 ├── utils.js              # 共通定数・ユーティリティ (content/popup/options/service worker 共有)
@@ -123,12 +123,14 @@ yt-channel-volume/
 ├── options.html/js       # 設定画面
 ├── _locales/             # i18n (ja, en)
 ├── icons/                # 拡張アイコン (16/48/128 px)
+├── docs/*.md             # ゲインが変わる全経路と、そのうちチャンネル設定を保存する経路 (en, ja)
 ├── docs/screenshots/     # README・ストア掲載用スクリーンショット (ja, en)
 ├── tools/*.sh            # リリースワークフローが実行する、版上げのマージが求めるタグの決定・タグ検査・バージョン検査
 ├── tools/fonts/          # スクリーンショット描画用フォント M PLUS 1p (OFL)
-├── test.js               # utils ユニットテスト
+├── tools/mutation/       # コードを変えたときにテストが検出するかを確かめるミューテーション走査
+├── test.js               # utils ユニットテスト・パッケージングと README の検査・単一 writer の契約
 ├── test-navigation.js    # ナビゲーション・データ整合性テスト
-├── test-screenshots.py   # スクリーンショット出力先のパステスト
+├── test-screenshots.py   # gen_screenshots.py の引数・出力先・--check のテスト
 ├── gen_icons.py          # アイコン生成 (Python pillow)
 ├── gen_screenshots.py    # スクリーンショット生成 (docs/screenshots/ へ出力)
 ├── pack.py               # zip パッケージング
