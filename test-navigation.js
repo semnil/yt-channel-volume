@@ -11278,6 +11278,63 @@ async function runTests() {
       }
     }
 
+    // tools/coverage/v8-to-lcov.mjs, the lcov report CI uploads, made from the
+    // coverage V8 writes. A box of its own runs a source under NODE_V8_COVERAGE
+    // beside two scripts the report does not count — a copy of the source at
+    // another path, and an edited copy under its name — each of which calls the
+    // function the source itself never calls.
+    {
+      const nodePath = require('path');
+      const cp = require('child_process');
+      const box = fs.mkdtempSync(nodePath.join(require('os').tmpdir(), 'cv-coverage-'));
+      const write = (name, text) => fs.writeFileSync(nodePath.join(box, name), text);
+      const source = '// a comment\nfunction pick(a, b) {\n  if (!a) return b;\n  return a;\n}\n'
+        + 'function never() {\n  return 0;\n}\npick(1, 2);\n';
+      write('src.js', source);
+      write('unused.js', 'const x = 1;\n\n// none\nx;\n');
+      fs.mkdirSync(nodePath.join(box, 'other'));
+      write('other/src.js', source.replace('pick(1, 2);', 'never(   );'));
+      write('run.cjs', [
+        "const text = require('fs').readFileSync('src.js', 'utf8');",
+        "require('vm').runInNewContext(text, {}, { filename: 'src.js' });",
+        "require('vm').runInNewContext(text + 'never();\\n', {}, { filename: 'src.js' });",
+        "require('./other/src.js');"
+      ].join('\n'));
+      const v8Dir = nodePath.join(box, 'v8');
+      const ran = cp.spawnSync('node', ['run.cjs'],
+        { cwd: box, encoding: 'utf8', env: { ...process.env, NODE_V8_COVERAGE: v8Dir } });
+      const converted = cp.spawnSync('node',
+        [nodePath.resolve('tools/coverage/v8-to-lcov.mjs'), v8Dir, 'out.info', 'src.js', 'unused.js'],
+        { cwd: box, encoding: 'utf8' });
+      const report = converted.status === 0 ? fs.readFileSync(nodePath.join(box, 'out.info'), 'utf8') : '';
+      fs.rmSync(box, { recursive: true, force: true });
+      assert(ran.status === 0 && converted.status === 0,
+        `the box runs and converts (${(ran.stderr + converted.stderr).trim()})`);
+
+      const files = {};
+      let at = null;
+      for (const row of report.split('\n')) {
+        if (row.startsWith('SF:')) files[at = row.slice(3)] = { lines: [], run: [], partly: [] };
+        else if (row.startsWith('DA:')) {
+          const [line, count] = row.slice(3).split(',').map(Number);
+          files[at].lines.push(line);
+          if (count > 0) files[at].run.push(line);
+        } else if (row.startsWith('BRDA:') && row.endsWith(',-')) {
+          files[at].partly.push(Number(row.slice(5).split(',')[0]));
+        }
+      }
+      const src = files['src.js'] || { lines: [], run: [], partly: [] };
+      assert(src.lines.join(' ') === '2 3 4 5 6 7 8 9',
+        `every line of code is reported and the comment is not (${src.lines.join(' ')})`);
+      assert(src.run.join(' ') === '2 3 4 5 9',
+        `what the source ran is counted, and the copies that call never() are not (${src.run.join(' ')})`);
+      assert(src.partly.join(' ') === '3',
+        `a line part of which did not run is reported as partly run (${src.partly.join(' ')})`);
+      const unused = files['unused.js'] || { lines: [], run: [] };
+      assert(unused.lines.join(' ') === '1 4' && unused.run.length === 0,
+        `a source nothing loaded is reported with every line unrun (${unused.lines.join(' ')})`);
+    }
+
     // tools/mutation/bail.mjs, the stop at a suite's first failed check. What it
     // may change is when a run ends, never which way it ends: a run with no
     // failure in it ends as the suite ended, and a run a signal took ends by

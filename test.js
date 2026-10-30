@@ -1831,10 +1831,12 @@ assert(!packaged.includes('.DS_Store'),
     return next === -1 ? rest : rest.slice(0, next + 1);
   };
   // A step run only where something already failed is a way of looking at the
-  // failure, not a check the tree has to pass.
+  // failure, not a check the tree has to pass; nor is the coverage report, which
+  // turns what the tests ran into what CI uploads.
   const checksOf = job => job.split(/\n {6}- /).slice(1)
     .filter(step => !/^\s*if: failure\(\)/m.test(step))
-    .map(step => step.match(/^\s*run: (.+)$/m)).filter(Boolean).map(match => match[1].trim());
+    .map(step => step.match(/^\s*run: (.+)$/m)).filter(Boolean).map(match => match[1].trim())
+    .filter(run => !run.startsWith('node tools/coverage/'));
   const ci = checksOf(jobIn('ci.yaml', 'test'));
   const build = jobIn('release.yaml', 'build');
   // The step, not the line inside it: the pack runs in a script now, so a
