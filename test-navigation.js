@@ -10925,6 +10925,25 @@ async function runTests() {
       await options.fire('targetSlider', 'pointerup');
       assert(writes().length === 0 && shown() === '-22 / -22 LUFS',
         `settings: a press that moved nothing and ends at a blur draws it too (${JSON.stringify(writes())}, ${shown()})`);
+      // A drag that comes back to where it began fires no change at its
+      // release, let go of or ended by a blur: the target that arrived is drawn.
+      options.sent.length = 0;
+      assert(shown() === '-22 / -22 LUFS', `settings: the drag begins on -22 (${shown()})`);
+      await options.fire('targetSlider', 'pointerdown');
+      await move(-14);
+      await notify(-25);
+      await move(-22);
+      await options.fire('targetSlider', 'pointerup');
+      assert(writes().length === 0 && shown() === '-25 / -25 LUFS',
+        `settings: a drag let go of where it began draws the target that arrived (${JSON.stringify(writes())}, ${shown()})`);
+      await options.fire('targetSlider', 'pointerdown');
+      await move(-20);
+      await notify(-26);
+      await move(-25);
+      await options.blurWindow();
+      await options.fire('targetSlider', 'pointerup');
+      assert(writes().length === 0 && shown() === '-26 / -26 LUFS',
+        `settings: and so does one a blur ends where it began (${JSON.stringify(writes())}, ${shown()})`);
       await notify(-18);
     }
 

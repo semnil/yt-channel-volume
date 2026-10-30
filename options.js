@@ -86,7 +86,8 @@
   // A key or the pointer held on the Target LUFS slider keeps the slider and
   // its label on the value the gesture moved to; applySettings takes the
   // target all the same, and the gesture's end writes its own value, or draws
-  // the target where the gesture moved nothing.
+  // the target where it writes nothing (a key that moved nothing, a drag let
+  // go of where it began, a press a blur ended).
   function drawTarget() {
     targetSlider.value = targetLufs;
     targetValueEl.textContent = targetLufs + ' LUFS';
@@ -243,19 +244,19 @@
   let targetKeyHeld = false;
   let targetKeyMoved = false;
   let targetPointerHeld = false;
-  let targetPointerMoved = false;
+  let targetPointerStart = null;
   let targetGestureEnded = false;
   const targetKeysDown = new Set();
 
   targetSlider.addEventListener('pointerdown', () => {
     targetPointerHeld = true;
-    targetPointerMoved = false;
+    targetPointerStart = Number(targetSlider.value);
     targetGestureEnded = false;
   });
-  // A release with no change after it (the pointer moved nothing) draws the
-  // target, which a settings change during the press may have moved.
+  // A release on the value the press began on fires no change after it, and
+  // draws the target, which a settings change during the press may have moved.
   const releaseTargetPointer = () => {
-    if (targetPointerHeld && !targetPointerMoved) drawTarget();
+    if (targetPointerHeld && Number(targetSlider.value) === targetPointerStart) drawTarget();
     targetPointerHeld = false;
   };
   targetSlider.addEventListener('pointerup', releaseTargetPointer);
@@ -274,7 +275,6 @@
     if (targetGestureEnded) return;
     targetValueEl.textContent = targetSlider.value + ' LUFS';
     if (targetKeyHeld) targetKeyMoved = true;
-    if (targetPointerHeld) targetPointerMoved = true;
   });
 
   function saveTarget() {
@@ -306,7 +306,7 @@
   function endTargetGestureOnBlur() {
     if (!targetPointerHeld && !targetKeyHeld) return;
     endTargetKeyHold();
-    if (!targetPointerMoved) drawTarget();
+    drawTarget();
     targetPointerHeld = false;
     targetGestureEnded = true;
   }
