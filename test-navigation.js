@@ -249,22 +249,35 @@ globalThis.AudioContext = class {
 // through as it is.
 const LIVE_FOLLOW_MS = 10000;
 const heldLiveFollows = [];
+// The end of a slider preview that its input stopped coming for is held the
+// same way, so a preview a case leaves open ends when a case says so.
+const PREVIEW_IDLE_MS = 2000;
+const heldPreviewEnds = [];
 const passedSetTimeout = globalThis.setTimeout;
 const passedClearTimeout = globalThis.clearTimeout;
 globalThis.setTimeout = (fn, ms, ...args) => {
-  if (ms !== LIVE_FOLLOW_MS) return passedSetTimeout(fn, ms, ...args);
+  const list = ms === LIVE_FOLLOW_MS ? heldLiveFollows : ms === PREVIEW_IDLE_MS ? heldPreviewEnds : null;
+  if (!list) return passedSetTimeout(fn, ms, ...args);
   const held = { fn, ms };
-  heldLiveFollows.push(held);
+  list.push(held);
   return held;
 };
 globalThis.clearTimeout = (timer) => {
-  const at = heldLiveFollows.indexOf(timer);
-  if (at > -1) { heldLiveFollows.splice(at, 1); return; }
+  for (const list of [heldLiveFollows, heldPreviewEnds]) {
+    const at = list.indexOf(timer);
+    if (at > -1) { list.splice(at, 1); return; }
+  }
   passedClearTimeout(timer);
 };
 // Runs the follows held now (not ones they set) and hands back how many ran.
 async function runLiveFollows() {
   const due = heldLiveFollows.splice(0);
+  for (const timer of due) timer.fn();
+  await tick();
+  return due.length;
+}
+async function runPreviewEnds() {
+  const due = heldPreviewEnds.splice(0);
   for (const timer of due) timer.fn();
   await tick();
   return due.length;
@@ -673,7 +686,9 @@ function makePopup({ tabUrl = 'https://www.youtube.com/watch?v=abc', answer = nu
     button.dataset.vol = String(percent);
     return button;
   });
+  const windowListeners = {};
   const popupSandbox = {
+    window: { addEventListener: (type, fn) => (windowListeners[type] ||= []).push(fn) },
     console: { log() {}, warn() {}, error() {} },
     Promise, Math, JSON, Date, Object, Array, Number, String, Boolean, isNaN, parseFloat, parseInt,
     setTimeout: (fn) => { popupTimers.push(fn); return popupTimers.length; },
@@ -739,9 +754,14 @@ function makePopup({ tabUrl = 'https://www.youtube.com/watch?v=abc', answer = nu
     },
     // A disabled control receives no event: the browser does not dispatch one,
     // so what protects a gesture is the disabling, not a guard in the handler.
-    async fire(id, type) {
+    async fire(id, type, event = {}) {
       if (node(id).disabled) { await tick(); return; }
-      for (const fn of node(id).listeners[type] || []) await fn({ target: node(id) });
+      for (const fn of node(id).listeners[type] || []) await fn({ target: node(id), ...event });
+      await tick();
+    },
+    // The popup's own window losing focus.
+    async blurWindow() {
+      for (const fn of windowListeners.blur || []) await fn({});
       await tick();
     },
     async firePreset(index, type) {
@@ -830,6 +850,11 @@ async function runTests() {
   fireNavigateFinish();
   await tick();
   assert(ytcv.state._lastVideoId === 'vid004', 'video ID updated');
+  // After a navigation the page can still name the channel of the video
+  // left, so the channel waits for the bridge to name it for this video.
+  assert(ytcv.state.currentChannel.id === '', 'the page is not taken for the channel');
+  simulateBridgeMessage({ videoId: 'vid004', isLiveContent: false, channelId: 'UCtest_B' });
+  await tick();
   assert(ytcv.state.currentChannel.id === 'UCtest_B', 'channel detected');
   assert(ytcv.state.currentGain === 0.63, 'saved gainVideo applied');
 
@@ -863,6 +888,8 @@ async function runTests() {
   fireNavigateFinish();
   await tick();
   assert(ytcv.state._lastVideoId === 'vid007', 'video ID after channel→video');
+  simulateBridgeMessage({ videoId: 'vid007', isLiveContent: false, channelId: 'UCtest_C' });
+  await tick();
   assert(ytcv.state.currentGain === 1.5, 'gain for Ch C applied');
 
   // ── P08: Playlist auto-advance ─────────────────────────────────────
@@ -1362,6 +1389,7 @@ async function runTests() {
     'UCapply': { name: 'Apply Ch', url: 'https://y/UCapply', gainVideo: 0.5, gainLive: 0.8 }
   };
   ytcv._set('currentChannel', { id: 'UCapply', name: 'Apply Ch', url: 'https://y/UCapply' });
+  ytcv._set('currentChannelVideoId', ytcv.getUrlVideoId());
   ytcv._set('currentVideoType', 'video');
   ytcv._set('targetLufs', -18);
 
@@ -1380,13 +1408,14 @@ async function runTests() {
     `with nothing measured it is declined — got ${JSON.stringify(withoutLoudness)}`);
 
   // Measured, but the page has not said whose channel it is yet. Applying now
-  // would move the level the viewer hears with nothing able to remember it.
+  // would move the level the viewer hears with nothing able to remember it;
+  // a state with no channel for the video is not one a gesture is taken on.
   ytcv._set('currentLoudnessDb', -6);
   ytcv._set('currentChannel', { id: '', name: '', url: '' });
   const gainBeforeIdless = ytcv.state.currentGain;
   const withoutChannel = await popupGesture({ type: 'applyLoudness' });
   await tick();
-  assert(withoutChannel?.ok === false && withoutChannel?.reason === 'no loudness data',
+  assert(withoutChannel?.ok === false && withoutChannel?.reason === 'state moved',
     `with no channel known it is declined — got ${JSON.stringify(withoutChannel)}`);
   assert(ytcv.state.currentGain === gainBeforeIdless,
     `and the gain that is playing is left alone (${ytcv.state.currentGain})`);
@@ -1396,6 +1425,7 @@ async function runTests() {
   // And with none of the three in the way it goes through. Without this the
   // refusals above would hold for a handler that declined everything.
   ytcv._set('currentChannel', { id: 'UCapply', name: 'Apply Ch', url: 'https://y/UCapply' });
+  ytcv._set('currentChannelVideoId', ytcv.getUrlVideoId());
   const applied = await popupGesture({ type: 'applyLoudness' });
   await tick();
   assert(applied?.ok === true, `otherwise it applies — got ${JSON.stringify(applied)}`);
@@ -1457,6 +1487,7 @@ async function runTests() {
     'UCbridgeLearn': { name: 'Bridge Learn', autoApplyLoudnessVideo: true }
   };
   setURL('/watch', 'BRIDGELEARN');
+  ytcv._set('_lastVideoId', 'BRIDGELEARN');
   ytcv._set('currentChannel', { id: 'UCbridgeLearn', name: 'Bridge Learn', url: '' });
   ytcv._set('currentChannelVideoId', 'BRIDGELEARN');
   ytcv._set('currentVideoType', 'video');
@@ -1519,6 +1550,7 @@ async function runTests() {
     }
   };
   setURL('/watch', comparedArchiveVideoId);
+  ytcv._set('_lastVideoId', comparedArchiveVideoId);
   ytcv._set('currentChannel', {
     id: 'UCsharedLive',
     name: 'Shared Live Channel',
@@ -1537,6 +1569,7 @@ async function runTests() {
     'calculated gain becomes the channel live gain');
 
   setURL('/watch', comparedLiveVideoId);
+  ytcv._set('_lastVideoId', comparedLiveVideoId);
   ytcv._set('currentChannelVideoId', comparedLiveVideoId);
   ytcv._set('currentLoudnessDb', null);
   ytcv._set('currentLoudnessVideoId', comparedLiveVideoId);
@@ -1706,6 +1739,7 @@ async function runTests() {
   const enterVideo = (channelId, videoId, videoType, entry) => {
     mockStorage['channelVolumes'] = entry ? { [channelId]: entry } : {};
     setURL('/watch', videoId);
+    ytcv._set('_lastVideoId', videoId);
     ytcv._set('currentChannel', { id: channelId, name: entry?.name || channelId, url: 'https://www.youtube.com/channel/' + channelId });
     ytcv._set('currentChannelVideoId', videoId);
     ytcv._set('currentVideoType', videoType);
@@ -1738,6 +1772,7 @@ async function runTests() {
 
     // On air there is neither a level nor a stable rendition.
     setURL('/watch', 'ONAIRSTB001');
+    ytcv._set('_lastVideoId', 'ONAIRSTB001');
     ytcv._set('currentChannelVideoId', 'ONAIRSTB001');
     await bridgeSays('UCrendition', 'ONAIRSTB001', {
       isLiveContent: true, isLiveNow: true, loudnessDb: null, baseLoudnessDb: null
@@ -2451,6 +2486,7 @@ async function runTests() {
     channelVolumes: { 'UCshared': { name: 'Shared Ch', gainVideo: 0.5, url: '' } }
   };
   ytcv._set('currentChannel', { id: 'UCshared', name: 'Shared Ch', url: '' });
+  ytcv._set('currentChannelVideoId', ytcv.getUrlVideoId());
   ytcv._set('currentVideoType', 'video');
   ytcv._set('currentLoudnessDb', -6);
   ytcv._set('targetLufs', -18);
@@ -2527,6 +2563,7 @@ async function runTests() {
   mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCfoldfail' };
   setURL('/watch', 'FOLDFAIL001');
   ytcv._set('currentChannel', { id: 'UCfoldfail', name: 'Fold Fail', url: '' });
+  ytcv._set('currentChannelVideoId', ytcv.getUrlVideoId());
   ytcv._set('currentVideoType', 'video');
   ytcv._set('currentLoudnessDb', -6);
   ytcv._set('currentLoudnessVideoId', 'FOLDFAIL001');
@@ -2569,6 +2606,7 @@ async function runTests() {
   section('Storage failure: a rejected write is answered, not dropped');
   mockStorage['channelVolumes'] = { 'UCwritefail': { name: 'Write Fail', gainVideo: 0.5 } };
   ytcv._set('currentChannel', { id: 'UCwritefail', name: 'Write Fail', url: '' });
+  ytcv._set('currentChannelVideoId', ytcv.getUrlVideoId());
   ytcv._set('currentVideoType', 'video');
   ytcv._set('currentLoudnessDb', null);
   ytcv._set('currentAutoApplyLoudnessVideo', false);
@@ -2639,6 +2677,7 @@ async function runTests() {
   section('Auto LUFS defaults: an inherited Auto stays on after a manual save');
   mockStorage['channelVolumes'] = { 'UCinherit': { name: 'Inherit Ch' } };
   ytcv._set('currentChannel', { id: 'UCinherit', name: 'Inherit Ch', url: '' });
+  ytcv._set('currentChannelVideoId', ytcv.getUrlVideoId());
   ytcv._set('currentVideoType', 'live');
   ytcv._set('currentLoudnessDb', null);
   ytcv._set('defaultAutoApplyLoudnessLive', true);
@@ -2767,6 +2806,7 @@ async function runTests() {
     }
   };
   setURL('/watch', 'NAVIGATE001');
+  ytcv._set('_lastVideoId', 'NAVIGATE001');
   ytcv._set('currentChannel', {
     id: navigationSourceId,
     name: 'Channel A',
@@ -2912,6 +2952,7 @@ async function runTests() {
     name: 'Channel B',
     url: 'https://www.youtube.com/channel/UCchannelB'
   });
+  ytcv._set('currentChannelVideoId', ytcv.getUrlVideoId());
   ytcv._set('currentVideoType', 'video');
   ytcv._set('currentLoudnessDb', null);
   mockDOMElements['channelName'] = { textContent: 'Stale Channel A' };
@@ -2932,6 +2973,7 @@ async function runTests() {
     name: 'UCchannelC',
     url: 'https://www.youtube.com/channel/UCchannelC'
   });
+  ytcv._set('currentChannelVideoId', ytcv.getUrlVideoId());
   mockDOMElements['channelName'] = { textContent: 'Channel C' };
   const stubToggleResponse = await popupGesture({
     type: 'setAutoApplyLoudness',
@@ -2992,6 +3034,7 @@ async function runTests() {
     '@auto_handle': { name: 'Auto Handle Ch', gainVideo: 0.6 }
   };
   setURL('/watch', 'BACKFILL001');
+  ytcv._set('_lastVideoId', 'BACKFILL001');
   ytcv._set('currentChannel', { id: '', name: '', url: '' });
   ytcv._set('currentChannelVideoId', '');
   ytcv._set('currentLoudnessDb', null);
@@ -3225,6 +3268,7 @@ async function runTests() {
     '@typed_handle': { name: 'Typed Handle', gainVideo: 0.4 }
   };
   setURL('/watch', 'typedVid1');
+  ytcv._set('_lastVideoId', 'typedVid1');
   ytcv._set('currentChannel', { id: 'UCtyped', name: 'Typed', url: 'https://www.youtube.com/channel/UCtyped' });
   ytcv._set('currentChannelVideoId', 'typedVid1');
   ytcv._set('currentLoudnessDb', null);
@@ -3365,6 +3409,7 @@ async function runTests() {
     UCwrites: { name: 'Writes Ch', gainVideo: 0.5, autoApplyLoudnessVideo: true }
   };
   setURL('/watch', 'writeVid1');
+  ytcv._set('_lastVideoId', 'writeVid1');
   ytcv._set('currentChannel', { id: 'UCwrites', name: 'Writes Ch', url: '' });
   ytcv._set('currentChannelVideoId', 'writeVid1');
   ytcv._set('currentLoudnessVideoId', '');
@@ -3540,6 +3585,7 @@ async function runTests() {
   setURL('/watch', 'sharedVid1');
   ytcv._set('currentChannel', { id: '', name: '', url: '' });
   ytcv._set('_lastVideoId', null);
+  ytcv._set('appliedVideoId', 'sharedVid1');
   ytcv._set('_lastProcessedVideo', null);
   ytcv._set('storageMigrated', true);
   ytcv._set('storageReady', Promise.resolve());
@@ -5119,6 +5165,7 @@ async function runTests() {
     };
     setURL('/watch', 'mismatchVid');
     ytcv._set('currentChannel', { id: 'UChere', name: 'Here Ch', url: 'https://y/UChere' });
+    ytcv._set('currentChannelVideoId', ytcv.getUrlVideoId());
     ytcv._set('currentVideoType', 'video');
     ytcv._set('currentGain', 0.5);
     ytcv._set('currentAutoApplyLoudnessVideo', false);
@@ -5179,6 +5226,7 @@ async function runTests() {
     };
     setURL('/watch', 'replayVid');
     ytcv._set('currentChannel', { id: 'UCwas', name: 'Was Ch', url: '' });
+    ytcv._set('currentChannelVideoId', ytcv.getUrlVideoId());
     ytcv._set('currentVideoType', 'video');
     ytcv._set('currentGain', 0.4);
     ytcv._set('currentAutoApplyLoudnessVideo', false);
@@ -5192,6 +5240,7 @@ async function runTests() {
 
     // The tab moves to another channel before the slider is released.
     ytcv._set('currentChannel', { id: 'UCnow', name: 'Now Ch', url: '' });
+    ytcv._set('currentChannelVideoId', ytcv.getUrlVideoId());
     const released = await simulateRuntimeMessage({ type: 'setGain', appliesTo: drawnFrom, gain: 0.15 });
     await tick();
     assert(released?.ok === false && released?.reason === 'state moved',
@@ -5297,7 +5346,13 @@ async function runTests() {
     // that was never applied, so opening the popup applies it.
     setURL('/watch', 'newVid');
     mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCopen' };
+    // The channel comes from the bridge after a navigation.
+    mockPostMessageHandler = (data) => {
+      if (data.type !== '__yt_channel_volume_request__') return;
+      setTimeout(() => simulateBridgeMessage({ videoId: 'newVid', isLiveContent: false, channelId: 'UCopen' }), 0);
+    };
     const moved = await simulateRuntimeMessage({ type: 'forceDetect' });
+    mockPostMessageHandler = null;
     await tick();
     assert(moved?.channel?.id === 'UCopen', 'the popup is answered there too');
     assert(ytcv.state._lastVideoId === 'newVid',
@@ -5310,6 +5365,7 @@ async function runTests() {
   {
     setURL('/watch', 'throwVid');
     ytcv._set('currentChannel', { id: 'UCthrow', name: 'Throw Ch', url: '' });
+    ytcv._set('currentChannelVideoId', ytcv.getUrlVideoId());
     ytcv._set('currentLoudnessDb', -6);
     ytcv._set('currentAutoApplyLoudnessVideo', false);
     ytcv._set('targetLufs', -18);
@@ -6345,6 +6401,9 @@ async function runTests() {
     setURL('/watch', 'swapVid2');
     mockStorage['channelVolumes'] = { UCswapped: { name: 'Swapped Ch', gainVideo: 0.55 } };
     mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCswapped' };
+    // The channel was named for this video before the element changed.
+    ytcv._set('currentChannel', { id: 'UCswapped', name: 'Swapped Ch', url: '' });
+    ytcv._set('currentChannelVideoId', 'swapVid2');
     ytcv._set('storageMigrated', true);
     ytcv._set('storageSettled', true);
     ytcv._set('_lastVideoId', 'swapVid2');
@@ -6371,6 +6430,7 @@ async function runTests() {
     };
     setURL('/watch', 'applyVidA');
     ytcv._set('currentChannel', { id: 'UCold', name: 'Old Ch', url: '' });
+    ytcv._set('currentChannelVideoId', ytcv.getUrlVideoId());
     ytcv._set('currentVideoType', 'video');
     ytcv._set('currentLoudnessDb', -6);
     ytcv._set('currentLoudnessVideoId', 'applyVidA');
@@ -6383,6 +6443,7 @@ async function runTests() {
     // The tab moves to another channel before the click is delivered.
     setURL('/watch', 'applyVidB');
     ytcv._set('currentChannel', { id: 'UCnew', name: 'New Ch', url: '' });
+    ytcv._set('currentChannelVideoId', ytcv.getUrlVideoId());
     ytcv._set('currentLoudnessDb', -4);
     ytcv._set('currentLoudnessVideoId', 'applyVidB');
     ytcv._set('currentGain', 0.6);
@@ -6410,7 +6471,9 @@ async function runTests() {
     assert(mockStorage['channelVolumes']['UCnew'].gainVideo === 0.6,
       `with nothing written for it (${mockStorage['channelVolumes']['UCnew'].gainVideo})`);
 
-    // Made against the state in hand, it applies.
+    // Made against the state in hand, once the bridge has named the channel
+    // for this video, it applies.
+    ytcv._set('currentChannelVideoId', 'applyVidC');
     const now = await popupGesture({ type: 'applyLoudness' });
     await tick();
     assert(now?.ok === true, `the Apply made against this state goes through — got ${JSON.stringify(now)}`);
@@ -6638,6 +6701,10 @@ async function runTests() {
 
   section('Popup: a broadcast from its own tab only');
   {
+    // The tab has applied its video and holds the channel named for it.
+    ytcv._set('currentChannel', { id: 'UCownTab', name: 'Own Tab', url: '' });
+    ytcv._set('_lastVideoId', ytcv.getUrlVideoId());
+    ytcv._set('currentChannelVideoId', ytcv.getUrlVideoId());
     const popup = makePopup();
     await popup.ready();
     const drawn = popup.node('channelName').textContent;
@@ -7236,6 +7303,7 @@ async function runTests() {
     mockVideoEl = { id: 'popup-video-c' };
     mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCkept' };
     ytcv._set('currentChannel', { id: 'UCkept', name: 'Kept Ch', url: '' });
+    ytcv._set('currentChannelVideoId', ytcv.getUrlVideoId());
     ytcv._set('currentVideoType', 'video');
     ytcv._set('_lastVideoId', 'popVidC');
     ytcv._set('currentGain', 1.0);
@@ -7258,6 +7326,7 @@ async function runTests() {
     mockVideoEl = { id: 'popup-video-d' };
     mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCpreview' };
     ytcv._set('currentChannel', { id: 'UCpreview', name: 'Preview Ch', url: '' });
+    ytcv._set('currentChannelVideoId', ytcv.getUrlVideoId());
     ytcv._set('currentVideoType', 'video');
     ytcv._set('_lastVideoId', 'popVidD');
     ytcv._set('currentGain', 1.0);
@@ -7906,6 +7975,8 @@ async function runTests() {
         return deleteButtons.get(id);
       },
       async settle() { await settle(); },
+      // Reads of either area fail from here on.
+      failReads() { failStorageGet = true; },
       async releaseStorage() {
         assert(pendingReads.length > 0, 'a read is being held');
         for (const resolve of pendingReads.splice(0)) resolve();
@@ -8012,6 +8083,18 @@ async function runTests() {
     assert(options.body.classList.contains('initializing') === false,
       'and the page is shown either way -- one that never appears cannot be operated');
     assert(options.listMarkup() === '', 'and no channel list is drawn from a list it never read');
+  }
+  {
+    // A control changed on a page whose load failed writes nothing and leaves
+    // the line that says so.
+    const options = makeOptions({ failStorageGet: true });
+    await options.settle();
+    const shown = options.node('settingsError').textContent;
+    options.node('targetSlider').value = '-24';
+    await options.fire('targetSlider', 'change');
+    assert(options.node('settingsError').classList.contains('hidden') === false &&
+      options.node('settingsError').textContent === shown,
+      `a change on a page that could not load leaves the line (${options.node('settingsError').className} / ${options.node('settingsError').textContent})`);
   }
 
   {
@@ -8366,6 +8449,19 @@ async function runTests() {
 
     assert(options.listMarkup().includes('200%') && !options.listMarkup().includes('labelAuto'),
       'a change that is not the mark does not move the table onto the new rule');
+
+    await options.fireStorage({ [CHANNEL_VOLUMES_KEY]: { newValue: { UC1: { name: 'Alpha', gain: 2 } } } });
+    assert(options.listMarkup().includes('200%') && !options.listMarkup().includes('labelAuto'),
+      'nor does a change of the channels');
+  }
+
+  {
+    // A change in an area other than sync and local is not this extension's.
+    const options = makeOptions({ channels: { UC1: { name: 'Alpha', gainVideo: 2 } } });
+    await options.settle();
+    await options.fireStorage({ [CHANNEL_VOLUMES_KEY]: { newValue: { UC2: { name: 'Beta', gainVideo: 3 } } } }, 'session');
+    assert(options.listMarkup().includes('Alpha') && !options.listMarkup().includes('Beta'),
+      'a channel map in another area draws nothing');
   }
 
   {
@@ -8897,10 +8993,12 @@ async function runTests() {
 
       // Another video is a first level again.
       setURL('/watch', 'liveFollowVid2');
+      ytcv._set('_lastVideoId', 'liveFollowVid2');
       const opened = await ytcv.evaluateLiveSave('open');
       assert(opened.decision === 'open' && opened.saved === true && opened.ok === true && opened.baselineGain === null,
         `another video's first level is stored whatever it is (${JSON.stringify(opened)})`);
       setURL('/watch', LIVE_VID);
+      ytcv._set('_lastVideoId', LIVE_VID);
 
       // A level lost falls back to the gain stored.
       ytcv._set('liveSaveBaseline', { videoId: LIVE_VID, videoType: 'live', gain: liveGain(-21, -20) });
@@ -9646,6 +9744,901 @@ async function runTests() {
     onAir({ autoLive: false });
     ytcv._set('currentIsLiveNow', false);
     ytcv.syncLiveFollow();
+  }
+
+  // ── Gain state transitions ─────────────────────────────────────────
+  {
+    const TT_CH = 'UCtransit';
+    const TT_URL = 'https://www.youtube.com/channel/' + TT_CH;
+    const TT_VID = 'transitVid';
+    const settle = async () => { for (let turn = 0; turn < 3; turn++) await tick(); };
+    // A tab that has applied a video of one channel, with nothing the cases
+    // before it left behind.
+    const onVideo = async ({ entry = { gainVideo: 0.5, autoApplyLoudnessVideo: false }, loudnessDb = null } = {}) => {
+      ytcv.endPreview();
+      heldPreviewEnds.length = 0;
+      ytcv._set('currentAutoApplyLoudnessVideo', false);
+      ytcv._set('currentAutoApplyLoudnessLive', false);
+      ytcv._set('currentLiveLkfs', null);
+      ytcv._set('currentIsLiveNow', false);
+      ytcv.syncLiveFollow();
+      mockSyncStorage = { autoLoudnessSettings: { targetLufs: -18 } };
+      mockStorage = {
+        unifiedGains: true,
+        channelVolumes: { [TT_CH]: { name: 'Transit', url: TT_URL, ...entry } }
+      };
+      mockDOMElements = {};
+      mockVideoEl = { id: 'transit-video' };
+      setURL('/watch', TT_VID);
+      mockPostMessageHandler = null;
+      ytcv._set('storageReady', Promise.resolve());
+      ytcv._set('storageMigrated', true);
+      ytcv._set('storageSettled', true);
+      ytcv._set('_lastVideoId', TT_VID);
+      ytcv._set('_lastProcessedVideo', mockVideoEl);
+      ytcv._set('_applyRunning', false);
+      ytcv._set('currentChannel', { id: TT_CH, name: 'Transit', url: TT_URL });
+      ytcv._set('currentChannelVideoId', TT_VID);
+      ytcv._set('currentLoudnessVideoId', TT_VID);
+      ytcv._set('currentLoudnessDb', loudnessDb);
+      ytcv._set('currentBaseLoudnessDb', loudnessDb);
+      ytcv._set('liveSaveBaseline', null);
+      ytcv._set('liveRaiseFrom', null);
+      ytcv._set('liveLevelBefore', null);
+      ytcv._set('liveLevelRise', null);
+      ytcv._set('currentVideoType', 'video');
+      ytcv._set('currentVideoTypeDetected', true);
+      ytcv._set('defaultAutoApplyLoudnessLive', false);
+      ytcv._set('defaultAutoApplyLoudnessVideo', false);
+      ytcv._set('targetLufs', -18);
+      await ytcv.applyPreferredGain();
+      await settle();
+      mockSentMessages.length = 0;
+    };
+    // The console and Node's report of a rejection nobody handled, taken for
+    // the trigger alone and given back before anything is asserted.
+    const watchFailures = () => {
+      const reported = [];
+      const unhandled = [];
+      const realConsoleError = console.error;
+      const onUnhandled = (reason) => { unhandled.push(String(reason?.message || reason)); };
+      process.on('unhandledRejection', onUnhandled);
+      console.error = (...args) => { reported.push(String(args[0])); };
+      return {
+        reported, unhandled,
+        stop() {
+          console.error = realConsoleError;
+          process.off('unhandledRejection', onUnhandled);
+        }
+      };
+    };
+    const failChannelReads = () => {
+      const realGet = chrome.storage.local.get;
+      chrome.storage.local.get = (key) => (key === CHANNEL_VOLUMES_KEY
+        ? Promise.reject(new Error('channel read failed'))
+        : realGet(key));
+      return () => { chrome.storage.local.get = realGet; };
+    };
+
+    section('Apply failures: an apply that cannot read the channel says so, wherever it was started');
+    for (const [what, trigger, count] of [
+      ['a bridge message', () => simulateBridgeMessage({ videoId: TT_VID, loudnessDb: -6, isLiveContent: false, channelId: TT_CH }), 1],
+      ['a settings change', () => simulateStorageChange({ [SETTINGS_KEY]: { newValue: { targetLufs: -20 } } }), 1],
+      ['the fold mark from another context', () => {
+        ytcv._set('storageMigrated', false);
+        simulateStorageChange({ [UNIFIED_GAINS_KEY]: { newValue: true } });
+      }, 1],
+      // The bridge message ends the wait of the navigation's retry, and both
+      // the message's apply and the retry's read the channel.
+      ['the retry after a navigation', async () => {
+        await ytcv.applyVideoVolume();
+        const restore = failChannelReads();
+        simulateBridgeMessage({ videoId: TT_VID, loudnessDb: -6, isLiveContent: false, channelId: TT_CH });
+        return restore;
+      }, 2]
+    ]) {
+      await onVideo();
+      const watched = watchFailures();
+      let restore = what.startsWith('the retry') ? null : failChannelReads();
+      restore = (await trigger()) || restore;
+      await settle();
+      restore();
+      watched.stop();
+      const named = watched.reported.filter((line) => line.includes('[YTCV] apply failed'));
+      assert(watched.unhandled.length === 0 && named.length === count,
+        `${what}: a failed read is reported as a failed apply (${JSON.stringify(watched)})`);
+    }
+    ytcv._set('targetLufs', -18);
+
+    section('Settings page: a setting that could not be saved goes back to the stored one, and says so');
+    for (const [what, act, shows] of [
+      ['Target LUFS', async (options) => {
+        options.node('targetSlider').value = '-24';
+        await options.fire('targetSlider', 'input');
+        await options.fire('targetSlider', 'change');
+      }, (options) => options.node('targetSlider').value === -18 &&
+        options.node('targetValue').textContent === '-18 LUFS'],
+      ['Gain overlay', async (options) => {
+        options.node('overlayToggle').checked = true;
+        await options.fire('overlayToggle', 'change');
+      }, (options) => options.node('overlayToggle').checked === false],
+      ['Display unit', async (options) => {
+        await options.clickUnit('dB');
+      }, (options) => options.unitButtons.find((b) => b.dataset.unit === '%').classList.contains('active') &&
+        !options.unitButtons.find((b) => b.dataset.unit === 'dB').classList.contains('active') &&
+        options.listMarkup().includes('50%')]
+    ]) {
+      const watched = watchFailures();
+      const options = makeOptions({
+        settings: { targetLufs: -18, displayUnit: '%', showGainOverlay: false },
+        channels: { UCsaved: { name: 'Saved', gainVideo: 0.5 } },
+        failStorageSet: true
+      });
+      await options.settle();
+      await act(options);
+      await options.settle();
+      watched.stop();
+      assert(shows(options),
+        `${what}: the control shows the stored value again`);
+      assert(options.node('settingsError').classList.contains('hidden') === false &&
+        options.node('settingsError').textContent === 'settingsSaveFailed',
+        `${what}: and the page says the setting was not saved (${options.node('settingsError').className} / ${options.node('settingsError').textContent})`);
+      assert(watched.unhandled.length === 0,
+        `${what}: the failed write is taken, not left unhandled (${JSON.stringify(watched.unhandled)})`);
+      assert(options.synced[SETTINGS_KEY].targetLufs === -18 && options.synced[SETTINGS_KEY].displayUnit === '%' &&
+        options.synced[SETTINGS_KEY].showGainOverlay === false,
+        `${what}: what storage holds is what the page went back to`);
+    }
+    {
+      // A write that lands takes the line down again.
+      const options = makeOptions({ settings: { targetLufs: -18 } });
+      await options.settle();
+      options.node('settingsError').textContent = 'settingsSaveFailed';
+      options.node('settingsError').classList.remove('hidden');
+      options.node('targetSlider').value = '-20';
+      await options.fire('targetSlider', 'change');
+      assert(options.synced[SETTINGS_KEY].targetLufs === -20 &&
+        options.node('settingsError').classList.contains('hidden') === true,
+        'a setting that is saved takes the line down');
+    }
+    {
+      // A write that fails, with the read back failing as well: nothing is put
+      // back, and the line asks for a reload instead.
+      const options = makeOptions({ settings: { targetLufs: -18 }, failStorageSet: true });
+      await options.settle();
+      options.failReads();
+      options.node('targetSlider').value = '-24';
+      await options.fire('targetSlider', 'input');
+      await options.fire('targetSlider', 'change');
+      assert(options.node('settingsError').classList.contains('hidden') === false &&
+        options.node('settingsError').textContent === 'settingsLoadFailed',
+        `a failed save that could not be read back asks for a reload (${options.node('settingsError').textContent})`);
+    }
+
+    section('Audio chain refused: the gain in hand stays the one playing');
+    {
+      // Another owner of the element makes createMediaElementSource throw.
+      // The tab's context exists by then: the stored 0.5 built a chain.
+      let realCreate = null;
+      const refuseChain = () => {
+        const ctx = ytcv.state.audioCtx;
+        realCreate = ctx.createMediaElementSource;
+        ctx.createMediaElementSource = () => {
+          throw new Error('InvalidStateError: already connected');
+        };
+        ytcv._set('gainNode', null);
+        ytcv._set('sourceNode', null);
+        ytcv._set('connectedVideo', null);
+        mockVideoEl = { id: 'owned-elsewhere' };
+      };
+      await onVideo();
+      refuseChain();
+      const watched = watchFailures();
+      const refused = await popupGesture({ type: 'setGain', gain: 2.0 });
+      watched.stop();
+      ytcv.state.audioCtx.createMediaElementSource = realCreate;
+      assert(refused?.ok === false, `the save is refused (${JSON.stringify(refused)})`);
+      assert(ytcv.state.currentGain === 0.5 && ytcv.getState().gain === 0.5,
+        `the gain the tab reports is the one still playing (${ytcv.state.currentGain} / ${ytcv.getState().gain})`);
+      assert(mockStorage.channelVolumes[TT_CH].gainVideo === 0.5, 'and nothing was stored');
+
+      // Auto's own apply of a bridge message, refused the same way.
+      await onVideo({ entry: { gainVideo: 0.5, autoApplyLoudnessVideo: true } });
+      refuseChain();
+      const autoWatched = watchFailures();
+      let escaped = null;
+      try {
+        simulateBridgeMessage({ videoId: TT_VID, loudnessDb: -6, isLiveContent: false, isLiveNow: true, channelId: TT_CH });
+      } catch (err) {
+        escaped = err;
+      }
+      await settle();
+      autoWatched.stop();
+      ytcv.state.audioCtx.createMediaElementSource = realCreate;
+      assert(escaped === null, `the message listener takes the throw (${escaped && escaped.message})`);
+      assert(autoWatched.reported.some((line) => line.includes('[YTCV] apply failed')),
+        `and reports it as a failed apply (${JSON.stringify(autoWatched.reported)})`);
+      assert(ytcv.state.currentGain === 0.5, `the gain in hand is the one still playing (${ytcv.state.currentGain})`);
+      assert(ytcv.state.liveFollowTimer !== null, 'the rest of the message is handled: the follow is set');
+      ytcv._set('currentAutoApplyLoudnessVideo', false);
+      ytcv._set('currentIsLiveNow', false);
+      ytcv.syncLiveFollow();
+    }
+
+    section('Slider preview: a gain from elsewhere waits for the gesture to end');
+    {
+      await onVideo();
+      const told = () => mockSentMessages.filter((m) => m?.type === 'stateChanged').map((m) => m.gain);
+      await popupGesture({ type: 'setGainLive', gain: 3.0 });
+      assert(ytcv.state.currentGain === 3.0, 'the preview plays');
+      // A rendition change re-applies the stored gain, another tab writes this
+      // channel, and the target moves, all while the slider is held.
+      simulateBridgeMessage({ videoId: TT_VID, loudnessDb: -6, isLiveContent: false, channelId: TT_CH, source: 'audio-change' });
+      await settle();
+      const otherTab = { name: 'Transit', url: TT_URL, gainVideo: 0.62, autoApplyLoudnessVideo: false };
+      simulateStorageChange({ [CHANNEL_VOLUMES_KEY]: {
+        oldValue: { [TT_CH]: mockStorage.channelVolumes[TT_CH] }, newValue: { [TT_CH]: otherTab }
+      } });
+      mockStorage.channelVolumes[TT_CH] = otherTab;
+      simulateStorageChange({ [SETTINGS_KEY]: { newValue: { targetLufs: -20 } } });
+      await settle();
+      assert(ytcv.state.currentGain === 3.0 && ytcv.state.gainNode.gain.value === 3.0,
+        `the preview keeps playing over each of them (${ytcv.state.currentGain})`);
+      assert(told().every((gain) => gain === 3.0),
+        `and the popup is told the gain it is previewing (${JSON.stringify(told())})`);
+      const saved = await popupGesture({ type: 'setGain', gain: 3.0 });
+      await settle();
+      assert(saved?.ok === true && mockStorage.channelVolumes[TT_CH].gainVideo === 3.0 && ytcv.state.currentGain === 3.0,
+        `the release saves the gain the slider was moved to (${JSON.stringify(saved)} / ${mockStorage.channelVolumes[TT_CH].gainVideo})`);
+      ytcv._set('targetLufs', -18);
+
+      // A gesture whose input stops without a save: once it has been quiet for
+      // PREVIEW_IDLE_MS, what storage holds is applied.
+      await onVideo();
+      await popupGesture({ type: 'setGainLive', gain: 3.0 });
+      simulateBridgeMessage({ videoId: TT_VID, loudnessDb: -6, isLiveContent: false, channelId: TT_CH, source: 'audio-change' });
+      await settle();
+      assert(ytcv.state.currentGain === 3.0, `the preview holds (${ytcv.state.currentGain})`);
+      const ended = await runPreviewEnds();
+      await settle();
+      assert(ended === 1 && ytcv.state.currentGain === 0.5 && ytcv.state.gainNode.gain.value === 0.5,
+        `the quiet gesture ends and the stored gain plays (${ended} / ${ytcv.state.currentGain})`);
+      assert(told().at(-1) === 0.5, `and the popup is told so (${JSON.stringify(told())})`);
+
+      // A save refused after a preview puts back what storage holds: here
+      // another tab turned Auto on while the level was known.
+      await onVideo({ loudnessDb: -6 });
+      await popupGesture({ type: 'setGainLive', gain: 3.0 });
+      const autoOn = { name: 'Transit', url: TT_URL, gainVideo: 0.5, autoApplyLoudnessVideo: true };
+      simulateStorageChange({ [CHANNEL_VOLUMES_KEY]: {
+        oldValue: { [TT_CH]: mockStorage.channelVolumes[TT_CH] }, newValue: { [TT_CH]: autoOn }
+      } });
+      mockStorage.channelVolumes[TT_CH] = autoOn;
+      await settle();
+      assert(ytcv.state.currentGain === 3.0, `the preview holds over the Auto gain (${ytcv.state.currentGain})`);
+      const refused = await popupGesture({ type: 'setGain', gain: 3.0 });
+      await settle();
+      const autoGain = calcGain(-6, -18);
+      assert(refused?.ok === false && ytcv.state.currentGain === autoGain && told().at(-1) === autoGain,
+        `the refused save plays and tells what storage now says (${JSON.stringify(refused)} / ${ytcv.state.currentGain})`);
+      assert(heldPreviewEnds.length === 0, 'and nothing is left waiting to end it again');
+
+      // A save refused with nothing previewed is answered at once, and nothing
+      // is applied or stored again.
+      await onVideo({ entry: { gainVideo: 0.5, autoApplyLoudnessVideo: true }, loudnessDb: -6 });
+      const lockedNow = await popupGesture({ type: 'setGain', gain: 3.0 });
+      await settle();
+      assert(lockedNow?.ok === false && lockedNow?.reason === 'auto apply controls current gain' &&
+        mockSentMessages.filter((m) => m?.type === 'store:saveChannelGain').length === 0,
+        `a locked save with nothing previewed stores nothing (${JSON.stringify(mockSentMessages.filter((m) => m?.type?.startsWith('store:')))})`);
+
+      // A live level the bridge names while a preview holds works out no live
+      // gain. Another tab's write during it works one out, held back as any
+      // gain from elsewhere, so the raise count goes on from the gain the
+      // preview plays: once the gesture ends, the live gain rises from there
+      // by no more than the raise limit.
+      const liveEntry = { name: 'Transit', url: TT_URL, gainLive: 0.5, autoApplyLoudnessLive: true };
+      await onVideo({ entry: liveEntry });
+      ytcv._set('liveRaiseFrom', null);
+      ytcv._set('liveLevelBefore', null);
+      ytcv._set('liveLevelRise', null);
+      simulateBridgeMessage({ videoId: TT_VID, isLiveContent: true, isLiveNow: true, channelId: TT_CH });
+      await settle();
+      assert(ytcv.state.currentVideoType === 'live' && ytcv.state.currentGain === 0.5,
+        `the stream plays its stored gain before a level is named (${ytcv.state.currentGain})`);
+      await popupGesture({ type: 'setGainLive', gain: 3.0 });
+      simulateBridgeMessage({ videoId: TT_VID, liveLkfs: -30, isLiveContent: true, isLiveNow: true, channelId: TT_CH });
+      await settle();
+      assert(ytcv.state.currentGain === 3.0 && ytcv.state.liveRaiseFrom === null,
+        `the live level the bridge names is held back and no live gain is worked out (${ytcv.state.currentGain} / ${JSON.stringify(ytcv.state.liveRaiseFrom)})`);
+      simulateStorageChange({ [CHANNEL_VOLUMES_KEY]: {
+        oldValue: { [TT_CH]: liveEntry }, newValue: { [TT_CH]: { ...liveEntry, name: 'Transit Live' } }
+      } });
+      await settle();
+      const raisedFrom = ytcv.state.liveRaiseFrom;
+      assert(ytcv.state.currentGain === 3.0 && raisedFrom?.videoId === TT_VID && Number.isFinite(raisedFrom?.at),
+        `another tab's write works a live gain out, and the preview still plays (${ytcv.state.currentGain} / ${JSON.stringify(raisedFrom)})`);
+      const lockedSave = await popupGesture({ type: 'setGain', gain: 3.0 });
+      await settle();
+      const levelGain = calcLiveGain(-30, -18);
+      const raiseLimit = 3.0 * Math.pow(10, 1.5 * (Date.now() - raisedFrom?.at) / 30000 / 20);
+      assert(lockedSave?.ok === false && ytcv.state.currentGain >= 3.0 &&
+        ytcv.state.currentGain <= raiseLimit && ytcv.state.currentGain < levelGain,
+        `the gesture's end raises the live gain from the preview's by no more than the raise limit (${JSON.stringify(lockedSave)} / ${ytcv.state.currentGain} of ${levelGain})`);
+
+      // A preview whose state has moved holds nothing back.
+      await onVideo();
+      await popupGesture({ type: 'setGainLive', gain: 3.0 });
+      simulateBridgeMessage({ videoId: TT_VID, loudnessDb: -6, isLiveContent: true, channelId: TT_CH });
+      await settle();
+      assert(ytcv.state.currentVideoType === 'live' && ytcv.state.currentGain === 1.0,
+        `the live type's gain plays at once (${ytcv.state.currentGain})`);
+      ytcv.endPreview();
+    }
+
+    section('Slider preview: a slider still held is sent again, and the tab waits for it');
+    {
+      // The popup: while the pointer stays down after a preview, the preview
+      // goes again once a second; let go of, it stops.
+      const popup = makePopup({
+        answer: async (message) => (message.type === 'setGainLive' || message.type === 'setGain'
+          ? { ok: true }
+          : {
+            isWatchPage: true,
+            channel: { id: TT_CH, name: 'Transit', url: TT_URL },
+            appliesTo: TT_CH + '|video|' + TT_VID,
+            loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0,
+            targetLufs: -18, videoType: 'video'
+          })
+      });
+      await popup.ready();
+      popup.asked.length = 0;
+      const previews = () => popup.asked.filter((m) => m.type === 'setGainLive');
+      popup.node('volumeSlider').value = '300';
+      await popup.fire('volumeSlider', 'pointerdown');
+      await popup.fire('volumeSlider', 'input');
+      await popup.runTimers();
+      await popup.runTimers();
+      assert(previews().length === 3 && previews().every((m) => m.gain === 3.0 && m.appliesTo === TT_CH + '|video|' + TT_VID),
+        `the held preview is sent again each second (${JSON.stringify(previews())})`);
+      await popup.fire('volumeSlider', 'pointerup');
+      await popup.runTimers();
+      await popup.runTimers();
+      assert(previews().length === 3, `and no longer once the pointer is let go of (${previews().length})`);
+      popup.asked.length = 0;
+      popup.node('volumeSlider').value = '200';
+      await popup.fire('volumeSlider', 'pointerdown');
+      await popup.fire('volumeSlider', 'input');
+      await popup.fire('volumeSlider', 'change');
+      await popup.runTimers();
+      assert(previews().length === 1, `nor after the preview is saved (${previews().length})`);
+      // Inputs one after another while held set one wait: the preview goes
+      // again once a second, not once for each input.
+      await popup.fire('volumeSlider', 'pointerup');
+      await popup.runTimers();
+      popup.asked.length = 0;
+      popup.node('volumeSlider').value = '250';
+      await popup.fire('volumeSlider', 'pointerdown');
+      await popup.fire('volumeSlider', 'input');
+      await popup.fire('volumeSlider', 'input');
+      await popup.fire('volumeSlider', 'input');
+      await popup.runTimers();
+      assert(previews().length === 4, `three inputs held a second send the preview again once (${previews().length})`);
+      await popup.fire('volumeSlider', 'pointerup');
+      await popup.runTimers();
+
+      // The tab: each preview starts the wait again, and once they stop the
+      // gesture ends 2 s after the last one with the stored gain.
+      await onVideo();
+      await popupGesture({ type: 'setGainLive', gain: 3.0 });
+      await popupGesture({ type: 'setGainLive', gain: 3.0 });
+      assert(heldPreviewEnds.length === 1 && ytcv.state.currentGain === 3.0,
+        `a preview sent again restarts the one wait (${heldPreviewEnds.length})`);
+      const ended = await runPreviewEnds();
+      await settle();
+      assert(ended === 1 && ytcv.state.currentGain === 0.5,
+        `a gesture whose previews stopped ends with the stored gain, nothing else having come (${ytcv.state.currentGain})`);
+    }
+
+    section('Settings change: Auto\'s save dropped by a notification during its read is made again');
+    {
+      await onVideo({ entry: { gainVideo: 0.7, gainVideoPlain: true, autoApplyLoudnessVideo: true }, loudnessDb: -6 });
+      const realGet = chrome.storage.local.get;
+      let releaseRead = null;
+      chrome.storage.local.get = (key) => {
+        if (key !== CHANNEL_VOLUMES_KEY || releaseRead) return realGet(key);
+        return new Promise((resolve) => { releaseRead = () => resolve(realGet(key)); });
+      };
+      mockSyncStorage.autoLoudnessSettings = { targetLufs: -22 };
+      simulateStorageChange({ [SETTINGS_KEY]: { oldValue: { targetLufs: -18 }, newValue: { targetLufs: -22 } } });
+      await tick();
+      // Another tab's save on another channel lands while this tab reads.
+      simulateStorageChange({ [CHANNEL_VOLUMES_KEY]: {
+        oldValue: mockStorage.channelVolumes,
+        newValue: { ...mockStorage.channelVolumes, UCelsewhere: { name: 'Elsewhere', gainVideo: 0.3 } }
+      } });
+      releaseRead();
+      await settle();
+      chrome.storage.local.get = realGet;
+      const target = calcGain(-6, -22);
+      const stored = mockSentMessages.filter((m) => m?.type === 'store:saveChannelGain' && m.channelId === TT_CH);
+      assert(stored.length === 1 && stored[0].gain === target && mockStorage.channelVolumes[TT_CH].gainVideo === target,
+        `the new target's gain is stored for the channel (${JSON.stringify(stored.map((m) => m.gain))} / ${mockStorage.channelVolumes[TT_CH].gainVideo})`);
+      assert(ytcv.state.currentGain === target, `and it is the one playing (${ytcv.state.currentGain})`);
+      ytcv._set('targetLufs', -18);
+    }
+
+    section('Auto\'s own save: made by a tab that is playing the video');
+    for (const [what, element, stores] of [
+      ['paused', { paused: true, muted: false, volume: 1 }, false],
+      ['muted', { paused: false, muted: true, volume: 1 }, false],
+      ['at a volume of 0', { paused: false, muted: false, volume: 0 }, true],
+      ['playing', { paused: false, muted: false, volume: 1 }, true]
+    ]) {
+      await onVideo({ entry: { gainVideo: 0.5, autoApplyLoudnessVideo: true }, loudnessDb: -6 });
+      Object.assign(mockVideoEl, element);
+      // A new level for the video, and a new target: both store Auto's gain.
+      simulateBridgeMessage({ videoId: TT_VID, loudnessDb: -9, baseLoudnessDb: -9, isLiveContent: false, channelId: TT_CH });
+      await settle();
+      simulateStorageChange({ [SETTINGS_KEY]: { newValue: { targetLufs: -20 } } });
+      await settle();
+      const auto = mockSentMessages.filter((m) => m?.type === 'store:saveChannelGain' && m.channelId === TT_CH);
+      assert((auto.length > 0) === stores,
+        `a tab ${what} ${stores ? 'stores' : 'stores nothing'} (${JSON.stringify(auto.map((m) => m.gain))})`);
+      assert(ytcv.state.currentGain === calcGain(-9, -20), `and it plays Auto's gain either way (${ytcv.state.currentGain})`);
+      ytcv._set('targetLufs', -18);
+    }
+    {
+      // The live save.
+      await onVideo({ entry: { gainVideo: 0.5, autoApplyLoudnessVideo: true } });
+      Object.assign(mockVideoEl, { paused: true });
+      simulateBridgeMessage({ videoId: TT_VID, isLiveContent: false, liveLkfs: -20, channelId: TT_CH });
+      await settle();
+      const decided = await ytcv.evaluateLiveSave('apply');
+      assert(decided.reason === 'not playing' && decided.saved === false &&
+        mockSentMessages.filter((m) => m?.type === 'store:saveChannelGain').length === 0,
+        `a paused tab makes no live save (${JSON.stringify(decided)})`);
+      Object.assign(mockVideoEl, { paused: false });
+      const resumed = await ytcv.evaluateLiveSave('apply');
+      assert(resumed.saved === true && resumed.ok === true, `and makes it once it plays (${JSON.stringify(resumed)})`);
+      ytcv._set('currentLiveLkfs', null);
+      ytcv._set('currentAutoApplyLoudnessVideo', false);
+      ytcv.syncLiveFollow();
+    }
+
+    section('Auto\'s own save: a tab that starts playing makes it then');
+    {
+      const firePlay = async (target) => {
+        for (const fn of mockEventListeners['play'] || []) fn({ target });
+        await settle();
+      };
+      for (const [what, element, stores] of [
+        ['playing', { paused: false, muted: false }, true],
+        ['muted', { paused: false, muted: true }, false]
+      ]) {
+        await onVideo({ entry: { gainVideo: 0.5, autoApplyLoudnessVideo: true }, loudnessDb: -6 });
+        Object.assign(mockVideoEl, { paused: true, muted: false });
+        simulateBridgeMessage({ videoId: TT_VID, loudnessDb: -9, baseLoudnessDb: -9, isLiveContent: false, channelId: TT_CH });
+        await settle();
+        const auto = () => mockSentMessages.filter((m) => m?.type === 'store:saveChannelGain' && m.channelId === TT_CH);
+        assert(auto().length === 0, `nothing is stored while the video is paused (${JSON.stringify(auto())})`);
+        Object.assign(mockVideoEl, element);
+        await firePlay(mockVideoEl);
+        assert((auto().length === 1 && auto()[0].gain === calcGain(-9, -18)) === stores,
+          `the play of a tab ${what} ${stores ? 'stores Auto\'s gain' : 'stores nothing'} (${JSON.stringify(auto().map((m) => m.gain))})`);
+      }
+      // A play of another element is not this video starting.
+      await onVideo({ entry: { gainVideo: 0.5, autoApplyLoudnessVideo: true }, loudnessDb: -6 });
+      mockSentMessages.length = 0;
+      await firePlay({ id: 'an-ad-preview' });
+      assert(mockSentMessages.filter((m) => m?.type === 'store:saveChannelGain').length === 0,
+        'a play of another element applies nothing');
+    }
+
+    section('Navigation: nothing a message brings is stored before the first apply for the new URL');
+    {
+      await onVideo({ entry: { gainVideo: 0.5, autoApplyLoudnessVideo: true } });
+      mockSyncStorage.autoLoudnessSettings.autoApplyLoudnessVideoDefault = true;
+      ytcv._set('defaultAutoApplyLoudnessVideo', true);
+      const stores = () => mockSentMessages.filter((m) => m?.type === 'store:saveChannelGain');
+      // The URL has moved on and no apply has run for it: the tab still holds
+      // the channel it left.
+      setURL('/watch', 'nextVid');
+      mockVideoEl = { id: 'transit-video-next' };
+      // The answer before a response names the video, carrying a live level,
+      // and then one carrying a level for the video.
+      simulateBridgeMessage({ videoId: 'nextVid', loudnessDb: null, baseLoudnessDb: null, isLiveContent: false,
+        isLiveNow: false, channelId: '', author: '', liveLkfs: -19.6, source: 'playing' });
+      await settle();
+      simulateBridgeMessage({ videoId: 'nextVid', loudnessDb: -6, isLiveContent: false, channelId: '', source: 'request' });
+      await settle();
+      assert(stores().length === 0,
+        `nothing is stored into the channel the tab left (${JSON.stringify(stores())})`);
+      assert(mockStorage.channelVolumes[TT_CH].gainVideo === 0.5, 'which keeps its own gain');
+      // The stop is for what a message brings: a settings change in the same
+      // window stores as it does at any other time.
+      mockSyncStorage.autoLoudnessSettings = { targetLufs: -20, autoApplyLoudnessVideoDefault: true };
+      simulateStorageChange({ [SETTINGS_KEY]: { newValue: { ...mockSyncStorage.autoLoudnessSettings } } });
+      await settle();
+      assert(stores().length === 1,
+        `a settings change before the first apply still makes Auto's save (${JSON.stringify(stores())})`);
+      mockSentMessages.length = 0;
+      mockSyncStorage.autoLoudnessSettings = { targetLufs: -18, autoApplyLoudnessVideoDefault: true };
+      simulateStorageChange({ [SETTINGS_KEY]: { newValue: { ...mockSyncStorage.autoLoudnessSettings } } });
+      await settle();
+      mockSentMessages.length = 0;
+
+      // Once the first apply has run, what a message brings is stored again.
+      await ytcv.applyVideoVolume();
+      simulateBridgeMessage({ videoId: 'nextVid', loudnessDb: -6, isLiveContent: false, channelId: 'UCnext', author: 'Next' });
+      await settle();
+      assert(stores().length > 0 && stores().every((m) => m.channelId === 'UCnext'),
+        `after the first apply the new channel's Auto gain is stored (${JSON.stringify(stores().map((m) => m.channelId))})`);
+      ytcv._set('defaultAutoApplyLoudnessVideo', false);
+      ytcv._set('currentLiveLkfs', null);
+      ytcv._set('currentAutoApplyLoudnessVideo', false);
+      ytcv.syncLiveFollow();
+    }
+    {
+      // The answer the bridge gives before any response names the video does
+      // not say what kind of video it is.
+      const bridge = createBridge();
+      await bridge.request();
+      assert(bridge.last()?.isLiveContent === null,
+        `the answer with no response says nothing about the type (${JSON.stringify(bridge.last()?.isLiveContent)})`);
+      await onVideo();
+      ytcv._set('currentVideoType', 'live');
+      simulateBridgeMessage({ ...bridge.last(), videoId: TT_VID });
+      await settle();
+      assert(ytcv.state.currentVideoType === 'live', 'and the tab keeps the type it knows');
+      const answered = createBridge();
+      answered.assign(playerResponse({ loudnessDb: -6.5 }));
+      await answered.request();
+      assert(answered.last()?.isLiveContent === false, 'a response that names the video still does');
+    }
+
+    section('Bridge: a player response that names no video is not an answer');
+    {
+      const bridge = createBridge();
+      // A live stream's ad break comes back from /youtubei/v1/player/ad_break
+      // with no videoDetails.
+      const adBreak = { adBreakHeartbeatParams: 'x', playerAds: [] };
+      await bridge.fetchPlayer(adBreak, 'https://www.youtube.com/youtubei/v1/player/ad_break?prettyPrint=false');
+      assert(bridge.posted.length === 0, `an ad break's response is not passed on (${JSON.stringify(bridge.posted)})`);
+      await bridge.fetchPlayer({ videoDetails: {} });
+      assert(bridge.posted.length === 0, 'nor one whose videoDetails name no video');
+      await bridge.fetchPlayer(playerResponse({ loudnessDb: -3.25, isLiveContent: true }));
+      assert(bridge.posted.length === 1 && bridge.last()?.isLiveContent === true,
+        `while the player response for the URL's video is (${JSON.stringify(bridge.last())})`);
+    }
+
+    section('Popup gestures: refused until the channel is named for the URL\'s video');
+    {
+      await onVideo({ entry: { gainVideo: 0.5, autoApplyLoudnessVideo: false } });
+      // The URL has moved on to a video of another channel, and something
+      // redraws the popup before the tab has named that video's channel.
+      setURL('/watch', 'otherChannelVid');
+      ytcv.notifyPopup();
+      const drawn = await simulateRuntimeMessage({ type: 'getState' });
+      for (const gesture of [
+        { type: 'setGainLive', gain: 0 },
+        { type: 'setGain', gain: 0 },
+        { type: 'setAutoApplyLoudness', enabled: true }
+      ]) {
+        const answer = await simulateRuntimeMessage({ appliesTo: drawn.appliesTo, ...gesture });
+        await settle();
+        assert(answer?.ok === false && answer?.reason === 'state moved',
+          `${gesture.type} against the channel the tab left is refused (${JSON.stringify(answer)})`);
+      }
+      assert(mockSentMessages.filter((m) => m?.type?.startsWith('store:save')).length === 0 &&
+        mockStorage.channelVolumes[TT_CH].gainVideo === 0.5,
+        `and nothing is written into it (${JSON.stringify(mockStorage.channelVolumes[TT_CH])})`);
+      // Once the bridge names the video's channel, a gesture is taken.
+      simulateBridgeMessage({ videoId: 'otherChannelVid', loudnessDb: -6, isLiveContent: false, channelId: 'UCotherCh', author: 'Other' });
+      await settle();
+      const taken = await popupGesture({ type: 'setGain', gain: 0.8 });
+      await settle();
+      assert(taken?.ok === true && mockStorage.channelVolumes.UCotherCh?.gainVideo !== undefined,
+        `a gesture after it saves under the channel named (${JSON.stringify(taken)})`);
+    }
+
+    section('Navigation: the page\'s channel is not taken after a navigation');
+    {
+      await onVideo();
+      // The page still names the channel of the video left.
+      mockDOMElements['canonical'] = { href: TT_URL };
+      setURL('/watch', 'staleDomVid');
+      await ytcv.applyVideoVolume();
+      assert(ytcv.state.currentChannel.id === '' && ytcv.getState().channel.id === '',
+        `the channel of the video left is not taken from the page (${ytcv.state.currentChannel.id})`);
+      // Nor when the same video is applied again for a new element.
+      mockVideoEl = { id: 'transit-video-swapped' };
+      await ytcv.applyVideoVolume();
+      assert(ytcv.state.currentChannel.id === '', `nor on a second apply of that video (${ytcv.state.currentChannel.id})`);
+      // The bridge names the video's channel.
+      simulateBridgeMessage({ videoId: 'staleDomVid', isLiveContent: false, channelId: 'UCstaleDomNew', author: 'New' });
+      await settle();
+      assert(ytcv.state.currentChannel.id === 'UCstaleDomNew', `the bridge names it (${ytcv.state.currentChannel.id})`);
+      mockDOMElements = {};
+    }
+
+    section('Start cap: the first live gain once a navigation names the channel is held by it');
+    {
+      // Stream B stores 0.5 for live and follows Auto there. Its level of
+      // -19.6 asks for more than 3 dB over 0.5, so the cap holds the first
+      // gain to 0.5 at 3 dB over.
+      const B_CH = 'UCstreamB';
+      const B_VID = 'streamBVid';
+      const B_ENTRY = { name: 'Stream B', url: 'https://www.youtube.com/channel/' + B_CH, gainLive: 0.5, autoApplyLoudnessLive: true };
+      const capped = 0.5 * Math.pow(10, 3 / 20);
+      const close = (a, b) => typeof a === 'number' && Math.abs(a - b) < 1e-9;
+      const toStreamB = () => {
+        setURL('/watch', B_VID);
+        mockVideoEl = { id: 'stream-b-video' };
+      };
+      // What the bridge answers before a player response names the video: no
+      // type, no channel, and the live level where the player already names it.
+      const unnamedAnswer = (liveLkfs) => simulateBridgeMessage({ videoId: B_VID, loudnessDb: null, baseLoudnessDb: null,
+        isLiveContent: null, isLiveNow: false, channelId: '', author: '', liveLkfs, source: 'playing' });
+      const streamBAnswer = (liveLkfs) => simulateBridgeMessage({ videoId: B_VID, loudnessDb: null, baseLoudnessDb: null,
+        isLiveContent: true, isLiveNow: true, channelId: B_CH, author: 'Stream B', liveLkfs, source: 'request' });
+      const raiseFrom = () => JSON.stringify(ytcv.state.liveRaiseFrom);
+      // The first live gain once the channel is named is the cap's; the apply
+      // the navigation runs after the bridge answers can raise it from there by
+      // no more than the raise limit for the time since.
+      let since = 0;
+      const heldByCap = () => ytcv.state.currentGain >= capped - 1e-9 &&
+        ytcv.state.currentGain <= capped * Math.pow(10, 1.5 * (Date.now() - since) / 30000 / 20) + 1e-9;
+
+      // A live level that reaches the tab after the URL moved and before the
+      // channel is named for it, while the channel left follows Auto for the
+      // type in hand (videos here).
+      await onVideo({ entry: { gainVideo: 0.5, autoApplyLoudnessVideo: true } });
+      mockStorage.channelVolumes[B_CH] = { ...B_ENTRY };
+      toStreamB();
+      unnamedAnswer(-19.6);
+      await settle();
+      assert(ytcv.state.liveRaiseFrom === null,
+        `a live gain played before the channel is named starts no raise count (${raiseFrom()})`);
+      since = Date.now();
+      await ytcv.applyVideoVolume();
+      streamBAnswer(-19.6);
+      await settle();
+      assert(ytcv.state.currentChannel.id === B_CH && heldByCap(),
+        `the first live gain once B is named is held by B's start cap (${ytcv.state.currentGain} / ${capped})`);
+
+      // From one stream to another: the unknown type keeps the stream left's
+      // live type, and its channel stores 3.0, a cap that holds nothing.
+      await onVideo({ entry: { gainLive: 3.0, autoApplyLoudnessLive: true } });
+      mockStorage.channelVolumes[B_CH] = { ...B_ENTRY };
+      simulateBridgeMessage({ videoId: TT_VID, loudnessDb: null, baseLoudnessDb: null, isLiveContent: true,
+        isLiveNow: true, channelId: TT_CH, author: 'Transit', liveLkfs: -19.6, source: 'request' });
+      await settle();
+      assert(ytcv.state.currentVideoType === 'live' && ytcv.state.liveRaiseFrom?.videoId === TT_VID,
+        `the stream left plays its live level (${ytcv.state.currentVideoType} / ${raiseFrom()})`);
+      toStreamB();
+      unnamedAnswer(-19.6);
+      await settle();
+      assert(ytcv.state.currentVideoType === 'live' && ytcv.state.liveRaiseFrom?.videoId !== B_VID,
+        `the level before B is named starts no count for B's stream (${ytcv.state.currentVideoType} / ${raiseFrom()})`);
+      since = Date.now();
+      await ytcv.applyVideoVolume();
+      streamBAnswer(-19.6);
+      await settle();
+      assert(heldByCap(),
+        `B's first live gain is held by B's start cap (${ytcv.state.currentGain} / ${capped})`);
+
+      // A stream visited before in the page, after another channel's video in
+      // between: the count from that visit is gone with the channel.
+      await onVideo();
+      mockStorage.channelVolumes[B_CH] = { ...B_ENTRY };
+      toStreamB();
+      await ytcv.applyVideoVolume();
+      streamBAnswer(-19.6);
+      await settle();
+      streamBAnswer(null);
+      await settle();
+      assert(ytcv.state.liveRaiseFrom?.videoId === B_VID,
+        `the first visit counts from B's stream (${raiseFrom()})`);
+      setURL('/watch', TT_VID);
+      mockVideoEl = { id: 'transit-video-again' };
+      await ytcv.applyVideoVolume();
+      simulateBridgeMessage({ videoId: TT_VID, loudnessDb: -6, isLiveContent: false, channelId: TT_CH, author: 'Transit' });
+      await settle();
+      assert(ytcv.state.currentChannel.id === TT_CH && ytcv.state.liveRaiseFrom === null,
+        `another channel named drops the count (${raiseFrom()})`);
+      toStreamB();
+      since = Date.now();
+      await ytcv.applyVideoVolume();
+      streamBAnswer(-19.6);
+      await settle();
+      assert(heldByCap(),
+        `back on B's stream, its first live gain is held by the start cap again (${ytcv.state.currentGain} / ${capped})`);
+
+      // From a channel's video to its own stream, the bridge naming the same
+      // channel for the stream before the navigation's apply: the level before
+      // that, played as a video, starts no count either.
+      const SAME_STREAM = 'transitStreamVid';
+      await onVideo({ entry: { gainVideo: 0.5, autoApplyLoudnessVideo: true, gainLive: 0.5, autoApplyLoudnessLive: true } });
+      setURL('/watch', SAME_STREAM);
+      mockVideoEl = { id: 'transit-stream-video' };
+      simulateBridgeMessage({ videoId: SAME_STREAM, loudnessDb: null, baseLoudnessDb: null, isLiveContent: null,
+        isLiveNow: false, channelId: '', author: '', liveLkfs: -19.6, source: 'playing' });
+      await settle();
+      simulateBridgeMessage({ videoId: SAME_STREAM, loudnessDb: null, baseLoudnessDb: null, isLiveContent: true,
+        isLiveNow: true, channelId: TT_CH, author: 'Transit', liveLkfs: -19.6, source: 'request' });
+      await settle();
+      assert(ytcv.state.currentVideoType === 'live' && close(ytcv.state.currentGain, capped),
+        `the stream's first live gain once named is held by the start cap (${ytcv.state.currentGain} / ${capped})`);
+      ytcv._set('currentLiveLkfs', null);
+      ytcv._set('currentAutoApplyLoudnessLive', false);
+      ytcv._set('currentIsLiveNow', false);
+      ytcv.syncLiveFollow();
+    }
+
+    section('Extension reload: a failed save it causes is not reported');
+    {
+      await onVideo();
+      const watched = watchFailures();
+      const realId = chrome.runtime.id;
+      const realSet = chrome.storage.local.set;
+      chrome.storage.local.set = () => {
+        // The reload is what makes the write fail, so it is gone by the rejection.
+        chrome.runtime.id = undefined;
+        return Promise.reject(new Error('storage write failed'));
+      };
+      const answer = await popupGesture({ type: 'setGain', gain: 0.8 });
+      await settle();
+      chrome.storage.local.set = realSet;
+      chrome.runtime.id = realId;
+      watched.stop();
+      assert(answer?.ok === false && !watched.reported.some((m) => m.includes('setGain failed')),
+        `a save the reload failed is answered and not reported (${JSON.stringify(answer)} / ${JSON.stringify(watched.reported)})`);
+    }
+
+    section('Live level: a message that names no video is the URL\'s video\'s');
+    {
+      await onVideo({ entry: { autoApplyLoudnessLive: true } });
+      const liveAnswer = (over) => simulateBridgeMessage({ loudnessDb: null, baseLoudnessDb: null,
+        isLiveContent: true, isLiveNow: true, channelId: TT_CH, author: 'Transit', source: 'request', ...over });
+      liveAnswer({ videoId: TT_VID, liveLkfs: -20 });
+      await settle();
+      liveAnswer({ liveLkfs: -18 });
+      await settle();
+      assert(ytcv.state.liveLevelRise === 2 && Math.abs(ytcv.state.currentGain - calcLiveGain(-15, -18)) < 1e-9,
+        `the level it names rose over the one the URL's video named, and is taken 3 dB louder (${ytcv.state.liveLevelRise} / ${ytcv.state.currentGain})`);
+      ytcv._set('currentLiveLkfs', null);
+      ytcv._set('currentAutoApplyLoudnessLive', false);
+      ytcv._set('currentIsLiveNow', false);
+      ytcv.syncLiveFollow();
+    }
+
+    section('Storage: a change in an area other than sync and local is not this extension\'s');
+    {
+      await onVideo();
+      const elsewhere = { [CHANNEL_VOLUMES_KEY]: {
+        oldValue: {}, newValue: { [TT_CH]: { name: 'Transit', url: TT_URL, gainVideo: 2.0 } }
+      } };
+      for (const fn of chrome.storage.onChanged._listeners) fn(elsewhere, 'session');
+      await settle();
+      assert(ytcv.state.currentGain === 0.5, `a channel map in another area moves nothing (${ytcv.state.currentGain})`);
+    }
+
+    section('Fold: a local change that is not the mark leaves a failed fold on the old rule');
+    {
+      await onVideo();
+      ytcv._set('storageMigrated', false);
+      const entry = mockStorage.channelVolumes[TT_CH];
+      simulateStorageChange({ [CHANNEL_VOLUMES_KEY]: { oldValue: { [TT_CH]: entry }, newValue: { [TT_CH]: { ...entry } } } });
+      await settle();
+      assert(ytcv.state.storageMigrated === false, 'a change of the channels is not the mark');
+      ytcv._set('storageMigrated', true);
+    }
+
+    section('Popup: the thumb goes back to the gain a blur saved');
+    {
+      const popup = makePopup({
+        answer: async (message) => (message.type === 'setGainLive' || message.type === 'setGain'
+          ? { ok: true }
+          : {
+            isWatchPage: true,
+            channel: { id: TT_CH, name: 'Transit', url: TT_URL },
+            appliesTo: TT_CH + '|video|' + TT_VID,
+            loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0,
+            targetLufs: -18, videoType: 'video'
+          })
+      });
+      await popup.ready();
+      popup.node('volumeSlider').value = '165';
+      await popup.fire('volumeSlider', 'pointerdown');
+      await popup.fire('volumeSlider', 'input');
+      await popup.fire('volumeSlider', 'change');
+      await popup.blurWindow();
+      // Focus comes back with the button held and the thumb moves on; the
+      // release's change is not taken.
+      popup.node('volumeSlider').value = '210';
+      await popup.fire('volumeSlider', 'input');
+      await popup.fire('volumeSlider', 'change');
+      assert(Number(popup.node('volumeSlider').value) === 165,
+        `the thumb shows the gain the blur saved (${popup.node('volumeSlider').value})`);
+      assert(popup.node('volumeValue').textContent === '165%', 'and so does the figure beside it');
+    }
+
+    section('Popup: a drag the popup loses focus during ends there');
+    {
+      const popup = makePopup({
+        answer: async (message) => (message.type === 'setGainLive' || message.type === 'setGain'
+          ? { ok: true }
+          : {
+            isWatchPage: true,
+            channel: { id: TT_CH, name: 'Transit', url: TT_URL },
+            appliesTo: TT_CH + '|video|' + TT_VID,
+            loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0,
+            targetLufs: -18, videoType: 'video'
+          })
+      });
+      await popup.ready();
+      popup.asked.length = 0;
+      popup.node('volumeSlider').value = '165';
+      await popup.fire('volumeSlider', 'pointerdown');
+      await popup.fire('volumeSlider', 'input');
+      // Chrome fires change at the blur, then the blur.
+      await popup.fire('volumeSlider', 'change');
+      await popup.blurWindow();
+      // Focus comes back with the button still held, the drag goes on, and
+      // the release fires change again.
+      popup.node('volumeSlider').value = '210';
+      await popup.fire('volumeSlider', 'input');
+      await popup.fire('volumeSlider', 'change');
+      await popup.fire('volumeSlider', 'pointerup');
+      const saves = popup.asked.filter((m) => m.type === 'setGain');
+      const previews = popup.asked.filter((m) => m.type === 'setGainLive');
+      assert(saves.length === 1 && saves[0].gain === 1.65,
+        `the value at the blur is the one saved, once (${JSON.stringify(saves)})`);
+      assert(previews.length === 1 && previews[0].gain === 1.65,
+        `and the drag after it previews nothing (${JSON.stringify(previews)})`);
+
+      // The next press begins a gesture of its own.
+      popup.asked.length = 0;
+      popup.node('volumeSlider').value = '120';
+      await popup.fire('volumeSlider', 'pointerdown');
+      await popup.fire('volumeSlider', 'input');
+      await popup.fire('volumeSlider', 'change');
+      await popup.fire('volumeSlider', 'pointerup');
+      assert(popup.asked.filter((m) => m.type === 'setGainLive').length === 1 &&
+        popup.asked.filter((m) => m.type === 'setGain' && m.gain === 1.2).length === 1,
+        `a press after it previews and saves again (${JSON.stringify(popup.asked)})`);
+
+      // A key repeat is not a press: after a blur ends a drag, only a new
+      // press takes input again.
+      popup.node('volumeSlider').value = '120';
+      await popup.fire('volumeSlider', 'pointerdown');
+      await popup.fire('volumeSlider', 'input');
+      await popup.fire('volumeSlider', 'change');
+      await popup.blurWindow();
+      popup.asked.length = 0;
+      popup.node('volumeSlider').value = '125';
+      await popup.fire('volumeSlider', 'keydown', { repeat: true });
+      await popup.fire('volumeSlider', 'input');
+      await popup.fire('volumeSlider', 'change');
+      assert(popup.asked.length === 0, `a key repeat after the blur sends nothing (${JSON.stringify(popup.asked)})`);
+      popup.node('volumeSlider').value = '130';
+      await popup.fire('volumeSlider', 'keydown');
+      await popup.fire('volumeSlider', 'input');
+      await popup.fire('volumeSlider', 'change');
+      await popup.fire('volumeSlider', 'keyup');
+      assert(popup.asked.filter((m) => m.type === 'setGain' && m.gain === 1.3).length === 1,
+        `while a new key press saves again (${JSON.stringify(popup.asked)})`);
+
+      // A blur with no drag under way ends nothing.
+      popup.asked.length = 0;
+      await popup.blurWindow();
+      popup.node('volumeSlider').value = '130';
+      await popup.fire('volumeSlider', 'input');
+      await popup.fire('volumeSlider', 'change');
+      assert(popup.asked.filter((m) => m.type === 'setGain' && m.gain === 1.3).length === 1,
+        `an input after a blur that came between gestures is still taken (${JSON.stringify(popup.asked)})`);
+    }
   }
 
   section('The mutation sweep\'s own record');

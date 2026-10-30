@@ -69,11 +69,17 @@
   // the same video and type.
   let liveSaveBaseline = null;
   let liveSaveInFlight = false;
+  // The video the first apply after a change of URL has run for. Until it has,
+  // the tab can still hold the channel of the page it left, so a bridge
+  // message makes neither Auto's own save nor the live save.
+  let appliedVideoId = '';
   // When a live level last set the gain playing, and for which video; null
   // until a live gain plays for the video. `at` is null from a message that
   // names no live level until the next live gain, so a level coming back
   // starts its count from there, and -Infinity after Target LUFS changes, so
-  // the next live gain plays as it stands.
+  // the next live gain plays as it stands. It is kept only while the channel
+  // in hand is named for the URL's video, and null again once the bridge names
+  // another channel.
   let liveRaiseFrom = null;
   // The live level the bridge last named for the video, and how far the one it
   // names now rose over it (to 0.1 dB), or null.
@@ -100,6 +106,9 @@
   // The same for the settings alone: a settings read is answered after a change
   // that came in while it was out, and what it read is older than that change.
   let settingsRevision = 0;
+  // What applyPreferredGain hands back when a change notification arrived
+  // while it read the entry, and it applied nothing.
+  const STORAGE_MOVED = 'storage moved';
   // Resolves once the legacy fold has been attempted; `storageMigrated` says
   // whether it succeeded. Until it has, the channel map still holds the
   // pre-unification shape, where a gain without an Auto flag meant Auto was
@@ -285,6 +294,7 @@
       const idChanged = oldId !== bridgeChId;
       if (idChanged) {
         currentChannel.id = bridgeChId;
+        liveRaiseFrom = null;
         currentChannel.url = 'https://www.youtube.com/channel/' + bridgeChId;
         currentAutoApplyLoudnessVideo = false;
         currentAutoApplyLoudnessLive = false;
@@ -318,10 +328,17 @@
       }
     }
     const source = typeof event.data.source === 'string' ? event.data.source : '';
-    if (applyAutomaticLoudnessGain(source)) {
-      notifyPopup();
-    } else {
-      applyPreferredGain(source).then(notifyPopup);
+    // Applying Auto's gain throws where the audio chain cannot be built; the
+    // follow and the waiters below run either way.
+    try {
+      if (applyAutomaticLoudnessGain(source)) {
+        notifyPopup();
+      } else {
+        applyPreferredGain(source, { fromMessage: true }).then(notifyPopup)
+          .catch(err => reportFailure('apply failed', err));
+      }
+    } catch (err) {
+      reportFailure('apply failed', err);
     }
     syncLiveFollow();
     const waiters = loudnessWaiters;
@@ -445,7 +462,9 @@
   // there over the follows that come after. The first live gain played for a
   // video in this page is held to LIVE_START_CAP_DB over the gain the
   // channel's entry holds for live, where it holds one above 0 and the video
-  // plays as live. One over a gain of 0 plays as it stands.
+  // plays as live. One over a gain of 0 plays as it stands. Until the channel
+  // in hand is named for the URL's video, a live gain neither reads the count
+  // nor starts it, so the first one once a channel is named is held by the cap.
   const LIVE_RAISE_DB = 1.5;
   const LIVE_RAISE_PERIOD_MS = 30000;
   const LIVE_START_CAP_DB = 3;
@@ -457,8 +476,9 @@
     const gain = calcGainFromLiveLevel(currentLiveLkfs + ahead);
     const videoId = getUrlVideoId();
     const now = Date.now();
-    const from = liveRaiseFrom;
-    liveRaiseFrom = { videoId, at: now };
+    const named = channelNamedForUrlVideo();
+    const from = named ? liveRaiseFrom : null;
+    if (named) liveRaiseFrom = { videoId, at: now };
     if (!from || from.videoId !== videoId) {
       return currentVideoType === 'live' && storedLiveGain > 0
         ? Math.min(gain, storedLiveGain * Math.pow(10, LIVE_START_CAP_DB / 20))
@@ -469,8 +489,19 @@
     return Math.min(gain, currentGain * Math.pow(10, allowedDb / 20));
   }
 
+  // While a slider preview holds gains back, no live gain is worked out, so
+  // liveRaiseFrom stays where it was.
   function commitLiveGain() {
+    if (previewHoldsGain()) return;
     commitGain(liveGainToPlay());
+  }
+
+  // Auto's own save, and the live save, are made by a tab that is playing the
+  // video: not paused and not muted. A volume of 0 and a gain of 0 still count
+  // as playing.
+  function isVideoPlaying() {
+    const video = document.querySelector('video.html5-main-video, video');
+    return !!video && !video.paused && !video.muted;
   }
 
   function applyAutomaticLoudnessGain(source) {
@@ -480,7 +511,7 @@
     // What it stores is decided apart from the apply.
     if (isCurrentAutoApplyEnabled() && currentLiveLkfs !== null) {
       commitLiveGain();
-      evaluateLiveSave(source);
+      evaluateLiveSave(source, { fromMessage: true });
       return true;
     }
     if (!isCurrentAutoApplyEnabled() || currentLoudnessDb === null) return false;
@@ -488,12 +519,12 @@
     const storedGain = calcStoredGainFromLoudness();
     const channelId = currentChannel.id;
     const videoType = currentVideoType;
-    commitGain(gain);
+    commitGainFromElsewhere(gain);
     // The calculated gain becomes the channel's stored gain, so a later video
     // of the same channel without Content Loudness keeps the same level. Not
     // before the fold, though: a flagless gain is what a pre-unification
     // manual save looks like, and the fold would pin this channel Auto-off.
-    if (storageMigrated) {
+    if (storageMigrated && isVideoPlaying() && appliedVideoId === getUrlVideoId()) {
       nameUnaskedWrite('auto gain not stored', saveChannelGain(
         channelId, currentChannel.name, storedGain, videoType, currentChannel.url
       ));
@@ -501,7 +532,9 @@
     return true;
   }
 
-  async function applyPreferredGain(source = 'apply') {
+  // `fromMessage` is an apply a bridge message starts, which stores only once
+  // `appliedVideoId` names the URL's video.
+  async function applyPreferredGain(source = 'apply', { fromMessage = false } = {}) {
     await storageReady;
     const requestedVideoId = getUrlVideoId();
     const requestedChannelId = currentChannel.id;
@@ -513,15 +546,15 @@
     // navigation, bridge metadata, or a settings change.
     if (requestedVideoId !== getUrlVideoId() ||
         requestedChannelId !== currentChannel.id ||
-        requestedVideoType !== currentVideoType ||
-        requestedStorageRevision !== storageRevision) return;
+        requestedVideoType !== currentVideoType) return;
+    if (requestedStorageRevision !== storageRevision) return STORAGE_MOVED;
 
     setCurrentAutoApplyFromEntry(entry);
     const autoEnabled = isCurrentAutoApplyEnabled(requestedVideoType);
     syncLiveFollow();
     if (autoEnabled && currentLiveLkfs !== null) {
       commitLiveGain();
-      await evaluateLiveSave(source);
+      await evaluateLiveSave(source, { fromMessage });
       return;
     }
     const hasLoudness = currentLoudnessDb !== null;
@@ -529,8 +562,9 @@
     const gain = autoEnabled && hasLoudness
       ? calcGainFromLoudness(currentLoudnessDb)
       : (stored != null ? storedGainToPlaying(entry, requestedVideoType, stored) : 1.0);
-    commitGain(gain);
-    if (autoEnabled && hasLoudness && storageMigrated) {
+    commitGainFromElsewhere(gain);
+    if (autoEnabled && hasLoudness && storageMigrated && isVideoPlaying() &&
+        (!fromMessage || appliedVideoId === requestedVideoId)) {
       // The gain is already playing. A failed write must not abort the caller —
       // `forceDetect` answers the popup from this path.
       await nameUnaskedWrite('auto gain not stored', saveChannelGain(
@@ -550,7 +584,7 @@
   // as it stands.
   const LIVE_SAVE_STEP_DB = 1;
 
-  async function evaluateLiveSave(source) {
+  async function evaluateLiveSave(source, { fromMessage = false } = {}) {
     const videoId = getUrlVideoId();
     const videoType = currentVideoType;
     const gain = calcGainFromLiveLevel();
@@ -576,11 +610,15 @@
       result.reason = 'not following';
     } else if (result.decision === 'skip') {
       result.reason = 'under step';
+    } else if (fromMessage && appliedVideoId !== videoId) {
+      result.reason = 'before first apply';
     } else if (currentGain < gain * (1 - 1e-9)) {
       result.reason = 'held under the level';
     } else if (!storageMigrated) {
       // A flagless gain stored before the fold reads as a manual save to it.
       result.reason = 'before fold';
+    } else if (!isVideoPlaying()) {
+      result.reason = 'not playing';
     } else if (liveSaveInFlight) {
       result.reason = 'save in flight';
     } else {
@@ -701,27 +739,62 @@
   }
 
   function applyGainToAudio(value) {
-    if (value === 1.0 && !gainNode) {
-      updateGainOverlay();
-      return;
-    }
+    if (value === 1.0 && !gainNode) return;
     if (!ensureAudioChain()) return;
     gainNode.gain.value = value;
-    updateGainOverlay();
   }
 
   // The only production path that changes gain. Keeping logical state, the
   // GainNode, and popup projection in one commit prevents one surface from
-  // retaining an older value than the others.
+  // retaining an older value than the others. The audio goes first: where the
+  // chain cannot be built, the gain stays what it was everywhere.
   function commitGain(value) {
     const numeric = Number(value);
     const clamped = Number.isFinite(numeric)
       ? Math.max(0, Math.min(6, numeric))
       : 1.0;
-    currentGain = clamped;
     applyGainToAudio(clamped);
+    currentGain = clamped;
+    updateGainOverlay();
     notifyPopup();
     return clamped;
+  }
+
+  // While the popup's slider previews a gain, a gain from anywhere else — a
+  // bridge message, another tab's write, a settings change, the live follow —
+  // is held back rather than applied. The preview lasts until its gesture
+  // ends: the save (setGain) arrives, or PREVIEW_IDLE_MS pass after the last
+  // preview; the popup sends the preview again while the slider is held, so
+  // a gesture still held does not end. A gesture that ends with no save, and
+  // a save refused after a preview, apply what storage holds then. A preview
+  // whose state has moved holds nothing back.
+  const PREVIEW_IDLE_MS = 2000;
+  let preview = null;
+
+  function startPreview(appliesTo) {
+    if (preview) clearTimeout(preview.timer);
+    preview = { appliesTo, timer: setTimeout(endIdlePreview, PREVIEW_IDLE_MS) };
+  }
+
+  function endPreview() {
+    if (!preview) return;
+    clearTimeout(preview.timer);
+    preview = null;
+  }
+
+  function endIdlePreview() {
+    endPreview();
+    applyPreferredGain().then(notifyPopup)
+      .catch(err => reportFailure('apply failed', err));
+  }
+
+  // Whether a slider preview holds back a gain from elsewhere now.
+  function previewHoldsGain() {
+    return !!preview && preview.appliesTo === currentGestureState();
+  }
+
+  function commitGainFromElsewhere(value) {
+    return previewHoldsGain() ? currentGain : commitGain(value);
   }
 
   // ── Gain overlay on YouTube player ──────────────────────────────────
@@ -784,8 +857,14 @@
     }
     if (videoIdChanged) liveSaveBaseline = null;
 
-    const ch = detectChannel();
-    if (ch.id && !hasEarlyBridgeChannel) currentChannel = ch;
+    // The page names the channel for the document's first video alone. After
+    // a navigation it can still name the channel of the video left, and the
+    // channel waits for the bridge, which names it for the video it answers.
+    const ch = prevVideoId ? null : detectChannel();
+    if (ch?.id && !hasEarlyBridgeChannel) {
+      currentChannel = ch;
+      currentChannelVideoId = _lastVideoId;
+    }
 
     if (!hasEarlyBridgeLoudness) {
       currentLoudnessDb = null;
@@ -803,6 +882,7 @@
     // read. This avoids replacing an already calculated archive gain with the
     // navigation-time fallback.
     await applyPreferredGain();
+    appliedVideoId = _lastVideoId;
     notifyPopup();
 
     // Fetch loudness + videoType + channelId. Auto mode applies the calculated
@@ -810,7 +890,7 @@
     requestLoudnessWithRetry(10, 500).then(async () => {
       await applyPreferredGain();
       notifyPopup();
-    });
+    }).catch(err => reportFailure('apply failed', err));
   }
 
   // What a gesture from the popup was made against. The popup echoes it back
@@ -822,6 +902,18 @@
     // popup is showing — the measurement above all — while the channel and the
     // type stay as they were.
     return currentChannel.id + '|' + currentVideoType + '|' + getUrlVideoId();
+  }
+
+  // Whether the channel in hand was named for the video the URL names.
+  function channelNamedForUrlVideo() {
+    return !!currentChannel.id && currentChannelVideoId === getUrlVideoId();
+  }
+
+  // A gesture is made against the channel in hand only once that channel was
+  // named for the video the URL names; before that it can be the channel of
+  // the page the tab left.
+  function gestureStateMoved(msg) {
+    return msg.appliesTo !== currentGestureState() || !channelNamedForUrlVideo();
   }
 
   function getState() {
@@ -929,6 +1021,14 @@
     return storageReady;
   }
 
+  // The page's video starting to play is applied again, and Auto's own save
+  // is made then.
+  document.addEventListener('play', (event) => {
+    if (!isWatchPage() || event.target !== document.querySelector('video.html5-main-video, video')) return;
+    applyPreferredGain('play').then(notifyPopup)
+      .catch(err => reportFailure('apply failed', err));
+  }, true);
+
   document.addEventListener('yt-navigate-finish', triggerApply);
   window.addEventListener('popstate', triggerApply);
   // Leaving a watch page ends the live follow without waiting for an apply,
@@ -964,10 +1064,10 @@
     triggerApply();
   }
 
-  // React to settings changes (e.g. overlay toggle from options page, or from
-  // another machine the profile syncs with). The settings live in sync; the
-  // settings key in local is only the copy the worker moves out of it, and its
-  // removal is not a change of settings.
+  // React to settings changes (e.g. overlay toggle from options page, or, with
+  // Chrome sync on, from another Chrome the user is signed in to). The settings
+  // live in sync; the settings key in local is only the copy the worker moves
+  // out of it, and its removal is not a change of settings.
   if (isContextValid()) {
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area === 'sync') {
@@ -977,10 +1077,15 @@
         const targetBefore = targetLufs;
         takeSettings(changes[SETTINGS_KEY].newValue || {});
         if (liveRaiseFrom && targetLufs !== targetBefore) liveRaiseFrom = { ...liveRaiseFrom, at: -Infinity };
-        applyPreferredGain().then(() => {
-          updateGainOverlay();
-          notifyPopup();
-        });
+        applyPreferredGain()
+          // A notification that landed during the read dropped the apply,
+          // Auto's save with it; it is made once more against storage as it
+          // stands then.
+          .then(result => (result === STORAGE_MOVED ? applyPreferredGain() : result))
+          .then(() => {
+            updateGainOverlay();
+            notifyPopup();
+          }).catch(err => reportFailure('apply failed', err));
         return;
       }
       if (area !== 'local') return;
@@ -994,7 +1099,8 @@
         foldInFlight = null;
         storageRevision++;
         if (!changes[CHANNEL_VOLUMES_KEY]) {
-          applyPreferredGain().then(notifyPopup);
+          applyPreferredGain().then(notifyPopup)
+            .catch(err => reportFailure('apply failed', err));
         }
       }
       if (changes[CHANNEL_VOLUMES_KEY]) {
@@ -1031,7 +1137,7 @@
         }
         const nextGain = gain ?? 1.0;
         if (nextGain !== currentGain) {
-          commitGain(nextGain);
+          commitGainFromElsewhere(nextGain);
         }
         notifyPopup();
       }
@@ -1051,6 +1157,7 @@
   // next navigation. The slider's live preview has already moved the gain by
   // then, so the level to go back to is the one storage still holds.
   function restoreGainAfterFailedSave() {
+    endPreview();
     return applyPreferredGain().catch(err =>
       reportFailure('gain not restored after a failed save', err));
   }
@@ -1089,7 +1196,7 @@
     }
 
     if (msg.type === 'applyLoudness') {
-      if (msg.appliesTo !== currentGestureState()) {
+      if (gestureStateMoved(msg)) {
         sendResponse({ ok: false, reason: 'state moved' });
         return true;
       }
@@ -1126,7 +1233,7 @@
     }
 
     if (msg.type === 'setGainLive') {
-      if (msg.appliesTo !== currentGestureState()) {
+      if (gestureStateMoved(msg)) {
         sendResponse({ ok: false, reason: 'state moved' });
         return true;
       }
@@ -1135,12 +1242,16 @@
         return true;
       }
       commitGain(msg.gain);
+      startPreview(msg.appliesTo);
       sendResponse({ ok: true });
       return true;
     }
 
     if (msg.type === 'setGain') {
-      if (msg.appliesTo !== currentGestureState()) {
+      // The save ends the gesture, whatever becomes of it.
+      const previewed = preview !== null;
+      endPreview();
+      if (gestureStateMoved(msg)) {
         // The preview may have moved the level while the state still held, so
         // the level goes back to what storage has for the state now in hand.
         restoreGainAfterFailedSave().then(() =>
@@ -1148,7 +1259,14 @@
         return true;
       }
       if (isCurrentManualGainLocked()) {
-        sendResponse({ ok: false, reason: 'auto apply controls current gain' });
+        if (!previewed) {
+          sendResponse({ ok: false, reason: 'auto apply controls current gain' });
+          return true;
+        }
+        // A preview went ahead of the lock, so the level goes back to what
+        // storage has for the state in hand.
+        restoreGainAfterFailedSave().then(() =>
+          sendResponse({ ok: false, reason: 'auto apply controls current gain' }));
         return true;
       }
       const { gain } = msg;
@@ -1166,7 +1284,7 @@
     }
 
     if (msg.type === 'setAutoApplyLoudness') {
-      if (!currentChannel.id || msg.appliesTo !== currentGestureState()) {
+      if (gestureStateMoved(msg)) {
         sendResponse({ ok: false, reason: 'state moved' });
         return true;
       }
@@ -1298,7 +1416,7 @@
         return {
           currentChannel, currentChannelVideoId,
           currentGain, currentLoudnessDb, currentBaseLoudnessDb, currentLoudnessVideoId,
-          currentLiveLkfs, readLiveLkfs, liveSaveBaseline, liveSaveInFlight, liveFollowTimer, liveRaiseFrom,
+          currentLiveLkfs, readLiveLkfs, liveSaveBaseline, liveSaveInFlight, liveFollowTimer, liveRaiseFrom, preview, appliedVideoId,
           storedLiveGain, liveLevelBefore, liveLevelRise,
           currentVideoType, currentVideoTypeDetected, currentIsLiveNow, showGainOverlay,
           currentAutoApplyLoudnessVideo, currentAutoApplyLoudnessLive,
@@ -1313,6 +1431,7 @@
       detectChannel,
       getChannelDisplayName,
       commitGain,
+      endPreview,
       getState,
       isWatchPage,
       getUrlVideoId,
@@ -1334,7 +1453,10 @@
           case 'currentGain': currentGain = val; break;
           case 'currentVideoType': currentVideoType = val; break;
           case 'currentVideoTypeDetected': currentVideoTypeDetected = val; break;
-          case '_lastVideoId': _lastVideoId = val; break;
+          // A video set as the last one applied is one whose first apply has
+          // run; a case that means otherwise sets appliedVideoId after it.
+          case '_lastVideoId': _lastVideoId = val; appliedVideoId = val; break;
+          case 'appliedVideoId': appliedVideoId = val; break;
           case '_lastProcessedVideo': _lastProcessedVideo = val; break;
           case '_applyRunning': _applyRunning = val; break;
           case 'targetLufs': targetLufs = val; break;

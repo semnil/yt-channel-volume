@@ -38,6 +38,9 @@
   "settingsLoadFailed": {
     "message": "Could not load the saved settings. Please reload the page."
   },
+  "settingsSaveFailed": {
+    "message": "Could not save the setting. The saved value was restored."
+  },
   "settings": {
     "message": "Settings"
   },

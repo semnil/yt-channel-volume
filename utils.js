@@ -41,10 +41,11 @@ function updateChannelVolumes(mutate, extraKeys) {
   return write;
 }
 
-// The settings that belong to no channel live in storage.sync, so every machine
-// the profile is signed in on holds the same ones. A profile whose settings the
-// worker has not moved there yet still holds them in local, and they are read
-// from there until it has.
+// The settings that belong to no channel live in storage.sync, which Chrome
+// syncs with every Chrome the user is signed in to where Chrome sync is on, and
+// which behaves like local where it is off. A profile whose settings the worker
+// has not moved there yet still holds them in local, and they are read from
+// there until it has.
 async function readSettings() {
   const synced = await chrome.storage.sync.get(SETTINGS_KEY);
   if (synced[SETTINGS_KEY]) return synced[SETTINGS_KEY];
@@ -99,9 +100,9 @@ const SETTINGS_WRITES = {
 };
 
 // Moves settings saved before they synced out of local. Settings another
-// machine already put in sync are the ones every machine reads, so they stay
-// and the local copy goes. Sync is written before local is cleared, so a reader
-// always finds one of the two.
+// Chrome the user is signed in to already put in sync, with Chrome sync on, are
+// the ones every such Chrome reads, so they stay and the local copy goes. Sync
+// is written before local is cleared, so a reader always finds one of the two.
 async function moveSettingsToSync() {
   const local = await chrome.storage.local.get(SETTINGS_KEY);
   if (!local[SETTINGS_KEY]) return false;

@@ -13,7 +13,7 @@ Chrome extension (Manifest V3) that remembers volume per YouTube channel and app
 - **Separate volume for Live and Video**: Within one channel, live streams (archives included) and ordinary videos can hold different volumes
 - **Manual volume**: Set 0–600 % from the slider or the preset buttons, except while Auto is applying a detected LUFS
 - **Gain overlay**: Shows the gain in force next to the player's volume bar (toggled in Settings)
-- **Settings shared across computers**: Target LUFS, the global defaults, the display unit and the gain overlay are shared by every computer where you are signed in to Chrome with the extension installed (through Chrome sync, when it is on). Saved channels stay on each computer
+- **Settings shared across computers**: when you have turned on Chrome sync, Target LUFS, the global defaults, the display unit and the gain overlay are shared by every computer where you are signed in to Chrome with the same account and have the extension installed. With Chrome sync off, they stay on this computer. Saved channels stay on each computer
 - **One gain per channel and kind**: Auto and manual both update that single gain, so turning LUFS auto-apply on or off leaves the volume where it was. With no LUFS detected the popup marks Current as Fallback, and Saved Channels shows it in the form `Auto (70%)`
 - **Japanese / English**: Follows the browser's language setting, and English for any other language
 - **No external dependencies**: No npm packages, no CDN. All code written from scratch
@@ -59,7 +59,7 @@ Open the settings page from the gear icon in the popup:
 - **Gain overlay**: Overlays the gain value on the player (default: off)
 - **Saved Channels**: Manage the list of saved channels
 
-Everything above but the saved channels belongs to no channel, and is shared by every computer where you are signed in to Chrome with the extension installed (through Chrome sync, when it is on). The saved channels stay on each computer.
+Everything above but the saved channels belongs to no channel. When you have turned on Chrome sync, it is shared by every computer where you are signed in to Chrome with the same account and have the extension installed; with Chrome sync off, it stays on this computer. The saved channels stay on each computer.
 
 ## How it works
 
@@ -141,7 +141,7 @@ yt-channel-volume/
 ## Security
 
 - No external network requests at all
-- Saved channels are stored locally in `chrome.storage.local`. The settings that belong to no channel are stored in `chrome.storage.sync`, which Chrome carries between your signed-in computers when Chrome sync is on; the extension itself sends them nowhere
+- Saved channels are stored locally in `chrome.storage.local`. The settings that belong to no channel are stored in `chrome.storage.sync`, which Chrome carries between the computers where you are signed in to Chrome with the same account when you have turned on Chrome sync, and keeps on this computer when it is off; the extension itself sends them nowhere
 - YouTube is the only origin it talks to (it runs as a content script)
 - Every source file is published. No third-party dependencies
 - See [PRIVACY_POLICY.md](PRIVACY_POLICY.md) for details

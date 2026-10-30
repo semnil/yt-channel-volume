@@ -2,7 +2,7 @@
 
 [日本語版はこちら (Japanese)](PRIVACY_POLICY_JA.md)
 
-Last updated: 2026-10-28
+Last updated: 2026-10-29
 
 ## Overview
 
@@ -20,7 +20,7 @@ YT Channel Volume is a Chrome extension that remembers and auto-applies volume s
 
 - **What**: Target LUFS level, display unit (% or dB), gain overlay toggle, and the loudness auto-apply default for each kind (video / live).
 - **Purpose**: Customize the extension's behavior according to your preferences.
-- **Storage**: Saved in `chrome.storage.sync`, so every computer where you are signed in to Chrome with the extension installed uses the same preferences. With Chrome sync on, Chrome carries them through your Google account, as it does for other extensions' synced settings; with it off, they stay on your device. The extension itself sends them nowhere. Channel volume settings are not part of this and stay on each device.
+- **Storage**: Saved in `chrome.storage.sync`. When you have turned on Chrome sync, every computer where you are signed in to Chrome with the same Google account and have the extension installed uses the same preferences: Chrome carries them through your Google account, as it does for other extensions' synced settings. With Chrome sync off, they stay on your device. The extension itself sends them nowhere. Channel volume settings are not part of this and stay on each device.
 
 ### YouTube Video Metadata (read-only)
 
@@ -37,7 +37,7 @@ YT Channel Volume is a Chrome extension that remembers and auto-applies volume s
 
 ## Where Data Is Sent
 
-Nowhere. This extension makes **no external network requests**. Channel volume settings remain on your device. The extension preferences above are kept in Chrome's synced storage, which Chrome itself carries between your signed-in computers when Chrome sync is on.
+Nowhere. This extension makes **no external network requests**. Channel volume settings remain on your device. The extension preferences above are kept in Chrome's synced storage, which Chrome itself carries between the computers where you are signed in to Chrome with the same Google account, when you have turned on Chrome sync.
 
 ## Data Storage and Security
 

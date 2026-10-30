@@ -92,6 +92,36 @@
     await requestChannelWrite('saveSetting', { key, value });
   }
 
+  function showSettingsError(visible, key = 'settingsSaveFailed') {
+    if (visible) settingsErrorEl.textContent = msg(key);
+    settingsErrorEl.classList.toggle('hidden', !visible);
+  }
+
+  // A write that did not land leaves the control showing a value nothing holds,
+  // so the page goes back to what storage holds and says that it did. Where
+  // the settings cannot be read back either, nothing goes back, and the line
+  // asks for a reload.
+  async function saveSettingOrRestore(key, value) {
+    if (!settingsLoaded) return;
+    try {
+      await saveSetting(key, value);
+      showSettingsError(false);
+    } catch (err) {
+      const revision = settingsRevision;
+      let shown = 'settingsSaveFailed';
+      try {
+        const settings = await readSettings();
+        if (revision === settingsRevision) applySettings(settings);
+        renderChannels(channelVolumes);
+      } catch (readErr) {
+        shown = 'settingsLoadFailed';
+        console.error('[YTCV] settings not read back after a failed save', readErr);
+      }
+      showSettingsError(true, shown);
+      console.error('[YTCV] setting not saved', err);
+    }
+  }
+
   function updateUnitButtons() {
     unitToggle.querySelectorAll('button').forEach(btn => {
       btn.classList.toggle('active', btn.dataset.unit === displayUnit);
@@ -199,7 +229,7 @@
 
   targetSlider.addEventListener('change', () => {
     targetLufs = Number(targetSlider.value);
-    saveSetting('targetLufs', targetLufs);
+    saveSettingOrRestore('targetLufs', targetLufs);
   });
 
   defaultAutoVideoToggle.addEventListener('change', async () => {
@@ -233,7 +263,7 @@
   });
 
   overlayToggle.addEventListener('change', () => {
-    saveSetting('showGainOverlay', overlayToggle.checked);
+    saveSettingOrRestore('showGainOverlay', overlayToggle.checked);
   });
 
   clearAllBtn.addEventListener('click', async () => {
@@ -250,8 +280,8 @@
     if (!btn || !btn.dataset.unit) return;
     displayUnit = btn.dataset.unit;
     updateUnitButtons();
-    saveSetting('displayUnit', displayUnit);
     renderChannels(channelVolumes);
+    saveSettingOrRestore('displayUnit', displayUnit);
   });
 
   // ── Storage change listener ─────────────────────────────────────
@@ -262,8 +292,9 @@
     // reload it. What another tab writes after that would stand on a page whose
     // own read never landed, so none of it is taken.
     if (loadFailed) return;
-    // The settings live in sync, and so do the ones another machine writes. The
-    // settings key in local is only the copy the worker moves out of it.
+    // The settings live in sync, and so do the ones another Chrome the user is
+    // signed in to writes with Chrome sync on. The settings key in local is only
+    // the copy the worker moves out of it.
     if (area === 'sync') {
       if (changes[SETTINGS_KEY]) {
         settingsRevision++;

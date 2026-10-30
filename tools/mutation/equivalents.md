@@ -32,46 +32,48 @@ message handler starts the evaluation without reading what it hands back, so
 which text it carries changes nothing the handler does: the gain applied, the
 write sent and the follow set are the same either way.
 
-- `content.js:320` === becomes !== ×1 — ===
+- `content.js:330` === becomes !== ×1 — ===
 
 `ensureAudioChain`'s check before the teardown. The disconnect it guards is
 inside a `try`, so a null source is caught, and the assignment below runs either
 way.
 
-- `content.js:682` a guard is always taken ×1 — if (sourceNode) {
+- `content.js:720` a guard is always taken ×1 — if (sourceNode) {
 
-
-The dropped await before `notifyPopup` in the retry's callback. Measured by
-tracing what runs and in what order: `applyAutomaticLoudnessGain` commits the
-gain from the level and the target, needing no storage read, so it has already
-run by the time the callback is reached — every notification carries the level
-beside the gain that goes with it whether the await is there or not. With Auto
-off the gain does not move at all.
-
-- `content.js:811` an await is dropped ×1 — await
 
 The navigation observer's watch-page check. `triggerApply` opens with the same
 one.
 
-- `content.js:946` a guard is dropped ×1 — if (!isWatchPage()) return;
+- `content.js:1046` a guard is dropped ×1 — if (!isWatchPage()) return;
 
 `respondOnce`'s guard against a second answer, and `return true` after a
 synchronous `sendResponse`. Both were measured against Chrome rather than
 reasoned about: a response sent inside the listener is delivered whatever the
 listener returns, and a second one is dropped rather than delivered or thrown.
 
-- `content.js:1061` a guard is dropped ×1 — if (answered) return;
-- `content.js:1075` true becomes false ×1 — return true;
-- `content.js:1082` true becomes false ×1 — return true;
-- `content.js:1088` true becomes false ×1 — return true;
-- `content.js:1094` true becomes false ×1 — return true;
-- `content.js:1098` true becomes false ×1 — return true;
-- `content.js:1102` true becomes false ×1 — return true;
-- `content.js:1131` true becomes false ×1 — return true;
-- `content.js:1135` true becomes false ×1 — return true;
-- `content.js:1139` true becomes false ×1 — return true;
-- `content.js:1152` true becomes false ×1 — return true;
-- `content.js:1171` true becomes false ×1 — return true;
+- `content.js:1168` a guard is dropped ×1 — if (answered) return;
+- `content.js:1182` true becomes false ×1 — return true;
+- `content.js:1189` true becomes false ×1 — return true;
+- `content.js:1195` true becomes false ×1 — return true;
+- `content.js:1201` true becomes false ×1 — return true;
+- `content.js:1205` true becomes false ×1 — return true;
+- `content.js:1209` true becomes false ×1 — return true;
+- `content.js:1238` true becomes false ×1 — return true;
+- `content.js:1242` true becomes false ×1 — return true;
+- `content.js:1247` true becomes false ×1 — return true;
+- `content.js:1264` true becomes false ×1 — return true;
+- `content.js:1289` true becomes false ×1 — return true;
+
+The level in hand taken as Auto's when Auto is turned on with a level known.
+Where no live level is in hand (`readLiveLkfs` null) the level known is the
+response's, and Auto's live level is null already: a bridge message sets the
+two together, the popup's read sets the one in hand only to a level, a
+navigation clears both, and turning Auto on sets Auto's from the one in hand.
+`liveLevelRise` is read only by `liveGainToPlay`, which runs only with Auto's
+level set, and every way that level is set also sets the rise. Taking the
+branch then writes values nothing reads differently.
+
+- `content.js:1303` a guard is always taken ×1 — if (live) {
 
 ## popup.js
 
@@ -91,13 +93,13 @@ timer body opens with its own `hasLoudness` check, the recursion is bounded by
 `remaining > 1`, and the `catch (_) {}` takes what reading a field of
 `undefined` throws.
 
-- `popup.js:390` === becomes !== ×1 — ===
-- `popup.js:390` a guard is always taken ×1 — if (resp.contentLufs === null || resp.contentLufs === undefined) {
-- `popup.js:408` a guard is dropped ×1 — if (remaining <= 0 || hasLoudness) return;
-- `popup.js:408` || becomes && ×1 — ||
-- `popup.js:413` a guard is always taken ×1 — if (resp) {
-- `popup.js:415` && becomes || ×1 — &&
-- `popup.js:415` a guard is always taken ×1 — if (!hasLoudness && remaining > 1) {
+- `popup.js:441` === becomes !== ×1 — ===
+- `popup.js:441` a guard is always taken ×1 — if (resp.contentLufs === null || resp.contentLufs === undefined) {
+- `popup.js:459` a guard is dropped ×1 — if (remaining <= 0 || hasLoudness) return;
+- `popup.js:459` || becomes && ×1 — ||
+- `popup.js:464` a guard is always taken ×1 — if (resp) {
+- `popup.js:466` && becomes || ×1 — &&
+- `popup.js:466` a guard is always taken ×1 — if (!hasLoudness && remaining > 1) {
 
 ## page-bridge.js
 
@@ -107,8 +109,8 @@ second guards is inside a `try { } catch (_) {}`, which takes what a missing
 player or a missing method throws.
 
 - `page-bridge.js:178` a guard is always taken ×1 — if (window.ytInitialPlayerResponse) {
-- `page-bridge.js:244` && becomes || ×1 — &&
-- `page-bridge.js:244` a guard is always taken ×1 — if (player && typeof player.getPlayerResponse === 'function') {
+- `page-bridge.js:246` && becomes || ×1 — &&
+- `page-bridge.js:246` a guard is always taken ×1 — if (player && typeof player.getPlayerResponse === 'function') {
 
 The player's stable volume setting and its stats line are read the same way:
 each call is inside a `try { } catch (_) {}`, and what a missing player or a
@@ -119,8 +121,8 @@ stored setting, or a level or volume line of `null`.
 - `page-bridge.js:56` a guard is always taken ×1 — if (player && typeof player.getDrcUserPreference === 'function') {
 - `page-bridge.js:94` || becomes && ×1 — ||
 - `page-bridge.js:94` a guard is dropped ×1 — if (!player || typeof player.getStatsForNerds !== 'function') return nul
-- `page-bridge.js:419` && becomes || ×1 — &&
-- `page-bridge.js:419` a guard is always taken ×1 — if (moviePlayer && typeof moviePlayer.getStatsForNerds === 'function') {
+- `page-bridge.js:423` && becomes || ×1 — &&
+- `page-bridge.js:423` a guard is always taken ×1 — if (moviePlayer && typeof moviePlayer.getStatsForNerds === 'function') {
 
 ## tools/mutation/bail.mjs
 
