@@ -2,18 +2,18 @@
 
 [日本語版はこちら (Japanese)](PRIVACY_POLICY_JA.md)
 
-Last updated: 2026-10-29
+Last updated: 2026-10-30
 
 ## Overview
 
-YT Channel Volume is a Chrome extension that remembers and auto-applies volume settings per YouTube channel using Content Loudness data. This privacy policy explains what data the extension handles, how it is used, and where it is stored.
+YT Channel Volume is a Chrome extension that balances volume per YouTube channel. It remembers a volume for each channel and, with loudness auto-apply on, adjusts each video and live stream to a target loudness from the loudness YouTube reports (Content Loudness data and the player's stats for nerds). This privacy policy explains what data the extension handles, how it is used, and where it is stored.
 
 ## Data Collected and Purpose
 
 ### Channel Volume Settings
 
 - **What**: YouTube channel IDs, display names, channel URLs, the volume (gain) values you set for each kind (video / live), the loudness auto-apply switch for each kind, and the gain the extension works out for itself while that switch is on.
-- **Purpose**: Used to automatically apply your preferred volume when you visit a video from a saved channel.
+- **Purpose**: Used to automatically apply your preferred volume, or the gain auto-apply worked out, when you visit a video from a saved channel.
 - **Storage**: Saved locally in `chrome.storage.local` on your device, and never transmitted to any external server. The gain you set is written when you set it. While auto-apply is on, the extension may also write the gain it calculates from a Content Loudness value or from a live stream's level, without an additional action from you.
 
 ### Extension Preferences
@@ -25,7 +25,7 @@ YT Channel Volume is a Chrome extension that remembers and auto-applies volume s
 ### YouTube Video Metadata (read-only)
 
 - **What**: Content Loudness (`loudnessDb`), `isLiveContent`, `isLive`, `channelId`, `videoId`, and the channel name from YouTube's player response; and the level of what is playing from the volume line of the player's stats for nerds (`cont.`, and on a live stream `live.`).
-- **Purpose**: Display loudness information and calculate suggested volume. Determine whether content is a live stream or a regular video.
+- **Purpose**: Display loudness information, calculate suggested volume, and work out the gain auto-apply plays. Determine whether content is a live stream or a regular video.
 - **Storage**: `channelId` is the key a channel's settings are kept under, so it stays on your device once that channel is saved, and the channel name read beside it is saved as that channel's display name. The Content Loudness value, the level read from the stats for nerds, `isLiveContent`, `isLive` and `videoId` are held in memory only while the video page is open and are discarded on navigation. The gain worked out from the Content Loudness value or the live level, however, is saved with the channel's settings.
 
 ## Data NOT Collected
@@ -59,7 +59,7 @@ This extension does **not** use remote code. All JavaScript is bundled locally w
 
 ## Single Purpose
 
-This extension has a single purpose: **adjust and remember volume settings per YouTube channel** using YouTube's Content Loudness metadata and Web Audio API.
+This extension has a single purpose: **adjust and remember volume settings per YouTube channel**, bringing it to a target loudness from the loudness YouTube reports (Content Loudness metadata and the player's stats for nerds), using Web Audio API.
 
 ## Third-Party Dependencies
 
