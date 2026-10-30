@@ -87,9 +87,9 @@ const SYMLINK_SKIP = (() => {
     fs.rmSync(box, { recursive: true, force: true });
   }
 })();
-// Replace const/let with var so eval exposes to global scope
-const src = fs.readFileSync('./utils.js', 'utf8').replace(/^(const|let) /gm, 'var ');
-eval(src);
+// utils.js as it stands on disk and under its own name, so its top-level
+// declarations are this suite's globals and the coverage report counts the run.
+require('vm').runInThisContext(fs.readFileSync('./utils.js', 'utf8'), { filename: 'utils.js' });
 
 section('msg');
 {
@@ -1831,10 +1831,12 @@ assert(!packaged.includes('.DS_Store'),
     return next === -1 ? rest : rest.slice(0, next + 1);
   };
   // A step run only where something already failed is a way of looking at the
-  // failure, not a check the tree has to pass.
+  // failure, not a check the tree has to pass; nor is the coverage report, which
+  // turns what the tests ran into what CI uploads.
   const checksOf = job => job.split(/\n {6}- /).slice(1)
     .filter(step => !/^\s*if: failure\(\)/m.test(step))
-    .map(step => step.match(/^\s*run: (.+)$/m)).filter(Boolean).map(match => match[1].trim());
+    .map(step => step.match(/^\s*run: (.+)$/m)).filter(Boolean).map(match => match[1].trim())
+    .filter(run => !run.startsWith('node tools/coverage/'));
   const ci = checksOf(jobIn('ci.yaml', 'test'));
   const build = jobIn('release.yaml', 'build');
   // The step, not the line inside it: the pack runs in a script now, so a
@@ -1847,6 +1849,14 @@ assert(!packaged.includes('.DS_Store'),
     const at = build.indexOf(`run: ${check}`);
     assert(at > -1, `the release build runs what CI runs: ${check}`);
     assert(at < packs, `the release build runs ${check} before it packs`);
+  }
+  // A failed upload ends the job, so every check runs ahead of it, and an upload
+  // that fails never hides whether the tree passes the checks.
+  const testJob = jobIn('ci.yaml', 'test');
+  const uploads = testJob.indexOf('uses: codecov/codecov-action@');
+  assert(uploads > -1, 'the CI job uploads coverage');
+  for (const check of ci) {
+    assert(testJob.indexOf(`run: ${check}`) < uploads, `CI runs ${check} before it uploads coverage`);
   }
 }
 
