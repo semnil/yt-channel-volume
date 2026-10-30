@@ -79,9 +79,18 @@
     defaultAutoVideoToggle.checked = defaultAutoApplyVideo;
     defaultAutoLiveToggle.checked = defaultAutoApplyLive;
     overlayToggle.checked = !!s.showGainOverlay;
+    if (!targetKeyHeld && !targetPointerHeld) drawTarget();
+    updateUnitButtons();
+  }
+
+  // A key or the pointer held on the Target LUFS slider keeps the slider and
+  // its label on the value the gesture moved to; applySettings takes the
+  // target all the same, and the gesture's end writes its own value, or draws
+  // the target where it writes nothing (a key that moved nothing, a drag let
+  // go of where it began, a press a blur ended).
+  function drawTarget() {
     targetSlider.value = targetLufs;
     targetValueEl.textContent = targetLufs + ' LUFS';
-    updateUnitButtons();
   }
 
   async function saveSetting(key, value) {
@@ -235,14 +244,21 @@
   let targetKeyHeld = false;
   let targetKeyMoved = false;
   let targetPointerHeld = false;
+  let targetPointerStart = null;
   let targetGestureEnded = false;
   const targetKeysDown = new Set();
 
   targetSlider.addEventListener('pointerdown', () => {
     targetPointerHeld = true;
+    targetPointerStart = Number(targetSlider.value);
     targetGestureEnded = false;
   });
-  const releaseTargetPointer = () => { targetPointerHeld = false; };
+  // A release on the value the press began on fires no change after it, and
+  // draws the target, which a settings change during the press may have moved.
+  const releaseTargetPointer = () => {
+    if (targetPointerHeld && Number(targetSlider.value) === targetPointerStart) drawTarget();
+    targetPointerHeld = false;
+  };
   targetSlider.addEventListener('pointerup', releaseTargetPointer);
   targetSlider.addEventListener('pointercancel', releaseTargetPointer);
 
@@ -280,6 +296,7 @@
     if (!targetKeyHeld) return;
     targetKeyHeld = false;
     if (targetKeyMoved) saveTarget();
+    else drawTarget();
   }
   targetSlider.addEventListener('keyup', (e) => {
     if (!targetKeysDown.delete(e.key)) return;
@@ -289,6 +306,7 @@
   function endTargetGestureOnBlur() {
     if (!targetPointerHeld && !targetKeyHeld) return;
     endTargetKeyHold();
+    drawTarget();
     targetPointerHeld = false;
     targetGestureEnded = true;
   }

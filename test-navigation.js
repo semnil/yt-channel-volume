@@ -10000,6 +10000,27 @@ async function runTests() {
         `the release saves the gain the slider was moved to (${JSON.stringify(saved)} / ${mockStorage.channelVolumes[TT_CH].gainVideo})`);
       ytcv._set('targetLufs', -18);
 
+      // The player puts another element in place while the slider is held:
+      // the chain moves to it at the preview's gain, as it does with no preview.
+      await onVideo();
+      const unheld = { id: 'replaced-without-preview' };
+      mockVideoEl = unheld;
+      fireObserver();
+      await settle();
+      assert(ytcv.state.connectedVideo === unheld,
+        `with no preview the chain moves to the element put in place (${ytcv.state.connectedVideo?.id})`);
+      await onVideo();
+      await popupGesture({ type: 'setGainLive', gain: 3.0 });
+      const replaced = { id: 'replaced-during-preview' };
+      mockVideoEl = replaced;
+      fireObserver();
+      await settle();
+      assert(ytcv.state.connectedVideo === replaced && ytcv.state.gainNode.gain.value === 3.0
+        && ytcv.state.currentGain === 3.0,
+        `during a preview it moves there too, at the preview's gain (${ytcv.state.connectedVideo?.id} / ${ytcv.state.gainNode.gain.value})`);
+      await popupGesture({ type: 'setGain', gain: 3.0 });
+      await settle();
+
       // A gesture whose input stops without a save: once it has been quiet for
       // PREVIEW_IDLE_MS, what storage holds is applied.
       await onVideo();
@@ -10859,6 +10880,71 @@ async function runTests() {
       await options.fire('targetSlider', 'change');
       await options.fire('targetSlider', 'keyup', key('ArrowRight'));
       assert(JSON.stringify(writes()) === '[-14]', `settings: a press after it writes as before (${JSON.stringify(writes())})`);
+
+      // The change notification of one write lands while the next press is
+      // held: the slider stays where the press moved it, and the release
+      // writes that; a press that moved nothing draws the target that arrived.
+      const shown = () => `${target().value} / ${options.node('targetValue').textContent}`;
+      const notify = (value) => options.fireStorage({ [SETTINGS_KEY]: { newValue: { targetLufs: value } } }, 'sync');
+      options.sent.length = 0;
+      await options.fire('targetSlider', 'keydown', key('ArrowRight'));
+      await move(-13);
+      await options.fire('targetSlider', 'change');
+      await options.fire('targetSlider', 'keyup', key('ArrowRight'));
+      await options.fire('targetSlider', 'keydown', key('ArrowRight'));
+      await move(-12);
+      await options.fire('targetSlider', 'change');
+      await notify(-13);
+      assert(shown() === '-12 / -12 LUFS', `settings: a notification during a hold leaves the slider where it was moved (${shown()})`);
+      await options.fire('targetSlider', 'keyup', key('ArrowRight'));
+      assert(JSON.stringify(writes()) === '[-13,-12]' && shown() === '-12 / -12 LUFS',
+        `settings: and the release writes the value it moved to (${JSON.stringify(writes())}, ${shown()})`);
+      options.sent.length = 0;
+      await options.fire('targetSlider', 'pointerdown');
+      await move(-11);
+      await notify(-12);
+      assert(shown() === '-11 / -11 LUFS', `settings: a notification during a drag leaves the slider under the pointer (${shown()})`);
+      await options.fire('targetSlider', 'pointerup');
+      await options.fire('targetSlider', 'change');
+      assert(JSON.stringify(writes()) === '[-11]' && shown() === '-11 / -11 LUFS',
+        `settings: a drag whose pointerup comes ahead of its change writes the drag (${JSON.stringify(writes())}, ${shown()})`);
+      options.sent.length = 0;
+      await options.fire('targetSlider', 'pointerdown');
+      await notify(-20);
+      await options.fire('targetSlider', 'pointerup');
+      assert(writes().length === 0 && shown() === '-20 / -20 LUFS',
+        `settings: a pointer let go of with nothing moved draws the target that arrived (${JSON.stringify(writes())}, ${shown()})`);
+      await options.fire('targetSlider', 'keydown', key('ArrowRight'));
+      await notify(-21);
+      await options.fire('targetSlider', 'keyup', key('ArrowRight'));
+      assert(writes().length === 0 && shown() === '-21 / -21 LUFS',
+        `settings: and so does a key let go of with nothing moved, writing nothing over it (${JSON.stringify(writes())}, ${shown()})`);
+      await options.fire('targetSlider', 'pointerdown');
+      await notify(-22);
+      await options.blurWindow();
+      await options.fire('targetSlider', 'pointerup');
+      assert(writes().length === 0 && shown() === '-22 / -22 LUFS',
+        `settings: a press that moved nothing and ends at a blur draws it too (${JSON.stringify(writes())}, ${shown()})`);
+      // A drag that comes back to where it began fires no change at its
+      // release, let go of or ended by a blur: the target that arrived is drawn.
+      options.sent.length = 0;
+      assert(shown() === '-22 / -22 LUFS', `settings: the drag begins on -22 (${shown()})`);
+      await options.fire('targetSlider', 'pointerdown');
+      await move(-14);
+      await notify(-25);
+      await move(-22);
+      await options.fire('targetSlider', 'pointerup');
+      assert(writes().length === 0 && shown() === '-25 / -25 LUFS',
+        `settings: a drag let go of where it began draws the target that arrived (${JSON.stringify(writes())}, ${shown()})`);
+      await options.fire('targetSlider', 'pointerdown');
+      await move(-20);
+      await notify(-26);
+      await move(-25);
+      await options.blurWindow();
+      await options.fire('targetSlider', 'pointerup');
+      assert(writes().length === 0 && shown() === '-26 / -26 LUFS',
+        `settings: and so does one a blur ends where it began (${JSON.stringify(writes())}, ${shown()})`);
+      await notify(-18);
     }
 
     section('Settings change: Auto\'s own save follows the target and the defaults alone');
