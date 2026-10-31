@@ -474,7 +474,11 @@
           }
           updateUI(resp);
           if (resp.contentLufs === null || resp.contentLufs === undefined) {
-            retryGetState(8, 500);
+            retryGetState(8, 500, {
+              done: () => hasLoudness,
+              ask: () => chrome.tabs.sendMessage(activeTabId, { type: 'getState' }),
+              take: updateUI
+            });
           }
         }
       } catch (_) {
@@ -488,22 +492,6 @@
     } finally {
       revealPopup();
     }
-  }
-
-  function retryGetState(remaining, intervalMs) {
-    if (remaining <= 0 || hasLoudness) return;
-    setTimeout(async () => {
-      if (hasLoudness) return; // stateChanged already delivered loudness
-      try {
-        const resp = await chrome.tabs.sendMessage(activeTabId, { type: 'getState' });
-        if (resp) {
-          updateUI(resp);
-          if (!hasLoudness && remaining > 1) {
-            retryGetState(remaining - 1, intervalMs);
-          }
-        }
-      } catch (_) {}
-    }, intervalMs);
   }
 
   init();
