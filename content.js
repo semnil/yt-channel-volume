@@ -758,7 +758,7 @@
   function commitGain(value) {
     const numeric = Number(value);
     const clamped = Number.isFinite(numeric)
-      ? Math.max(0, Math.min(6, numeric))
+      ? Math.max(MIN_GAIN, Math.min(MAX_GAIN, numeric))
       : 1.0;
     applyGainToAudio(clamped);
     currentGain = clamped;

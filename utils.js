@@ -66,7 +66,7 @@ function queueSettingsWrite(work) {
 
 // The fields the settings page saves, and what each of them may hold.
 const SETTING_FIELDS = {
-  targetLufs: value => Number.isFinite(value) && value >= -30 && value <= -6,
+  targetLufs: value => Number.isFinite(value) && value >= MIN_TARGET_LUFS && value <= MAX_TARGET_LUFS,
   displayUnit: value => value === '%' || value === 'dB',
   showGainOverlay: value => typeof value === 'boolean',
   autoApplyLoudnessVideoDefault: value => typeof value === 'boolean',
@@ -373,7 +373,7 @@ function calcGain(loudnessDb, targetLufs) {
   const compensationDb = targetLufs - effectiveLufs(loudnessDb);
   const gain = Math.pow(10, compensationDb / 20);
   if (!isFinite(gain)) return 1.0;
-  return Math.max(0, Math.min(6, gain));
+  return Math.max(MIN_GAIN, Math.min(MAX_GAIN, gain));
 }
 
 // A live stream's own level, as the player names it, is an absolute one
@@ -382,7 +382,7 @@ function calcLiveGain(liveLkfs, targetLufs) {
   const compensationDb = targetLufs - liveLkfs;
   const gain = Math.pow(10, compensationDb / 20);
   if (!isFinite(compensationDb) || !isFinite(gain)) return 1.0;
-  return Math.max(0, Math.min(6, gain));
+  return Math.max(MIN_GAIN, Math.min(MAX_GAIN, gain));
 }
 
 // How far apart two gains are, in dB. A gain that is not a positive finite
