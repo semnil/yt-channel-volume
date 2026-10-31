@@ -84,15 +84,19 @@ flowchart LR
   - channelVolumes (`chrome.storage.local`, as is everything below): `{ [channelId]: { name, gainLive, gainVideo, gainLivePlain, gainVideoPlain, autoApplyLoudnessLive, autoApplyLoudnessVideo, url } }`
   - unifiedGains: the migration-done marker (top-level key)
 
+**core/common.js (from channel-volume-core, loaded ahead of utils.js wherever utils.js loads)**
+
+- Gain conversion and display: gainToPercent, percentToGain, gainToDb, formatGain
+- i18n: msg()
+- HTML escape: esc()
+
 **utils.js (shared, loaded by content / popup / options / background + tests)**
 
 - Constants: storage keys, YT_REFERENCE_LUFS, DEFAULT_TARGET_LUFS
-- Gain utilities: gainToPercent, percentToGain, gainToDb, formatGain, formatAutoGain, calcGain, calcLiveGain, gainChangeDb
+- Gain utilities: formatAutoGain, calcGain, calcLiveGain, gainChangeDb
 - Storage utilities: isContextValid, updateChannelVolumes, readSettings, moveSettingsToSync, queueSettingsWrite, SETTING_FIELDS, SETTINGS_WRITES, CHANNEL_WRITES, ChannelWriteRefused, isChannelId, getChannelGain, setChannelGain, applyChannelIdentity, normalizeStoredGain, migrateLegacyAutoGains
 - Auto state: resolveAutoApplySetting, setChannelAutoApply, hasExplicitAutoApply, isManualGainLocked
 - Slider keys: SLIDER_MOVE_KEYS, isSliderMoveKey (the keys that move a range input's value, which alone make a key hold on the popup's and the settings page's sliders)
-- i18n: msg()
-- HTML escape: esc()
 
 **popup.html / popup.js**
 
