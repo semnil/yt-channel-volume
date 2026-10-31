@@ -114,24 +114,6 @@ async function moveSettingsToSync() {
   return true;
 }
 
-function gainToPercent(gain) { return Math.round(gain * 100); }
-function percentToGain(pct) { return pct / 100; }
-
-function gainToDb(gain) {
-  if (gain <= 0) return '-Inf';
-  return (20 * Math.log10(gain)).toFixed(1);
-}
-
-function msg(key, substitutions) {
-  return chrome.i18n.getMessage(key, substitutions) || key;
-}
-
-/** @returns {{ text: string, unit: string }} */
-function formatGain(gain, displayUnit) {
-  if (displayUnit === 'dB') return { text: gainToDb(gain), unit: ' dB' };
-  return { text: String(gainToPercent(gain)), unit: '%' };
-}
-
 function formatAutoGain(gain, displayUnit, autoLabel = 'Auto') {
   // Auto has stored no gain for this type yet. Naming a number here would
   // claim a level that nothing is playing at.
@@ -433,12 +415,4 @@ function renditionGainRatio(playingDb, baseDb) {
   if (typeof playingDb !== 'number' || typeof baseDb !== 'number') return 1;
   const ratio = Math.pow(10, (effectiveLufs(baseDb) - effectiveLufs(playingDb)) / 20);
   return Number.isFinite(ratio) ? ratio : 1;
-}
-
-function esc(s) {
-  const d = document.createElement('div');
-  d.textContent = s;
-  // Serialising a text node leaves both quotes alone, and every caller puts the
-  // result inside a quoted attribute as well as between tags.
-  return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }

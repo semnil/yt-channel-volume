@@ -74,9 +74,12 @@ globalThis.document = {
   })
 };
 const fs = require('fs');
-// utils.js as it stands on disk and under its own name, so its top-level
-// declarations are this suite's globals and the coverage report counts the run.
-require('vm').runInThisContext(fs.readFileSync('./utils.js', 'utf8'), { filename: 'utils.js' });
+// core/common.js and utils.js as they stand on disk and under their own names,
+// in the order every page loads them, so their top-level declarations are this
+// suite's globals and the coverage report counts the run.
+for (const file of ['core/common.js', 'utils.js']) {
+  require('vm').runInThisContext(fs.readFileSync(`./${file}`, 'utf8'), { filename: file });
+}
 
 section('msg');
 {
@@ -296,7 +299,7 @@ const isolatedContentScript = manifest.content_scripts.find(script =>
   script.world !== 'MAIN'
 );
 assert(JSON.stringify(isolatedContentScript?.js) ===
-  JSON.stringify(['utils.js', 'content.js']),
+  JSON.stringify(['core/common.js', 'utils.js', 'content.js']),
   'shared utilities load before the isolated content script');
 
 section('initialization reveal');
@@ -1195,7 +1198,7 @@ const backgroundSrc = fs.readFileSync('./background.js', 'utf8');
 const contentSrc = fs.readFileSync('./content.js', 'utf8');
 assert(manifest.background?.service_worker === 'background.js',
   'the worker is registered so channel writes have one owner');
-assert(backgroundSrc.includes("importScripts('utils.js')"),
+assert(backgroundSrc.includes("importScripts('core/common.js', 'utils.js')"),
   'the worker shares the channel write definitions with the pages');
 assert(/^const settingsMoved = queueSettingsWrite\(moveSettingsToSync\)\s*\.catch\(/m.test(backgroundSrc),
   'the worker moves settings saved before they synced, at every start');

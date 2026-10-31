@@ -12,7 +12,7 @@
   "content_scripts": [
     {
       "matches": ["*://*.youtube.com/*"],
-      "js": ["utils.js", "content.js"],
+      "js": ["core/common.js", "utils.js", "content.js"],
       "run_at": "document_idle"
     },
     {
