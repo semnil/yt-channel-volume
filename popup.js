@@ -290,31 +290,28 @@
   // leaves the gesture as it is.
   let sliderKeyHeld = false;
   let sliderKeyMoved = false;
-  const sliderKeysDown = new Set();
+  const sliderKeys = createSliderKeys();
   volumeSlider.addEventListener('pointerdown', () => {
     sliderPointerHeld = true;
     sliderKeyHeld = false;
-    sliderKeysDown.clear();
+    sliderKeys.clear();
     beginSliderGesture();
   });
   // A key repeat is not a new press, and does not end what a blur ended.
   volumeSlider.addEventListener('keydown', (e) => {
-    if (e.repeat || !isSliderMoveKey(e.key)) return;
-    sliderKeysDown.add(e.key);
-    if (sliderKeyHeld) return;
+    if (!sliderKeys.press(e)) return;
     sliderKeyHeld = true;
     sliderKeyMoved = false;
     beginSliderGesture();
   });
   const endSliderKeyHold = () => {
-    sliderKeysDown.clear();
+    sliderKeys.clear();
     if (!sliderKeyHeld) return;
     sliderKeyHeld = false;
     if (sliderKeyMoved) saveSliderGain();
   };
   volumeSlider.addEventListener('keyup', (e) => {
-    if (!sliderKeysDown.delete(e.key)) return;
-    if (sliderKeysDown.size === 0) endSliderKeyHold();
+    if (sliderKeys.release(e)) endSliderKeyHold();
   });
   const releaseSliderPointer = () => { sliderPointerHeld = false; };
   volumeSlider.addEventListener('pointerup', releaseSliderPointer);
