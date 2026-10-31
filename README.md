@@ -1,5 +1,7 @@
 # YT Channel Volume
 
+[![codecov](https://codecov.io/gh/semnil/yt-channel-volume/graph/badge.svg)](https://codecov.io/gh/semnil/yt-channel-volume)
+
 Chrome extension (Manifest V3) that balances YouTube volume per channel. With LUFS auto-apply on, it brings each video to a target loudness (Target LUFS) from the loudness YouTube measures for it, and follows a live stream's loudness while it is on air. Otherwise it applies the volume saved for the channel when you open a video.
 
 > 日本語版は [README.ja.md](README.ja.md) を参照してください.
