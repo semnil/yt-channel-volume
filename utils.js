@@ -354,14 +354,6 @@ function isManualGainLocked(autoApplyEnabled, hasLoudness) {
   return !!autoApplyEnabled && !!hasLoudness;
 }
 
-// The keys that move a range input's value. A key held on a slider is a hold
-// of these alone; any other key leaves the hold as it is.
-const SLIDER_MOVE_KEYS = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End'];
-
-function isSliderMoveKey(key) {
-  return SLIDER_MOVE_KEYS.includes(key);
-}
-
 // The level YouTube plays a rendition at, after its own normalization.
 function effectiveLufs(loudnessDb) {
   return loudnessDb > 0
