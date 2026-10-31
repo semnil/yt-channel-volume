@@ -35,23 +35,6 @@ function updateChannelVolumes(mutate, extraKeys) {
   return write;
 }
 
-// The settings that belong to no channel live in storage.sync, which Chrome
-// syncs with every Chrome the user is signed in to where Chrome sync is on, and
-// which behaves like local where it is off. A profile whose settings the worker
-// has not moved there yet still holds them in local, and they are read from
-// there until it has.
-async function readSettings() {
-  const synced = await chrome.storage.sync.get(SETTINGS_KEY);
-  if (synced[SETTINGS_KEY]) return synced[SETTINGS_KEY];
-  const local = await chrome.storage.local.get(SETTINGS_KEY);
-  if (local[SETTINGS_KEY]) return local[SETTINGS_KEY];
-  // The move writes sync before it clears local, so a local read that comes
-  // back empty may have been made across the move, and sync then holds what it
-  // moved.
-  const moved = await chrome.storage.sync.get(SETTINGS_KEY);
-  return moved[SETTINGS_KEY] || {};
-}
-
 // Every settings write the worker makes goes through here, the move among them.
 // The move reads sync before it writes it, so a save landing in between would
 // be put back to local's older copy; queued one after the other, a save waits

@@ -585,7 +585,7 @@ sequenceDiagram
 - 読み込まれたときに拡張機能とのつながりが切れていれば、取り込みは頼まない。再生ページなら `triggerApply()` を呼ぶが、すぐに戻って見張りを止める。
 - 設定画面は開いたときに取り込みを頼み、そのあと 2 つのキーを読む (`loadAll`)。失敗は記録され、`unifiedGains` が届くまで一覧は古い決まりで描かれる。
 
-図のもと: `content.js` の起動部分、`foldLegacyGains`、`triggerApply`。`background.js` の起動部分。`utils.js` の `migrateLegacyAutoGains`、`clearLegacyKeys`、`resolveAutoApplySetting`、`moveSettingsToSync`、`queueSettingsWrite`、`readSettings`。`options.js` の起動の処理。
+図のもと: `content.js` の起動部分、`foldLegacyGains`、`triggerApply`。`background.js` の起動部分。`utils.js` の `migrateLegacyAutoGains`、`clearLegacyKeys`、`resolveAutoApplySetting`、`moveSettingsToSync`、`queueSettingsWrite`。`core/common.js` の `readSettings`。`options.js` の起動の処理。
 
 ## 他のタブ: `content.js` の `chrome.storage.onChanged`
 
@@ -660,7 +660,7 @@ sequenceDiagram
 - この画面の操作は、どれも `channelVolumes` を書かない。YouTube の各タブでは `applyPreferredGain()` が新しい目標値と既定値を当てはめる。その種別の Auto が ON でレベルが分かっていれば、新しい Auto のゲインを適用し、このタブが持っていた目標値か全チャンネル共通の既定値がその変更で動いたときは保存する (Auto 自身の保存、またはライブ保存の判定)。表示単位やゲイン表示の変更では、ゲインをかけ直すだけで何も保存しない (`stores: false`)。Auto が OFF かレベルが分からなければ、保存ゲインがこれまでどおり鳴る。その適用が項目を読んでいる間に変更の知らせが届いたときは、適用は何もかけず何も保存しないまま戻り (`STORAGE_MOVED`)、受け取り側がもう 1 回だけ動かす。
 - 全チャンネル共通の既定値を変えると、その種別に個別のフラグ (または古い形式のフラグ) を持たないチャンネルだけ、Auto が変わる。
 
-図のもと: `options.js` の `targetSlider`、`defaultAutoVideoToggle`、`defaultAutoLiveToggle`、`unitToggle`、`overlayToggle` の受け取り側、`saveSetting`、`applySettings`、`chrome.storage.onChanged` の受け取り側。`utils.js` の `SETTINGS_WRITES`、`SETTING_FIELDS`、`queueSettingsWrite`、`readSettings`。`content.js` の `chrome.storage.onChanged` の受け取り側、`takeSettings`、`applyPreferredGain`、`updateGainOverlay`。
+図のもと: `options.js` の `targetSlider`、`defaultAutoVideoToggle`、`defaultAutoLiveToggle`、`unitToggle`、`overlayToggle` の受け取り側、`saveSetting`、`applySettings`、`chrome.storage.onChanged` の受け取り側。`utils.js` の `SETTINGS_WRITES`、`SETTING_FIELDS`、`queueSettingsWrite`。`core/common.js` の `readSettings`。`content.js` の `chrome.storage.onChanged` の受け取り側、`takeSettings`、`applyPreferredGain`、`updateGainOverlay`。
 
 ## 設定画面: 行の削除と全削除
 
