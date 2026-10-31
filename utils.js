@@ -16,22 +16,11 @@ const UNIFIED_GAINS_KEY = 'unifiedGains';
 // Every channel-map write goes through here. The map lives under one storage
 // key, so a read-modify-write started before another one's set lands drops its
 // entry; Auto stores a gain for every video, which makes that overlap routine.
-// Serializing per document keeps the writers in this context in order.
-const queueChannelVolumesWrite = createSerialQueue();
-
-function updateChannelVolumes(mutate, extraKeys) {
-  return queueChannelVolumesWrite(async () => {
-    if (!isContextValid()) return;
-    const data = await chrome.storage.local.get(CHANNEL_VOLUMES_KEY);
-    const all = data[CHANNEL_VOLUMES_KEY] || {};
-    const before = JSON.stringify(all);
-    mutate(all);
-    // Auto re-applies on every navigation and tab activation. Skipping an
-    // identical write keeps other tabs and the options page from redrawing.
-    if (JSON.stringify(all) === before && !extraKeys) return;
-    await chrome.storage.local.set({ [CHANNEL_VOLUMES_KEY]: all, ...extraKeys });
-  });
-}
+// Serializing per document keeps the writers in this context in order. Auto
+// re-applies on every navigation and tab activation, and a write that leaves
+// the map as it was is not made, which keeps other tabs and the options page
+// from redrawing.
+const updateChannelVolumes = createStoredMapWriter(CHANNEL_VOLUMES_KEY);
 
 // Every settings write the worker makes goes through here, the move among them.
 // The move reads sync before it writes it, so a save landing in between would
