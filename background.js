@@ -15,27 +15,23 @@ const settingsMoved = queueSettingsWrite(moveSettingsToSync)
 
 const CHANNEL_WRITE_PREFIX = 'store:';
 
-chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-  const type = typeof msg?.type === 'string' && msg.type.startsWith(CHANNEL_WRITE_PREFIX)
-    ? msg.type.slice(CHANNEL_WRITE_PREFIX.length)
-    : '';
-  const write = Object.prototype.hasOwnProperty.call(CHANNEL_WRITES, type)
-    ? CHANNEL_WRITES[type]
-    : Object.prototype.hasOwnProperty.call(SETTINGS_WRITES, type)
-      ? SETTINGS_WRITES[type]
-      : null;
-  // Everything else on this channel belongs to the popup (stateChanged).
-  if (!write) return false;
-  Promise.resolve()
-    .then(() => (type === 'migrateLegacyGains' ? settingsMoved : undefined))
-    .then(() => write(msg))
-    .then(() => sendResponse({ ok: true }))
-    .catch(err => {
-      console.error('[YTCV] ' + msg.type + ' failed', err);
-      sendResponse({
-        ok: false,
-        reason: err instanceof ChannelWriteRefused ? 'write refused' : 'storage write failed'
-      });
-    });
-  return true;
-});
+// A refusal is answered as invalid-mutation, a storage failure by the table it
+// came from. stateChanged on this channel is the popup's.
+chrome.runtime.onMessage.addListener(createWriteListener({
+  prefix: '[YTCV]',
+  ignoredTypes: ['stateChanged'],
+  route: (msg) => {
+    const channelWrite = tableWrite(CHANNEL_WRITES, CHANNEL_WRITE_PREFIX, msg?.type);
+    if (channelWrite) {
+      return {
+        write: msg.type === CHANNEL_WRITE_PREFIX + 'migrateLegacyGains'
+          ? (m) => settingsMoved.then(() => channelWrite(m))
+          : channelWrite,
+        label: msg.type,
+        failed: 'storage-update-failed'
+      };
+    }
+    const settingsWrite = tableWrite(SETTINGS_WRITES, CHANNEL_WRITE_PREFIX, msg?.type);
+    return settingsWrite ? { write: settingsWrite, label: msg.type, failed: 'settings-update-failed' } : null;
+  }
+}));

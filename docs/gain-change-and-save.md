@@ -73,7 +73,7 @@ sequenceDiagram
   participant L as onChanged listeners
   X->>W: runtime.sendMessage, type store:op, payload
   alt CHANNEL_WRITES refuses the payload
-    W-->>X: ok false, reason write refused
+    W-->>X: ok false, reason invalid-mutation
   else payload accepted
     Note over W: updateChannelVolumes queues it behind the previous write
     W->>S: get channelVolumes
@@ -84,7 +84,7 @@ sequenceDiagram
       S-->>L: storage.onChanged in content.js and options.js
     end
     alt get or set rejected
-      W-->>X: ok false, reason storage write failed
+      W-->>X: ok false, reason storage-update-failed
     else both resolved
       W-->>X: ok true
     end
@@ -93,7 +93,7 @@ sequenceDiagram
 ```
 
 - `content.js` sends through `requestChannelWrite`, which resolves without sending when the extension context is no longer valid (`isContextValid()` is false). `saveChannelGain` and `saveChannelAutoApply` return without sending when there is no channel id, and the other senders of a channel write check for one before they send, so apart from `migrateLegacyGains` every write `content.js` sends names a channel.
-- `CHANNEL_WRITES.saveChannelGain`, `saveChannelAutoApply` and `adoptHandleEntry` throw `ChannelWriteRefused` before the map is read when the channel id is not in the UC form, `url` is present and not text, `gain` is not a finite number within 0 to 6 (`isStorableGain`), or `authorName` is not text. A `name` that is no text, is empty or is the channel id is not taken (`applyEntryName` in `core/common.js`), and a row with no name takes the id. `deleteChannel` takes any key that is non-empty text (`isRowKey` in `core/common.js`) and refuses any other.
+- `CHANNEL_WRITES.saveChannelGain`, `saveChannelAutoApply` and `adoptHandleEntry` throw `WriteRefused` (`core/common.js`) before the map is read when the channel id is not in the UC form, `url` is present and not text, `gain` is not a finite number within 0 to 6 (`isStorableGain`), or `authorName` is not text. A `name` that is no text, is empty or is the channel id is not taken (`applyEntryName` in `core/common.js`), and a row with no name takes the id. `deleteChannel` takes any key that is non-empty text (`isRowKey` in `core/common.js`) and refuses any other.
 - `updateChannelVolumes` keeps the writes of the worker on one promise chain (`channelVolumesWrite`), so one write's `get` and `set` do not interleave with another's. A failed write does not stop the chain. When the map is unchanged after `mutate` and no `extraKeys` were given, nothing is set.
 - The path has no debounce and no throttle. Each request is one queued read-modify-write.
 
@@ -569,7 +569,7 @@ sequenceDiagram
     W-->>C: ok true
     Note over C: storageMigrated true
   else failed
-    W-->>C: ok false, storage write failed
+    W-->>C: ok false, storage-update-failed
     Note over C: storageMigrated stays false
   end
   Note over C: storageSettled true, storageReady resolves
@@ -653,7 +653,7 @@ sequenceDiagram
 ```
 
 - The controls: "Target LUFS" (`change` of the slider), "Auto-apply LUFS for all channels" (Video and Live toggles), "Display unit" (`%` / `dB` buttons) and "Gain overlay". Each change calls `saveSetting` with one field. A key held on "Target LUFS" — the keys that move the value alone, as on the popup's slider — changes only its label: the `change` that comes with each repeat writes nothing, and the target is written once, at the `keyup` of the last such key held, or at a `blur` of the slider or of the page's window that comes first. A drag on it ends where the slider or the page's window loses focus during it: Chrome fires `change` at that blur, ahead of the blur, and that change writes. After a blur that ends a drag or a key hold, `input` and `change` belong to no gesture until the next `pointerdown`, or a `keydown` that is not a repeat: the label does not move, nothing is written, and the `change` puts the slider back to the target. A click on the unit button already active writes nothing.
-- `saveSetting` returns without writing until the first read has finished (`settingsLoaded`), and the controls are disabled in the markup until then. It sends the key and its value to `background.js` as `store:saveSetting`. There `SETTINGS_WRITES.saveSetting` refuses a key that is not one of the five and a value the key cannot hold (`write refused`), and writes the settings, read through `readSettings()`, back to sync with the key replaced, on `queueSettingsWrite()`, the queue the move of the settings to sync runs on.
+- `saveSetting` returns without writing until the first read has finished (`settingsLoaded`), and the controls are disabled in the markup until then. It sends the key and its value to `background.js` as `store:saveSetting`. There `SETTINGS_WRITES.saveSetting` refuses a key that is not one of the five and a value the key cannot hold (`invalid-mutation`), and writes the settings, read through `readSettings()`, back to sync with the key replaced, on `queueSettingsWrite()`, the queue the move of the settings to sync runs on.
 - Where Chrome sync is on, settings that another Chrome signed in to the same account writes arrive the same way, as a `chrome.storage.sync` notification ([`chrome.storage`](https://developer.chrome.com/docs/extensions/reference/api/storage)).
 - While a key or the pointer is held on the Target LUFS slider, a settings notification (`applySettings`) sets the target the page holds and leaves the slider and its label on the value the gesture moved to, which the gesture's end writes: the notification of one press, landing while the next is held, does not take back the second press. A gesture that writes nothing at its end draws the target there instead (`drawTarget`): a key that moved nothing (at the end of the range), a drag let go of on the value it began on (Chrome fires no `change` for it, whether it moved or not), and a press that a blur ends.
 - The two default toggles are disabled while their write is out; a failed write puts the checkbox back. The other three controls wait for their write as well. When it fails, the page reads the settings again through `readSettings()` and shows what it holds (unless a change notification arrived meanwhile), and the line under the settings shows `settingsSaveFailed` ("Could not save the setting. The saved value was restored."). Where that read fails as well, nothing is put back, and the line shows `settingsLoadFailed` ("Could not load the saved settings. Please reload the page.") instead. A write of one of the three that lands takes the line down.

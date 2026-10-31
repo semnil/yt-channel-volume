@@ -73,7 +73,7 @@ sequenceDiagram
   participant L as onChanged の受け取り側
   X->>W: runtime.sendMessage、type store:op、中身
   alt CHANNEL_WRITES が中身を断る
-    W-->>X: ok false、reason write refused
+    W-->>X: ok false、reason invalid-mutation
   else 中身を受け付ける
     Note over W: updateChannelVolumes が前の書き込みの後ろに並べる
     W->>S: channelVolumes を get
@@ -84,7 +84,7 @@ sequenceDiagram
       S-->>L: content.js と options.js へ storage.onChanged
     end
     alt get か set が失敗
-      W-->>X: ok false、reason storage write failed
+      W-->>X: ok false、reason storage-update-failed
     else どちらも成功
       W-->>X: ok true
     end
@@ -93,7 +93,7 @@ sequenceDiagram
 ```
 
 - `content.js` は `requestChannelWrite` で送る。拡張機能とのつながりが切れているとき (`isContextValid()` が false) は、送らずに成功として終わる。`saveChannelGain` と `saveChannelAutoApply` は、チャンネル ID が無いときは送らない。ほかの送り手も送る前にチャンネル ID があることを確かめるので、`migrateLegacyGains` を除き、`content.js` が送る書き込みはどれもチャンネルを名指しする。
-- `CHANNEL_WRITES.saveChannelGain` / `saveChannelAutoApply` / `adoptHandleEntry` は、チャンネル ID が UC 形式でない、`url` があって文字列でない、`gain` が 0 から 6 の有限の数でない (`isStorableGain`)、`authorName` が文字列でない、のどれかなら、表を読む前に `ChannelWriteRefused` を投げる。`deleteChannel` は空でない文字ならどのキーでも受け付け (`core/common.js` の `isRowKey`)、それ以外は断る。 文字でない・空の・チャンネル ID と同じ `name` は使わず (`core/common.js` の `applyEntryName`)、名前の無い行はチャンネル ID を名前にする。
+- `CHANNEL_WRITES.saveChannelGain` / `saveChannelAutoApply` / `adoptHandleEntry` は、チャンネル ID が UC 形式でない、`url` があって文字列でない、`gain` が 0 から 6 の有限の数でない (`isStorableGain`)、`authorName` が文字列でない、のどれかなら、表を読む前に `WriteRefused` (`core/common.js`) を投げる。`deleteChannel` は空でない文字ならどのキーでも受け付け (`core/common.js` の `isRowKey`)、それ以外は断る。 文字でない・空の・チャンネル ID と同じ `name` は使わず (`core/common.js` の `applyEntryName`)、名前の無い行はチャンネル ID を名前にする。
 - `updateChannelVolumes` は service worker の中の書き込みを 1 本の promise のつながり (`channelVolumesWrite`) に並べる。そのため、ある書き込みの `get` と `set` の間に別の書き込みが割り込まない。1 つが失敗しても列は止まらない。`mutate` のあとで表が変わっておらず、`extraKeys` も無ければ、何も `set` しない。
 - この流れには debounce や throttle (続けて来る呼び出しをまとめたり間引いたりする仕組み) は無い。1 回の依頼が、列に並んだ 1 回の「読んで、書き換えて、書く」になる。
 
@@ -569,7 +569,7 @@ sequenceDiagram
     W-->>C: ok true
     Note over C: storageMigrated true
   else 失敗
-    W-->>C: ok false、storage write failed
+    W-->>C: ok false、storage-update-failed
     Note over C: storageMigrated は false のまま
   end
   Note over C: storageSettled true、storageReady が終わる
@@ -653,7 +653,7 @@ sequenceDiagram
 ```
 
 - 操作するもの: 「Target LUFS」(スライダーの `change`)、「全チャンネルの LUFS 自動適用」(Video と Live のトグル)、「表示単位」(`%` / `dB` のボタン)、「ゲイン表示」。どれも 1 項目で `saveSetting` を呼ぶ。「Target LUFS」でキーを押し続ける間 (ポップアップのスライダーと同じく、値を動かすキーだけ) は表示だけを変え、繰り返しごとに来る `change` では書かず、押していたそのキーの最後の 1 つの `keyup` か、それより先に来たスライダーかページのウィンドウの `blur` で、目標値を 1 回書く。ドラッグも、その途中でスライダーかページのウィンドウのフォーカスが外れたところで終わる。Chrome はその `blur` より先に `change` を出し、その `change` で書く。ドラッグかキーの押し続けを終えた `blur` の後は、次の `pointerdown` か、繰り返しでない `keydown` まで、`input` と `change` はどの操作にも属さない: ラベルは動かず、何も書かず、`change` はスライダーを目標値へ戻す。すでに選ばれている表示単位のボタンを押しても、何も書かない。
-- `saveSetting` は、最初の読み込みが終わるまで (`settingsLoaded`) は書かずに戻り、それまでは画面の部品も操作できない状態で出てくる。その項目と値を `store:saveSetting` として `background.js` に送る。そこでは `SETTINGS_WRITES.saveSetting` が、5 つのどれでもない項目と、その項目が持てない値を断り (`write refused`)、`readSettings()` で読んだ設定を、その項目を置き換えて sync に書き戻す。この書き込みは、設定を sync へ移す処理と同じ列 `queueSettingsWrite()` に並ぶ。
+- `saveSetting` は、最初の読み込みが終わるまで (`settingsLoaded`) は書かずに戻り、それまでは画面の部品も操作できない状態で出てくる。その項目と値を `store:saveSetting` として `background.js` に送る。そこでは `SETTINGS_WRITES.saveSetting` が、5 つのどれでもない項目と、その項目が持てない値を断り (`invalid-mutation`)、`readSettings()` で読んだ設定を、その項目を置き換えて sync に書き戻す。この書き込みは、設定を sync へ移す処理と同じ列 `queueSettingsWrite()` に並ぶ。
 - Chrome の同期が有効なら、同じアカウントでサインインしているほかの Chrome が書いた設定も、同じく `chrome.storage.sync` の知らせで届く ([`chrome.storage`](https://developer.chrome.com/docs/extensions/reference/api/storage))。
 - Target LUFS のスライダーでキーかポインターを押している間に届いた設定の知らせ (`applySettings`) は、設定画面が持つ目標値を変えるだけで、スライダーとラベルは操作が動かした値のままにし、操作の終わりがその値を書く。このため、1 回目の押下の知らせが 2 回目の押下の最中に届いても、2 回目の押下は取り消されない。終わりで何も書かない操作は、そこで目標値を描く (`drawTarget`): 値を動かさなかったキー (範囲の端)、始めた値の上で離したドラッグ (動かしても戻しても、Chrome は `change` を出さない)、`blur` で終わった押下。
 - 2 つの既定値のトグルは、書き込みが終わるまで操作できなくなり、書き込みが失敗するとチェックを元に戻す。残りの 3 つも書き込みを待つ。失敗したときは、`readSettings()` で設定を読み直して、保存されている値を出す (その間に変更の知らせが来ていれば、そちらを残す)。設定の下の行には `settingsSaveFailed` (「設定を保存できませんでした。保存済みの値へ戻しました」) を出す。その読み直しも失敗したときは何も戻らないので、代わりに `settingsLoadFailed` (「保存済みの設定を読み込めませんでした。ページを再読み込みしてください」) を出す。3 つのどれかの書き込みが成功すると、その行を消す。
