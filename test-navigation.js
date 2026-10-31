@@ -7803,6 +7803,23 @@ async function runTests() {
     assert(channelFailed?.ok === false && channelFailed.reason === 'storage-update-failed',
       `and a channel write storage refuses as one of its own (${JSON.stringify(channelFailed)})`);
 
+    // A write that names its own reason is answered with it, and one the
+    // stored state blocks is reported as such.
+    const errors = [];
+    worker.console.error = (...args) => errors.push(args.map(String).join(' '));
+    const channelWrites = vm.runInContext('CHANNEL_WRITES', worker);
+    const clearChannels = channelWrites.clearChannels;
+    channelWrites.clearChannels = () => Promise.reject(
+      Object.assign(new Error('channelVolumes is not an object'), { reason: 'stored-state-invalid' }));
+    let blocked;
+    listeners[0]({ type: 'store:clearChannels' }, {}, (r) => { blocked = r; });
+    for (let turn = 0; turn < 5; turn++) await tick();
+    channelWrites.clearChannels = clearChannels;
+    assert(blocked?.ok === false && blocked.reason === 'stored-state-invalid',
+      `a write the stored state blocks is answered as such (${JSON.stringify(blocked)})`);
+    assert(errors.length === 1 && /^\[YTCV\] store:clearChannels blocked by the stored state /.test(errors[0]),
+      `and reported as such (${errors.join(' | ')})`);
+
     // A message that names no write is left alone, and named unless it is the
     // popup's.
     const warned = [];
