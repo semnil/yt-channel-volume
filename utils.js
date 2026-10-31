@@ -53,18 +53,10 @@ const SETTING_FIELDS = {
 // the way a channel write that names no channel is.
 const SETTINGS_WRITES = {
   saveSetting(msg) {
-    const accepts = Object.prototype.hasOwnProperty.call(SETTING_FIELDS, msg.key)
-      ? SETTING_FIELDS[msg.key]
-      : null;
+    const accepts = settingCheck(SETTING_FIELDS, msg.key);
     if (!accepts) throw new ChannelWriteRefused('not a setting');
     if (!accepts(msg.value)) throw new ChannelWriteRefused(`not a value ${msg.key} can hold`);
-    return queueSettingsWrite(async () => {
-      // Read where it is now, so a write made before the move carries the rest
-      // of the settings with it.
-      const s = await readSettings();
-      s[msg.key] = msg.value;
-      await chrome.storage.sync.set({ [SETTINGS_KEY]: s });
-    });
+    return queueSettingsWrite(() => writeSettingsChange((settings) => ({ ...settings, [msg.key]: msg.value })));
   }
 };
 

@@ -641,7 +641,7 @@ sequenceDiagram
   Note over O: Target LUFS の input イベントは表示の数字を描き直すだけ
   O->>W: saveSetting、その項目と値を持つ store:saveSetting
   Note over W: SETTINGS_WRITES.saveSetting が確かめ、queueSettingsWrite() に並べる
-  W->>S: readSettings() のあと、その 1 項目を置き換えて autoLoudnessSettings を set
+  W->>S: readSettings() のあと、その 1 項目を置き換えて autoLoudnessSettings を set (sync がすでにその内容を持っていれば書かない。writeSettingsChange)
   W-->>O: ok true、または理由つきの ok false
   S-->>O: sync の storage.onChanged、applySettings と renderChannels
   S-->>C: sync の autoLoudnessSettings の storage.onChanged
@@ -660,7 +660,7 @@ sequenceDiagram
 - この画面の操作は、どれも `channelVolumes` を書かない。YouTube の各タブでは `applyPreferredGain()` が新しい目標値と既定値を当てはめる。その種別の Auto が ON でレベルが分かっていれば、新しい Auto のゲインを適用し、このタブが持っていた目標値か全チャンネル共通の既定値がその変更で動いたときは保存する (Auto 自身の保存、またはライブ保存の判定)。表示単位やゲイン表示の変更では、ゲインをかけ直すだけで何も保存しない (`stores: false`)。Auto が OFF かレベルが分からなければ、保存ゲインがこれまでどおり鳴る。その適用が項目を読んでいる間に変更の知らせが届いたときは、適用は何もかけず何も保存しないまま戻り (`STORAGE_MOVED`)、受け取り側がもう 1 回だけ動かす。
 - 全チャンネル共通の既定値を変えると、その種別に個別のフラグ (または古い形式のフラグ) を持たないチャンネルだけ、Auto が変わる。
 
-図のもと: `options.js` の `targetSlider`、`defaultAutoVideoToggle`、`defaultAutoLiveToggle`、`unitToggle`、`overlayToggle` の受け取り側、`saveSetting`、`applySettings`、`chrome.storage.onChanged` の受け取り側。`utils.js` の `SETTINGS_WRITES`、`SETTING_FIELDS`、`queueSettingsWrite`。`core/common.js` の `readSettings`。`content.js` の `chrome.storage.onChanged` の受け取り側、`takeSettings`、`applyPreferredGain`、`updateGainOverlay`。
+図のもと: `options.js` の `targetSlider`、`defaultAutoVideoToggle`、`defaultAutoLiveToggle`、`unitToggle`、`overlayToggle` の受け取り側、`saveSetting`、`applySettings`、`chrome.storage.onChanged` の受け取り側。`utils.js` の `SETTINGS_WRITES`、`SETTING_FIELDS`、`queueSettingsWrite`。`core/common.js` の `readSettings`、`settingCheck`、`writeSettingsChange`。`content.js` の `chrome.storage.onChanged` の受け取り側、`takeSettings`、`applyPreferredGain`、`updateGainOverlay`。
 
 ## 設定画面: 行の削除と全削除
 
