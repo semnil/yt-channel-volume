@@ -199,6 +199,13 @@ assert(legacyAutoEntry.autoApplyLoudnessVideo === false &&
   legacyAutoEntry.autoApplyLoudnessLive === true &&
   !('autoApplyLoudness' in legacyAutoEntry),
   'legacy all-types Auto flag expands before one type is set');
+// A type that already has a flag of its own keeps it: the legacy flag only
+// fills the types without one.
+const mixedAutoEntry = { autoApplyLoudness: true, autoApplyLoudnessLive: false };
+setChannelAutoApply(mixedAutoEntry, 'video', false);
+assert(mixedAutoEntry.autoApplyLoudnessLive === false && mixedAutoEntry.autoApplyLoudnessVideo === false &&
+  !('autoApplyLoudness' in mixedAutoEntry),
+  `a type's own flag stays when the legacy flag expands (${JSON.stringify(mixedAutoEntry)})`);
 assert(hasExplicitAutoApply({ autoApplyLoudness: false }, 'live') === true,
   'legacy all-types flag counts as an explicit Auto choice');
 assert(hasExplicitAutoApply({ gainLive: 0.7 }, 'live') === false,
@@ -1551,6 +1558,12 @@ async function runMigrationTests() {
     assert(mockStorage.channelVolumes.UCrange.gainVideo === 0.5, 'and none of them is written');
     await CHANNEL_WRITES.saveChannelGain({ channelId: 'UCrange', name: 'Range', gain: 6, videoType: 'video', url: '' });
     assert(mockStorage.channelVolumes.UCrange.gainVideo === 6, 'the top of the range is taken');
+    // A name that is no text is not taken, and the write goes on.
+    await CHANNEL_WRITES.saveChannelGain({ channelId: 'UCrange', name: 5, gain: 1, videoType: 'video', url: '' });
+    assert(mockStorage.channelVolumes.UCrange.name === 'Range' && mockStorage.channelVolumes.UCrange.gainVideo === 1,
+      `a name that is no text leaves the stored one, and the gain is written (${JSON.stringify(mockStorage.channelVolumes.UCrange)})`);
+    await CHANNEL_WRITES.saveChannelGain({ channelId: 'UCnameless', name: null, gain: 1, videoType: 'video', url: '' });
+    assert(mockStorage.channelVolumes.UCnameless.name === 'UCnameless', 'and a new row takes its id');
     mockStorage = priorStorage;
   }
 

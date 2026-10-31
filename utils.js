@@ -57,8 +57,7 @@ function normalizeStoredGain(value) {
 // before the author is known. Auto saves a gain for every video, so such a
 // placeholder must never replace a name already stored for the channel.
 function applyChannelIdentity(entry, channelId, name, url) {
-  if (name && name !== channelId) entry.name = name;
-  else if (!entry.name) entry.name = channelId;
+  applyEntryName(entry, channelId, name);
   if (url) entry.url = url;
 }
 
@@ -98,13 +97,12 @@ function setChannelGain(entry, videoType, gain, heldAgainstPlain = false) {
   else delete entry[plainMarkKeyFor(videoType)];
 }
 
+// The keys of an entry's Auto flags per type.
+const AUTO_SLOTS = ['autoApplyLoudnessLive', 'autoApplyLoudnessVideo'];
+
 // Expands the legacy all-types flag so one type can be set on its own.
 function setChannelAutoApply(entry, videoType, enabled) {
-  if ('autoApplyLoudness' in entry) {
-    entry.autoApplyLoudnessVideo = !!entry.autoApplyLoudness;
-    entry.autoApplyLoudnessLive = !!entry.autoApplyLoudness;
-    delete entry.autoApplyLoudness;
-  }
+  expandLegacyAutoFlag(entry, AUTO_SLOTS);
   entry[autoApplyKeyFor(videoType)] = !!enabled;
 }
 
@@ -127,10 +125,10 @@ function checkChannelIdentity(msg) {
   if (!isChannelId(msg.channelId)) {
     throw new ChannelWriteRefused('channel id is not in the UC form');
   }
-  for (const key of ['name', 'url']) {
-    if (msg[key] !== undefined && typeof msg[key] !== 'string') {
-      throw new ChannelWriteRefused(`channel ${key} is not text`);
-    }
+  // A name that is no text is not taken (applyEntryName); a url that is no
+  // text refuses the write.
+  if (msg.url !== undefined && typeof msg.url !== 'string') {
+    throw new ChannelWriteRefused('channel url is not text');
   }
 }
 
@@ -196,12 +194,8 @@ const CHANNEL_WRITES = {
 // all-channel default — and reading it under the current rule would hand the
 // channel to Auto, which overwrites that gain with a calculated one.
 function resolveAutoApplySetting(entry, videoType, defaultValue, unmigrated) {
-  if (!entry) return !!defaultValue;
-  const autoKey = autoApplyKeyFor(videoType);
-  if (autoKey in entry) return !!entry[autoKey];
-  if ('autoApplyLoudness' in entry) return !!entry.autoApplyLoudness;
-  if (unmigrated && getChannelGain(entry, videoType) !== null) return false;
-  return !!defaultValue;
+  return autoFlagFor(entry, autoApplyKeyFor(videoType), defaultValue,
+    !!unmigrated && getChannelGain(entry, videoType) !== null);
 }
 
 // One-time upgrade. Auto used to store the gain it learned under its own key,

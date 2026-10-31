@@ -3350,12 +3350,10 @@ async function runTests() {
   };
   const keptBefore = JSON.stringify(mockStorage['channelVolumes']);
   const refusedWrites = [
-    { type: 'store:saveChannelGain', channelId: 'UCkept', name: { not: 'text' }, gain: 0.9, videoType: 'video', url: '' },
     { type: 'store:saveChannelGain', channelId: 'UCkept', name: 'Kept', gain: 'loud', videoType: 'video', url: '' },
     { type: 'store:saveChannelGain', channelId: 'UCkept', name: 'Kept', gain: NaN, videoType: 'video', url: '' },
     { type: 'store:saveChannelGain', channelId: '__proto__', name: 'Kept', gain: 0.9, videoType: 'video', url: '' },
     { type: 'store:saveChannelGain', channelId: 'UCkept', name: 'Kept', gain: 0.9, videoType: 'video', url: 7 },
-    { type: 'store:saveChannelAutoApply', channelId: 'UCkept', name: 7, enabled: true, videoType: 'video', url: '' },
     { type: 'store:saveChannelAutoApply', channelId: '@kept_handle', name: 'Kept', enabled: true, videoType: 'video', url: '' },
     { type: 'store:adoptHandleEntry', channelId: 'UC"><b>', authorName: 'Kept Handle', url: '' },
     { type: 'store:adoptHandleEntry', channelId: 'UCadopter', authorName: { not: 'text' }, url: '' }
@@ -3367,6 +3365,19 @@ async function runTests() {
   }
   assert(JSON.stringify(mockStorage['channelVolumes']) === keptBefore,
     `and none of them touches the map (${JSON.stringify(mockStorage['channelVolumes'])})`);
+  // A name that is not text is dropped, not refused: the write lands and the
+  // row keeps the name it has.
+  const namelessWrites = [
+    { type: 'store:saveChannelGain', channelId: 'UCkept', name: { not: 'text' }, gain: 0.8, videoType: 'video', url: '' },
+    { type: 'store:saveChannelAutoApply', channelId: 'UCkept', name: 7, enabled: true, videoType: 'video', url: '' }
+  ];
+  for (const write of namelessWrites) {
+    const answer = await chrome.runtime.sendMessage(write);
+    assert(answer?.ok === true && mockStorage['channelVolumes']['UCkept'].name === 'Kept',
+      `${write.type} ${JSON.stringify(write)} lands and keeps the name (${JSON.stringify(answer)}, ${JSON.stringify(mockStorage['channelVolumes']['UCkept'])})`);
+  }
+  assert(mockStorage['channelVolumes']['UCkept'].gainVideo === 0.8 && mockStorage['channelVolumes']['UCkept'].autoApplyLoudnessVideo === true,
+    `and both of them land (${JSON.stringify(mockStorage['channelVolumes']['UCkept'])})`);
   const acceptedWrite = await chrome.runtime.sendMessage({
     type: 'store:saveChannelGain', channelId: 'UCkept', name: 'Kept', gain: 0.9, videoType: 'video', url: ''
   });
