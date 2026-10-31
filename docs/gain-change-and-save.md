@@ -585,7 +585,7 @@ sequenceDiagram
 - When the extension context is invalid at injection, no fold is asked for; `triggerApply()` is called on a watch page and returns at once, disconnecting the observer.
 - The settings page asks for the fold when it opens and then reads both keys (`loadAll`). A failure is logged, and the list is drawn under the old rule until `unifiedGains` arrives.
 
-Drawn from: `content.js` the startup block, `foldLegacyGains`, `triggerApply`; `background.js` the start; `utils.js` `migrateLegacyAutoGains`, `clearLegacyKeys`, `resolveAutoApplySetting`, `moveSettingsToSync`, `queueSettingsWrite`, `readSettings`; `options.js` the startup chain.
+Drawn from: `content.js` the startup block, `foldLegacyGains`, `triggerApply`; `background.js` the start; `utils.js` `migrateLegacyAutoGains`, `clearLegacyKeys`, `resolveAutoApplySetting`, `moveSettingsToSync`, `queueSettingsWrite`; `core/common.js` `readSettings`; `options.js` the startup chain.
 
 ## Other tabs: `chrome.storage.onChanged` in `content.js`
 
@@ -660,7 +660,7 @@ sequenceDiagram
 - No control on this page writes `channelVolumes`. In each YouTube tab, `applyPreferredGain()` applies the new target and the new defaults: where Auto is on for the type with a known level, it applies the new Auto gain, and stores it (Auto's own save, or the live save decision) when the change moved the target or an all-channel default as this tab held them. A change of the display unit or the gain overlay applies the gain again and stores nothing (`stores: false`). Where Auto is off or no level is known, the stored gain plays as before. When a change notification lands while that apply reads the entry, the apply returns having applied and stored nothing (`STORAGE_MOVED`), and the listener runs it once more.
 - A change of an all-channel default changes Auto only for channels without their own flag (or the legacy flag) for that type.
 
-Drawn from: `options.js` the `targetSlider`, `defaultAutoVideoToggle`, `defaultAutoLiveToggle`, `unitToggle` and `overlayToggle` listeners, `saveSetting`, `applySettings`, the `chrome.storage.onChanged` listener; `utils.js` `SETTINGS_WRITES`, `SETTING_FIELDS`, `queueSettingsWrite`, `readSettings`; `content.js` the `chrome.storage.onChanged` listener, `takeSettings`, `applyPreferredGain`, `updateGainOverlay`.
+Drawn from: `options.js` the `targetSlider`, `defaultAutoVideoToggle`, `defaultAutoLiveToggle`, `unitToggle` and `overlayToggle` listeners, `saveSetting`, `applySettings`, the `chrome.storage.onChanged` listener; `utils.js` `SETTINGS_WRITES`, `SETTING_FIELDS`, `queueSettingsWrite`; `core/common.js` `readSettings`; `content.js` the `chrome.storage.onChanged` listener, `takeSettings`, `applyPreferredGain`, `updateGainOverlay`.
 
 ## Options page: deleting a row and clearing all
 
