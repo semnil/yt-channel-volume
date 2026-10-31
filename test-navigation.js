@@ -3363,7 +3363,7 @@ async function runTests() {
   ];
   for (const write of refusedWrites) {
     const answer = await chrome.runtime.sendMessage(write);
-    assert(answer?.ok === false && answer?.reason === 'write refused',
+    assert(answer?.ok === false && answer?.reason === 'invalid-mutation',
       `${write.type} ${JSON.stringify(write)} is refused (${JSON.stringify(answer)})`);
   }
   assert(JSON.stringify(mockStorage['channelVolumes']) === keptBefore,
@@ -7785,8 +7785,34 @@ async function runTests() {
     let refused;
     listeners[0]({ type: 'store:saveSetting', key: 'targetLufs', value: 'loud' }, {}, (r) => { refused = r; });
     for (let turn = 0; turn < 3; turn++) await tick();
-    assert(refused?.ok === false && refused.reason === 'write refused',
+    assert(refused?.ok === false && refused.reason === 'invalid-mutation',
       `a value the field cannot hold is refused as such (${JSON.stringify(refused)})`);
+
+    // A storage failure is answered by the table the write came from.
+    worker.chrome.storage.sync.set = () => Promise.reject(new Error('QUOTA_BYTES_PER_ITEM quota exceeded'));
+    let settingFailed;
+    listeners[0]({ type: 'store:saveSetting', key: 'targetLufs', value: -24 }, {}, (r) => { settingFailed = r; });
+    for (let turn = 0; turn < 5; turn++) await tick();
+    assert(settingFailed?.ok === false && settingFailed.reason === 'settings-update-failed',
+      `a settings save storage refuses is answered as such (${JSON.stringify(settingFailed)})`);
+    worker.chrome.storage.local.set = () => Promise.reject(new Error('IO error'));
+    let channelFailed;
+    listeners[0]({ type: 'store:saveChannelGain', channelId: 'UCfailed', name: 'Failed', gain: 0.5, videoType: 'video', url: '' },
+      {}, (r) => { channelFailed = r; });
+    for (let turn = 0; turn < 5; turn++) await tick();
+    assert(channelFailed?.ok === false && channelFailed.reason === 'storage-update-failed',
+      `and a channel write storage refuses as one of its own (${JSON.stringify(channelFailed)})`);
+
+    // A message that names no write is left alone, and named unless it is the
+    // popup's.
+    const warned = [];
+    worker.console.warn = (...args) => warned.push(args.map(String).join(' '));
+    const unanswered = () => { throw new Error('answered'); };
+    assert(listeners[0]({ type: 'stateChanged' }, {}, unanswered) === false && warned.length === 0,
+      `the popup's stateChanged is left alone unnamed (${warned.join(' | ')})`);
+    assert(listeners[0]({ type: 'store:toString' }, {}, unanswered) === false &&
+      warned.length === 1 && warned[0] === '[YTCV] unknown message type store:toString',
+      `a write the worker does not have is left alone and named (${warned.join(' | ')})`);
   }
 
   // ── options.js ────────────────────────────────────────────────────
@@ -7980,7 +8006,7 @@ async function runTests() {
               try {
                 await settingsWrite(message);
               } catch (err) {
-                return { ok: false, reason: 'storage write failed' };
+                return { ok: false, reason: 'storage-update-failed' };
               }
             }
             return { ok: true };
