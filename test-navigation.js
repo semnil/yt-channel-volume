@@ -7782,11 +7782,15 @@ async function runTests() {
       `the save stands, with the settings the move brought (${JSON.stringify(synced[SETTINGS_KEY])})`);
     assert(!(SETTINGS_KEY in local), 'and local is clear');
 
+    const errors = [];
+    worker.console.error = (...args) => errors.push(args.map(String).join(' '));
     let refused;
     listeners[0]({ type: 'store:saveSetting', key: 'targetLufs', value: 'loud' }, {}, (r) => { refused = r; });
     for (let turn = 0; turn < 3; turn++) await tick();
     assert(refused?.ok === false && refused.reason === 'invalid-mutation',
       `a value the field cannot hold is refused as such (${JSON.stringify(refused)})`);
+    assert(errors.length === 1 && /^\[YTCV\] store:saveSetting rejected as invalid /.test(errors[0]),
+      `and reported as such (${errors.join(' | ')})`);
 
     // A storage failure is answered by the table the write came from.
     worker.chrome.storage.sync.set = () => Promise.reject(new Error('QUOTA_BYTES_PER_ITEM quota exceeded'));
@@ -7805,8 +7809,7 @@ async function runTests() {
 
     // A write that names its own reason is answered with it, and one the
     // stored state blocks is reported as such.
-    const errors = [];
-    worker.console.error = (...args) => errors.push(args.map(String).join(' '));
+    errors.length = 0;
     const channelWrites = vm.runInContext('CHANNEL_WRITES', worker);
     const clearChannels = channelWrites.clearChannels;
     channelWrites.clearChannels = () => Promise.reject(
