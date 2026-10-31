@@ -3356,7 +3356,10 @@ async function runTests() {
     { type: 'store:saveChannelGain', channelId: 'UCkept', name: 'Kept', gain: 0.9, videoType: 'video', url: 7 },
     { type: 'store:saveChannelAutoApply', channelId: '@kept_handle', name: 'Kept', enabled: true, videoType: 'video', url: '' },
     { type: 'store:adoptHandleEntry', channelId: 'UC"><b>', authorName: 'Kept Handle', url: '' },
-    { type: 'store:adoptHandleEntry', channelId: 'UCadopter', authorName: { not: 'text' }, url: '' }
+    { type: 'store:adoptHandleEntry', channelId: 'UCadopter', authorName: { not: 'text' }, url: '' },
+    { type: 'store:deleteChannel' },
+    { type: 'store:deleteChannel', channelId: '' },
+    { type: 'store:deleteChannel', channelId: ['UCkept'] }
   ];
   for (const write of refusedWrites) {
     const answer = await chrome.runtime.sendMessage(write);

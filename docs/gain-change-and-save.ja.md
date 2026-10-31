@@ -93,7 +93,7 @@ sequenceDiagram
 ```
 
 - `content.js` は `requestChannelWrite` で送る。拡張機能とのつながりが切れているとき (`isContextValid()` が false) は、送らずに成功として終わる。`saveChannelGain` と `saveChannelAutoApply` は、チャンネル ID が無いときは送らない。ほかの送り手も送る前にチャンネル ID があることを確かめるので、`migrateLegacyGains` を除き、`content.js` が送る書き込みはどれもチャンネルを名指しする。
-- `CHANNEL_WRITES.saveChannelGain` / `saveChannelAutoApply` / `adoptHandleEntry` は、チャンネル ID が UC 形式でない、`url` があって文字列でない、`gain` が 0 から 6 の有限の数でない (`isStorableGain`)、`authorName` が文字列でない、のどれかなら、表を読む前に `ChannelWriteRefused` を投げる。`deleteChannel` はどのキーでも受け付ける。 文字でない・空の・チャンネル ID と同じ `name` は使わず (`core/common.js` の `applyEntryName`)、名前の無い行はチャンネル ID を名前にする。
+- `CHANNEL_WRITES.saveChannelGain` / `saveChannelAutoApply` / `adoptHandleEntry` は、チャンネル ID が UC 形式でない、`url` があって文字列でない、`gain` が 0 から 6 の有限の数でない (`isStorableGain`)、`authorName` が文字列でない、のどれかなら、表を読む前に `ChannelWriteRefused` を投げる。`deleteChannel` は空でない文字ならどのキーでも受け付け (`core/common.js` の `isRowKey`)、それ以外は断る。 文字でない・空の・チャンネル ID と同じ `name` は使わず (`core/common.js` の `applyEntryName`)、名前の無い行はチャンネル ID を名前にする。
 - `updateChannelVolumes` は service worker の中の書き込みを 1 本の promise のつながり (`channelVolumesWrite`) に並べる。そのため、ある書き込みの `get` と `set` の間に別の書き込みが割り込まない。1 つが失敗しても列は止まらない。`mutate` のあとで表が変わっておらず、`extraKeys` も無ければ、何も `set` しない。
 - この流れには debounce や throttle (続けて来る呼び出しをまとめたり間引いたりする仕組み) は無い。1 回の依頼が、列に並んだ 1 回の「読んで、書き換えて、書く」になる。
 
