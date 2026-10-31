@@ -1,5 +1,7 @@
 # YT Channel Volume
 
+[![codecov](https://codecov.io/gh/semnil/yt-channel-volume/graph/badge.svg)](https://codecov.io/gh/semnil/yt-channel-volume)
+
 YouTube の音量をチャンネルごとに揃える Chrome 拡張機能 (Manifest V3)。LUFS 自動適用を ON にすると、YouTube が動画ごとに測った loudness をもとに、それぞれの動画を目標の音量 (Target LUFS) に合わせ、配信中のライブではその配信の loudness の変化に合わせる。それ以外では、動画を開いた時にそのチャンネルで保存した音量を適用する。
 
 > For the English version, see [README.md](README.md).
