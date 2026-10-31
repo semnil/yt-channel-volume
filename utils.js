@@ -108,14 +108,6 @@ async function moveSettingsToSync() {
   return true;
 }
 
-function formatAutoGain(gain, displayUnit, autoLabel = 'Auto') {
-  // Auto has stored no gain for this type yet. Naming a number here would
-  // claim a level that nothing is playing at.
-  if (gain === null || gain === undefined) return `${autoLabel} (—)`;
-  const formatted = formatGain(gain, displayUnit);
-  return `${autoLabel} (${formatted.text}${formatted.unit})`;
-}
-
 function normalizeStoredGain(value) {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
