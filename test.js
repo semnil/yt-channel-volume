@@ -1537,6 +1537,23 @@ async function runMigrationTests() {
     mockStorage = priorStorage;
   }
 
+  section('saveChannelGain — a gain within 0 to 6 alone');
+  {
+    const priorStorage = mockStorage;
+    mockStorage = { channelVolumes: { UCrange: { name: 'Range', gainVideo: 0.5 } } };
+    for (const gain of [7, 6.01, -1, NaN, Infinity, '1', null]) {
+      let refused = null;
+      try {
+        await CHANNEL_WRITES.saveChannelGain({ channelId: 'UCrange', name: 'Range', gain, videoType: 'video', url: '' });
+      } catch (err) { refused = err; }
+      assert(refused?.constructor?.name === 'ChannelWriteRefused', `gain ${String(gain)} is refused`);
+    }
+    assert(mockStorage.channelVolumes.UCrange.gainVideo === 0.5, 'and none of them is written');
+    await CHANNEL_WRITES.saveChannelGain({ channelId: 'UCrange', name: 'Range', gain: 6, videoType: 'video', url: '' });
+    assert(mockStorage.channelVolumes.UCrange.gainVideo === 6, 'the top of the range is taken');
+    mockStorage = priorStorage;
+  }
+
   section('clearLegacyKeys — housekeeping that has nothing to do');
   {
     const priorStorage = mockStorage;

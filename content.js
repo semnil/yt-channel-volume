@@ -440,8 +440,10 @@
     return isGainHeldAgainstPlain(entry, videoType) ? gain * currentRenditionRatio() : gain;
   }
 
+  // Held to the gain range: a gain chosen on a louder rendition that would
+  // store above 600% is stored at 600%.
   function playingGainToStored(gain) {
-    return gain / currentRenditionRatio();
+    return clampGain(gain / currentRenditionRatio());
   }
 
   // What Auto and "Apply to channel" store: the gain for the base rendition.
@@ -758,7 +760,7 @@
   function commitGain(value) {
     const numeric = Number(value);
     const clamped = Number.isFinite(numeric)
-      ? Math.max(MIN_GAIN, Math.min(MAX_GAIN, numeric))
+      ? clampGain(numeric)
       : 1.0;
     applyGainToAudio(clamped);
     currentGain = clamped;

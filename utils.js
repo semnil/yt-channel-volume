@@ -140,7 +140,7 @@ function checkChannelIdentity(msg) {
 const CHANNEL_WRITES = {
   saveChannelGain(msg) {
     checkChannelIdentity(msg);
-    if (!Number.isFinite(msg.gain)) throw new ChannelWriteRefused('gain is not a finite number');
+    if (!isStorableGain(msg.gain)) throw new ChannelWriteRefused('gain is not a finite number within 0 to 6');
     return updateChannelVolumes(all => {
       const entry = all[msg.channelId] || {};
       applyChannelIdentity(entry, msg.channelId, msg.name, msg.url);

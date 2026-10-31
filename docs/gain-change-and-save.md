@@ -29,7 +29,7 @@ This document follows the code in this repository and describes two things: ever
 
 The fields of a `channelVolumes` entry:
 
-- `gainVideo` / `gainLive`: the stored gain of each type (1.0 is 100%). It is not clamped when stored.
+- `gainVideo` / `gainLive`: the stored gain of each type (1.0 is 100%), 0 to 6. A manual gain stored against the plain rendition is clamped to that range when it is worked out (`playingGainToStored`), and the worker refuses one outside it.
 - `gainVideoPlain` / `gainLivePlain`: `true` when that type's gain is held against the plain rendition (`baseLoudnessDb`). Without it the gain plays as stored.
 - `autoApplyLoudnessVideo` / `autoApplyLoudnessLive`: the channel's own Auto flag for each type. A type without it follows the all-channel default.
 - `name` and `url` (`https://www.youtube.com/channel/<channelId>`).
@@ -93,7 +93,7 @@ sequenceDiagram
 ```
 
 - `content.js` sends through `requestChannelWrite`, which resolves without sending when the extension context is no longer valid (`isContextValid()` is false). `saveChannelGain` and `saveChannelAutoApply` return without sending when there is no channel id, and the other senders of a channel write check for one before they send, so apart from `migrateLegacyGains` every write `content.js` sends names a channel.
-- `CHANNEL_WRITES.saveChannelGain`, `saveChannelAutoApply` and `adoptHandleEntry` throw `ChannelWriteRefused` before the map is read when the channel id is not in the UC form, `name` or `url` is present and not text, `gain` is not a finite number, or `authorName` is not text. `deleteChannel` takes any key.
+- `CHANNEL_WRITES.saveChannelGain`, `saveChannelAutoApply` and `adoptHandleEntry` throw `ChannelWriteRefused` before the map is read when the channel id is not in the UC form, `name` or `url` is present and not text, `gain` is not a finite number within 0 to 6 (`isStorableGain`), or `authorName` is not text. `deleteChannel` takes any key.
 - `updateChannelVolumes` keeps the writes of the worker on one promise chain (`channelVolumesWrite`), so one write's `get` and `set` do not interleave with another's. A failed write does not stop the chain. When the map is unchanged after `mutate` and no `extraKeys` were given, nothing is set.
 - The path has no debounce and no throttle. Each request is one queued read-modify-write.
 

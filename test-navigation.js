@@ -1846,6 +1846,12 @@ async function runTests() {
     assert(closeTo(ytcv.state.currentGain, 0.5),
       `read back, it plays at the level chosen (${ytcv.state.currentGain})`);
 
+    // The plain rendition's gain for 200% here passes 600%: it is stored at 600%.
+    const loud = await popupGesture({ type: 'setGain', channelId: 'UCmanualStb', gain: 2.0 });
+    assert(loud?.ok === true && 2.0 / ratio > 6, `a gain whose plain rendition's passes 600% saves (${JSON.stringify(loud)})`);
+    assert(mockStorage['channelVolumes']['UCmanualStb'].gainVideo === 6,
+      `and is stored at 600% (${mockStorage['channelVolumes']['UCmanualStb'].gainVideo})`);
+
     const applied = await popupGesture({ type: 'applyLoudness' });
     assert(applied?.ok === true && closeTo(applied?.gain, calcGain(STABLE_DB, -18)),
       `"Apply to channel" plays the stable rendition's gain (${JSON.stringify(applied)})`);
