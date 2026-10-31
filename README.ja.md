@@ -125,7 +125,7 @@ yt-channel-volume/
 ├── icons/                # 拡張アイコン (16/48/128 px)
 ├── docs/*.md             # ゲインが変わる全経路と、そのうちチャンネル設定を保存する経路 (en, ja)
 ├── docs/screenshots/     # README・ストア掲載用スクリーンショット (ja, en)
-├── tools/*.sh            # リリースワークフローが実行する、版上げのマージが求めるタグの決定・タグ検査・バージョン検査
+├── tools/*.sh            # リリースワークフローが実行する、版上げのマージが求めるタグの決定・タグ検査・バージョン検査と、共有ファイルの channel-volume-core との照合
 ├── tools/fonts/          # スクリーンショット描画用フォント M PLUS 1p (OFL)
 ├── tools/mutation/       # コードを変えたときにテストが検出するかを確かめるミューテーション走査
 ├── test.js               # utils ユニットテスト・パッケージングと README の検査・単一 writer の契約
@@ -134,6 +134,7 @@ yt-channel-volume/
 ├── gen_icons.py          # アイコン生成 (Python pillow)
 ├── gen_screenshots.py    # スクリーンショット生成 (docs/screenshots/ へ出力)
 ├── pack.py               # zip パッケージング
+├── core.json             # 共有ファイルの写し元である semnil/channel-volume-core のコミット
 ├── PRIVACY_POLICY.md     # プライバシーポリシー (EN)
 ├── PRIVACY_POLICY_JA.md  # プライバシーポリシー (JA)
 ├── README.md             # README (EN)
