@@ -161,6 +161,7 @@ const CHANNEL_WRITES = {
     });
   },
   deleteChannel(msg) {
+    if (!isRowKey(msg.channelId)) throw new ChannelWriteRefused('channel id is empty or not text');
     return updateChannelVolumes(all => { delete all[msg.channelId]; });
   },
   clearChannels() {
