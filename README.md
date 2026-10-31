@@ -125,7 +125,7 @@ yt-channel-volume/
 ├── icons/                # extension icons (16/48/128 px)
 ├── docs/*.md             # every path that changes the gain, and which of them save channel settings (en, ja)
 ├── docs/screenshots/     # screenshots for the README and the store listing (ja, en)
-├── tools/*.sh            # what the release workflows run: the tag a merged version bump asks for, the tag check and the version check
+├── tools/*.sh            # what the release workflows run: the tag a merged version bump asks for, the tag check and the version check; and the check of the shared files against channel-volume-core
 ├── tools/fonts/          # M PLUS 1p (OFL), the face the screenshots are drawn in
 ├── tools/mutation/       # mutation sweeps that check the test suites catch changes to the code
 ├── test.js               # utils unit tests, packaging and README checks, the single-writer contract
@@ -134,6 +134,7 @@ yt-channel-volume/
 ├── gen_icons.py          # icon generation (Python pillow)
 ├── gen_screenshots.py    # screenshot generation (writes into docs/screenshots/)
 ├── pack.py               # zip packaging
+├── core.json             # the commit of semnil/channel-volume-core the shared files are copies of
 ├── PRIVACY_POLICY.md     # privacy policy (EN)
 ├── PRIVACY_POLICY_JA.md  # privacy policy (JA)
 ├── README.md             # README (EN)
