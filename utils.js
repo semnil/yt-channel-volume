@@ -1,12 +1,10 @@
 // utils.js — Shared constants and utilities for content / popup / options / service worker
 
-const SETTINGS_KEY = 'autoLoudnessSettings';
 const CHANNEL_VOLUMES_KEY = 'channelVolumes';
 // Legacy Auto-learned gain storage, folded into CHANNEL_VOLUMES_KEY on load.
 const LEGACY_AUTO_FALLBACKS_KEY = 'autoLoudnessFallbacks';
 const LEGACY_AUTO_FALLBACK_KEY_PREFIX = 'autoLoudnessFallback:';
 const YT_REFERENCE_LUFS = -14;
-const DEFAULT_TARGET_LUFS = -18;
 const DEFAULT_AUTO_APPLY_LOUDNESS = false;
 // Marks a profile whose gains already went through the unification below. Auto
 // stores gains without an Auto flag, which is the same shape the migration
@@ -14,10 +12,6 @@ const DEFAULT_AUTO_APPLY_LOUDNESS = false;
 // key because every settings writer merges into a snapshot of the settings
 // object, and one whose read predates the migration would drop the mark.
 const UNIFIED_GAINS_KEY = 'unifiedGains';
-
-function isContextValid() {
-  try { return !!chrome.runtime?.id; } catch (_) { return false; }
-}
 
 // Every channel-map write goes through here. The map lives under one storage
 // key, so a read-modify-write started before another one's set lands drops its
