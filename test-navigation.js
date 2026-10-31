@@ -6113,7 +6113,7 @@ async function runTests() {
     await ytcv.saveChannelGain('UCsilent', 'Silent Ch', 0.5, 'video', '', false)
       .catch((err) => { silent = err; });
     chrome.runtime.sendMessage = realSend;
-    assert(String(silent?.message) === 'channel write failed',
+    assert(String(silent?.message) === 'write not confirmed',
       `a worker that says nothing is a failure too (${silent?.message})`);
   }
 

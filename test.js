@@ -429,7 +429,7 @@ assert(/<div id="settingsError" class="settings-error hidden" role="status" data
   'options ship a line naming a failed settings read, hidden');
 assert(/\.settings-error\.hidden\s*\{\s*display:\s*none;/.test(optionsHtml),
   'the line stays out of the layout until it is shown');
-assert(/\.catch\(err => \{[\s\S]{0,400}?loadFailed = true;[\s\S]{0,200}?settingsErrorEl\.classList\.remove\('hidden'\);/
+assert(/\.catch\(err => \{[\s\S]{0,400}?loadFailed = true;[\s\S]{0,200}?showSettingsError\(true, 'settingsLoadFailed'\);/
   .test(optionsSrc),
   'a load that fails records the failure and shows the line');
 {

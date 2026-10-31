@@ -176,12 +176,7 @@
   // hold the same channel map.
   async function requestChannelWrite(type, payload) {
     if (!isContextValid()) return;
-    const response = await chrome.runtime.sendMessage({
-      type: 'store:' + type, ...payload
-    });
-    if (!response?.ok) {
-      throw new Error(response?.reason || 'channel write failed');
-    }
+    await requestWrite({ type: 'store:' + type, ...payload });
   }
 
   // `autoApply` pins the Auto state that was in effect for a manual save, so

@@ -17,7 +17,6 @@
   const overlayToggle = document.getElementById('overlayToggle');
   const clearAllBtn = document.getElementById('clearAllBtn');
   const channelListEl = document.getElementById('channelList');
-  const settingsErrorEl = document.getElementById('settingsError');
 
   let displayUnit = '%';
   let targetLufs = DEFAULT_TARGET_LUFS;
@@ -101,11 +100,6 @@
     await requestChannelWrite('saveSetting', { key, value });
   }
 
-  function showSettingsError(visible, key = 'settingsSaveFailed') {
-    if (visible) settingsErrorEl.textContent = msg(key);
-    settingsErrorEl.classList.toggle('hidden', !visible);
-  }
-
   // A write that did not land leaves the control showing a value nothing holds,
   // so the page goes back to what storage holds and says that it did. Where
   // the settings cannot be read back either, nothing goes back, and the line
@@ -138,11 +132,8 @@
   }
 
   // The service worker performs every channel write; see background.js.
-  async function requestChannelWrite(type, payload = {}) {
-    const response = await chrome.runtime.sendMessage({
-      type: 'store:' + type, ...payload
-    });
-    if (!response?.ok) throw new Error(response?.reason || 'channel write failed');
+  function requestChannelWrite(type, payload = {}) {
+    return requestWrite({ type: 'store:' + type, ...payload });
   }
 
   function resolveAutoApply(entry, videoType) {
@@ -153,12 +144,6 @@
   }
 
   // ── Channel list ───────────────────────────────────────────────────
-
-  // What a row is shown and sorted under: the stored name where it is
-  // non-empty text, the channel id otherwise.
-  function channelLabel(id, entry) {
-    return typeof entry.name === 'string' && entry.name ? entry.name : id;
-  }
 
   // Draws the list the page holds, and nothing else. A read of its own would be
   // a second read racing the one that is already out, and it would land without
@@ -172,7 +157,7 @@
       return;
     }
 
-    entries.sort((a, b) => channelLabel(a[0], a[1]).localeCompare(channelLabel(b[0], b[1])));
+    entries.sort((a, b) => rowLabel(a[0], a[1]).localeCompare(rowLabel(b[0], b[1])));
 
     const table = document.createElement('table');
     table.className = 'channel-table';
@@ -185,7 +170,7 @@
 
     const tbody = document.createElement('tbody');
     for (const [id, entry] of entries) {
-      const name = channelLabel(id, entry);
+      const name = rowLabel(id, entry);
       const url = entry.url;
       // Support old format (single gain) and new format (gainLive/gainVideo)
       const gainLive = getChannelGain(entry, 'live');
@@ -426,7 +411,7 @@
       // The page is shown either way; what it says about itself is the part
       // that changes, and the controls stay as the markup ships them.
       loadFailed = true;
-      settingsErrorEl.classList.remove('hidden');
+      showSettingsError(true, 'settingsLoadFailed');
       console.error('[YTCV] settings not loaded', err);
     })
     .finally(revealOptions);
