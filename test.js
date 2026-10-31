@@ -1740,6 +1740,18 @@ async function runMigrationTests() {
         `the worker's Target LUFS range is the slider's (${min} to ${max})`);
       await new Promise((resolve) => setTimeout(resolve, 0));
     }
+
+    // A save of what sync holds already is not written again; another value is.
+    mockSyncStorage = { autoLoudnessSettings: { targetLufs: -20, displayUnit: 'dB' } };
+    const realSyncSet = chrome.storage.sync.set;
+    let syncWrites = 0;
+    chrome.storage.sync.set = (items) => { syncWrites++; return realSyncSet(items); };
+    await SETTINGS_WRITES.saveSetting({ key: 'displayUnit', value: 'dB' });
+    assert(syncWrites === 0, `a save of the value sync holds is not written (${syncWrites})`);
+    await SETTINGS_WRITES.saveSetting({ key: 'displayUnit', value: '%' });
+    assert(syncWrites === 1 && mockSyncStorage.autoLoudnessSettings.displayUnit === '%',
+      `a save of another value is (${syncWrites}, ${JSON.stringify(mockSyncStorage.autoLoudnessSettings)})`);
+    chrome.storage.sync.set = realSyncSet;
     mockSyncStorage = {};
     mockStorage = {};
   }

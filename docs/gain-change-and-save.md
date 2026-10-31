@@ -641,7 +641,7 @@ sequenceDiagram
   Note over O: the Target LUFS input event only redraws its label
   O->>W: saveSetting, store:saveSetting with the key and its value
   Note over W: SETTINGS_WRITES.saveSetting checks them, and queues the write on queueSettingsWrite()
-  W->>S: readSettings(), then set autoLoudnessSettings with that one field replaced
+  W->>S: readSettings(), then set autoLoudnessSettings with that one field replaced, unless sync holds that already (writeSettingsChange)
   W-->>O: ok true, or ok false with a reason
   S-->>O: storage.onChanged in sync, applySettings and renderChannels
   S-->>C: storage.onChanged in sync for autoLoudnessSettings
@@ -660,7 +660,7 @@ sequenceDiagram
 - No control on this page writes `channelVolumes`. In each YouTube tab, `applyPreferredGain()` applies the new target and the new defaults: where Auto is on for the type with a known level, it applies the new Auto gain, and stores it (Auto's own save, or the live save decision) when the change moved the target or an all-channel default as this tab held them. A change of the display unit or the gain overlay applies the gain again and stores nothing (`stores: false`). Where Auto is off or no level is known, the stored gain plays as before. When a change notification lands while that apply reads the entry, the apply returns having applied and stored nothing (`STORAGE_MOVED`), and the listener runs it once more.
 - A change of an all-channel default changes Auto only for channels without their own flag (or the legacy flag) for that type.
 
-Drawn from: `options.js` the `targetSlider`, `defaultAutoVideoToggle`, `defaultAutoLiveToggle`, `unitToggle` and `overlayToggle` listeners, `saveSetting`, `applySettings`, the `chrome.storage.onChanged` listener; `utils.js` `SETTINGS_WRITES`, `SETTING_FIELDS`, `queueSettingsWrite`; `core/common.js` `readSettings`; `content.js` the `chrome.storage.onChanged` listener, `takeSettings`, `applyPreferredGain`, `updateGainOverlay`.
+Drawn from: `options.js` the `targetSlider`, `defaultAutoVideoToggle`, `defaultAutoLiveToggle`, `unitToggle` and `overlayToggle` listeners, `saveSetting`, `applySettings`, the `chrome.storage.onChanged` listener; `utils.js` `SETTINGS_WRITES`, `SETTING_FIELDS`, `queueSettingsWrite`; `core/common.js` `readSettings`, `settingCheck`, `writeSettingsChange`; `content.js` the `chrome.storage.onChanged` listener, `takeSettings`, `applyPreferredGain`, `updateGainOverlay`.
 
 ## Options page: deleting a row and clearing all
 
