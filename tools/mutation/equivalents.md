@@ -77,23 +77,18 @@ branch then writes values nothing reads differently.
 
 ## popup.js
 
-`setCardValue`'s unit check. Every one of the five calls passes a unit
-(`' LUFS'`, `' dB'`, `'%'`), so there is no call it refuses.
-
-- `popup.js:74` a guard is always taken ×1 — if (unitText) {
-
 `resyncFromContent`'s answer check. The `.catch` beside it runs the same four
 lines the false branch does, and reading a field of `undefined` is what sends it
 there.
 
-- `popup.js:245` a guard is always taken ×1 — if (state) {
+- `popup.js:225` a guard is always taken ×1 — if (state) {
 
 The retry's call. `hasLoudness` is set from the same response the check reads,
 and `retryGetState` (`core/common.js`) asks nothing while its `done()` — here
 `hasLoudness` — holds.
 
-- `popup.js:476` === becomes !== ×1 — ===
-- `popup.js:476` a guard is always taken ×1 — if (resp.contentLufs === null || resp.contentLufs === undefined) {
+- `popup.js:456` === becomes !== ×1 — ===
+- `popup.js:456` a guard is always taken ×1 — if (resp.contentLufs === null || resp.contentLufs === undefined) {
 
 ## page-bridge.js
 

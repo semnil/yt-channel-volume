@@ -6764,6 +6764,9 @@ async function runTests() {
       `the figure beside the slider is in dB (${asDb.node('volumeValue').textContent})`);
     assert(Number(asDb.node('volumeSlider').value) === 200,
       `while the slider itself still stands in percent (${asDb.node('volumeSlider').value})`);
+    const offered = formatGain(calcGain(-6, -18), 'dB');
+    assert(asDb.node('applyBtn').textContent.startsWith('applyToChannelWithValue ' + offered.text + offered.unit),
+      `and Apply to channel offers its gain in dB (${asDb.node('applyBtn').textContent})`);
   }
 
   section('Popup: the Auto toggle it sends, and what it does with the answer');
