@@ -3,11 +3,7 @@
 (() => {
   'use strict';
 
-  // Apply data-i18n attributes, and the language of the catalog they came from
-  document.querySelectorAll('[data-i18n]').forEach(el => {
-    el.textContent = msg(el.dataset.i18n);
-  });
-  document.documentElement.lang = msg('pageLanguage');
+  applyI18n();
 
   const channelNameEl = document.getElementById('channelName');
   const videoTypeBadge = document.getElementById('videoTypeBadge');
@@ -418,15 +414,6 @@
 
   // ── Init ───────────────────────────────────────────────────────────
 
-  function revealPopup() {
-    // Commit the checked states while transitions are disabled, then reveal
-    // the fully initialized popup on the next frame.
-    void document.body.offsetWidth;
-    requestAnimationFrame(() => {
-      document.body.classList.remove('initializing');
-    });
-  }
-
   async function init() {
     try {
       // Load display unit preference
@@ -467,7 +454,7 @@
         reloadNeededEl.style.display = '';
       }
     } finally {
-      revealPopup();
+      revealPage();
     }
   }
 

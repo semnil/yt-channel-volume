@@ -657,6 +657,12 @@ function makePopup({ tabUrl = 'https://www.youtube.com/watch?v=abc', answer = nu
       const classes = new Set();
       nodes.set(id, {
         id, listeners: {}, dataset: {}, style: {}, children: [], offsetWidth: 0,
+        // A data- attribute reads through dataset, as an element's does.
+        getAttribute(name) {
+          if (!name.startsWith('data-')) return null;
+          const field = name.slice(5).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
+          return field in this.dataset ? this.dataset[field] : null;
+        },
         value: '', disabled: false, checked: false,
         // Writing textContent replaces every child with one piece of text,
         // and writing innerHTML replaces what the element holds. The popup
@@ -7887,6 +7893,12 @@ async function runTests() {
       const classes = new Set();
       const element = {
         id, listeners: {}, dataset: {}, style: {}, children: [], offsetWidth: 0,
+        // A data- attribute reads through dataset, as an element's does.
+        getAttribute(name) {
+          if (!name.startsWith('data-')) return null;
+          const field = name.slice(5).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
+          return field in this.dataset ? this.dataset[field] : null;
+        },
         value: '', checked: false, disabled: false,
         _content: { kind: 'text', value: '' },
         get textContent() { return this._content.kind === 'text' ? this._content.value : ''; },
