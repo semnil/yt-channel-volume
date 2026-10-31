@@ -3,11 +3,7 @@
 (() => {
   'use strict';
 
-  // Apply data-i18n attributes, and the language of the catalog they came from
-  document.querySelectorAll('[data-i18n]').forEach(el => {
-    el.textContent = msg(el.dataset.i18n);
-  });
-  document.documentElement.lang = msg('pageLanguage');
+  applyI18n();
 
   const targetSlider = document.getElementById('targetSlider');
   const targetValueEl = document.getElementById('targetValue');
@@ -386,15 +382,6 @@
 
   // ── Init ───────────────────────────────────────────────────────────
 
-  function revealOptions() {
-    // Commit the loaded settings while transitions are disabled, then reveal
-    // the fully initialized page on the next frame.
-    void document.body.offsetWidth;
-    requestAnimationFrame(() => {
-      document.body.classList.remove('initializing');
-    });
-  }
-
   requestChannelWrite('migrateLegacyGains')
     .then(() => { storageMigrated = true; })
     // The table below reads channelVolumes either way; an un-folded profile
@@ -411,5 +398,5 @@
       showSettingsError(true, 'settingsLoadFailed');
       console.error('[YTCV] settings not loaded', err);
     })
-    .finally(revealOptions);
+    .finally(revealPage);
 })();

@@ -343,9 +343,11 @@ const optionsHtml = fs.readFileSync('./options.html', 'utf8');
 const optionsSrc = fs.readFileSync('./options.js', 'utf8');
 const popupHtml = fs.readFileSync('./popup.html', 'utf8');
 const popupSrc = fs.readFileSync('./popup.js', 'utf8');
-for (const [name, html, src, reveal, fnName] of [
-  ['options', optionsHtml, optionsSrc, /\.finally\(revealOptions\);/, 'revealOptions'],
-  ['popup', popupHtml, popupSrc, /finally\s*\{\s*revealPopup\(\);/, 'revealPopup'],
+// Both pages reveal through core/common.js's revealPage.
+const revealPageBody = revealBody(fs.readFileSync('./core/common.js', 'utf8'), 'revealPage');
+for (const [name, html, src, reveal] of [
+  ['options', optionsHtml, optionsSrc, /\.finally\(revealPage\);/],
+  ['popup', popupHtml, popupSrc, /finally\s*\{\s*revealPage\(\);/],
 ]) {
   assert(html.includes('<body class="initializing">'),
     `${name} remains hidden while asynchronous settings load`);
@@ -355,13 +357,13 @@ for (const [name, html, src, reveal, fnName] of [
     `${name} stops every transition while initializing`);
   assert(reveal.test(src),
     `${name} reveals after initialization succeeds or fails`);
-  const body = revealBody(src, fnName);
+  const body = revealPageBody;
   const flush = body === null ? -1 : body.indexOf('document.body.offsetWidth');
   const frame = body === null ? -1 : body.indexOf('requestAnimationFrame(');
   const drop = body === null ? -1 : body.indexOf("classList.remove('initializing')");
   assert(flush !== -1 && frame !== -1 && drop !== -1 && flush < frame && frame < drop,
     `${name} flushes the written values before dropping the class on the next frame`);
-  assert((src.match(new RegExp(fnName, 'g')) || []).length === 2,
+  assert((src.match(/revealPage/g) || []).length === 1,
     `${name} reveals from one place, after the values are written`);
 }
 assert(optionsSrc.indexOf("requestChannelWrite('migrateLegacyGains')") !== -1 &&
@@ -1106,10 +1108,9 @@ assert(!packaged.includes('.DS_Store'),
   }
 }
 
-// A page's own text under data-i18n is replaced by the catalog's before the
-// page is ever shown — applyI18n runs before the body loses `initializing`,
-// which hides it — so text written into the markup is never read by anyone and
-// drifts from the wording that ships without a single check going red.
+// A page's markup holds, under data-i18n, the key of the message it shows —
+// what applyI18n shows for a key the catalog lacks — and no wording of its own
+// to drift from the catalog's.
 {
   const holder = /<([a-zA-Z][\w-]*)([^>]*\sdata-i18n\s*=\s*["\']([^"\']+)["\'][^>]*)>([\s\S]*?)<\/\1>/g;
   let keys = 0;
@@ -1117,8 +1118,8 @@ assert(!packaged.includes('.DS_Store'),
     const text = fs.readFileSync('./' + page, 'utf8');
     for (const [, , , key, inner] of text.matchAll(holder)) {
       keys += 1;
-      assert(inner.trim() === '',
-        `${page} leaves ${key} to the catalog — it holds ${JSON.stringify(inner.trim())}`);
+      assert(inner === key,
+        `${page} holds ${key} as its own key — it holds ${JSON.stringify(inner)}`);
     }
     // Without this the loop above would pass over a page the pattern cannot read.
     assert((text.match(/data-i18n\s*=/g) || []).length
@@ -1141,7 +1142,8 @@ assert(!packaged.includes('.DS_Store'),
   }
   for (const [page, html, script] of [
     ['popup', popupHtml, popupSrc], ['options', optionsHtml, optionsSrc]]) {
-    assert(/document\.documentElement\.lang = msg\('pageLanguage'\);/.test(script),
+    assert(/^  applyI18n\(\);$/m.test(script)
+      && /document\.documentElement\.lang = msg\('pageLanguage'\);/.test(revealBody(fs.readFileSync('./core/common.js', 'utf8'), 'applyI18n')),
       `${page}.js declares the language of the catalog it was filled from`);
     // The markup's own lang is default_locale's, and stands until the script
     // sets the catalog's.

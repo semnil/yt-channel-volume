@@ -321,22 +321,22 @@ body.initializing *::after { transition: none !important; }
 <div id="main">
   <div class="info-section">
     <div style="display:flex; align-items:center; gap:6px; margin-bottom:8px;">
-      <div id="channelName" class="channel-name empty" style="margin-bottom:0" data-i18n="channelNotDetected"></div>
+      <div id="channelName" class="channel-name empty" style="margin-bottom:0" data-i18n="channelNotDetected">channelNotDetected</div>
       <span id="videoTypeBadge" class="type-badge" style="display:none"></span>
     </div>
     <div class="loudness-grid">
       <div class="loudness-card">
-        <div class="label" data-i18n="labelLoudness"></div>
+        <div class="label" data-i18n="labelLoudness">labelLoudness</div>
         <div id="contentLufs" class="value unknown">---</div>
       </div>
       <div class="loudness-card">
-        <div class="label" data-i18n="labelSuggested"></div>
+        <div class="label" data-i18n="labelSuggested">labelSuggested</div>
         <div id="suggestedVol" class="value suggested unknown">---</div>
       </div>
       <div class="loudness-card">
         <div class="label">
-          <span data-i18n="labelCurrent"></span>
-          <span id="fallbackBadge" class="fallback-badge" style="display:none" data-i18n="labelFallback"></span>
+          <span data-i18n="labelCurrent">labelCurrent</span>
+          <span id="fallbackBadge" class="fallback-badge" style="display:none" data-i18n="labelFallback">labelFallback</span>
         </div>
         <div id="currentVol" class="value current unknown">---</div>
       </div>
@@ -344,7 +344,7 @@ body.initializing *::after { transition: none !important; }
   </div>
 
   <div class="auto-section">
-    <div id="autoApplyLabel" class="auto-label" data-i18n="autoApplyLoudness"></div>
+    <div id="autoApplyLabel" class="auto-label" data-i18n="autoApplyLoudness">autoApplyLoudness</div>
     <div class="auto-toggles">
       <label id="autoVideoControl" class="toggle-switch">
         <input type="checkbox" id="autoApplyVideoToggle" aria-labelledby="autoApplyLabel" disabled>
@@ -358,13 +358,13 @@ body.initializing *::after { transition: none !important; }
   </div>
 
   <div class="apply-section">
-    <button id="applyBtn" class="apply-btn" disabled data-i18n="applyToChannel"></button>
-    <span id="applyHint" class="apply-hint" data-i18n="hintNoLoudness"></span>
+    <button id="applyBtn" class="apply-btn" disabled data-i18n="applyToChannel">applyToChannel</button>
+    <span id="applyHint" class="apply-hint" data-i18n="hintNoLoudness">hintNoLoudness</span>
   </div>
 
   <div class="manual-section">
     <div class="manual-header">
-      <span class="label" data-i18n="manualVolume"></span>
+      <span class="label" data-i18n="manualVolume">manualVolume</span>
     </div>
     <div class="slider-row">
       <input type="range" id="volumeSlider" min="0" max="600" value="100" step="5">
@@ -381,14 +381,11 @@ body.initializing *::after { transition: none !important; }
   </div>
 </div>
 
-<div id="notWatch" class="status-msg" style="display:none;" data-i18n="openOnVideoPage">
-</div>
+<div id="notWatch" class="status-msg" style="display:none;" data-i18n="openOnVideoPage">openOnVideoPage</div>
 
-<div id="notYt" class="status-msg" style="display:none;" data-i18n="openOnYoutube">
-</div>
+<div id="notYt" class="status-msg" style="display:none;" data-i18n="openOnYoutube">openOnYoutube</div>
 
-<div id="reloadNeeded" class="status-msg" style="display:none;" data-i18n="reloadPageNeeded">
-</div>
+<div id="reloadNeeded" class="status-msg" style="display:none;" data-i18n="reloadPageNeeded">reloadPageNeeded</div>
 
 <script src="core/common.js"></script>
 <script src="utils.js"></script>
