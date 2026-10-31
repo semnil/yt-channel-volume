@@ -343,11 +343,15 @@ const optionsHtml = fs.readFileSync('./options.html', 'utf8');
 const optionsSrc = fs.readFileSync('./options.js', 'utf8');
 const popupHtml = fs.readFileSync('./popup.html', 'utf8');
 const popupSrc = fs.readFileSync('./popup.js', 'utf8');
-// Both pages reveal through core/common.js's revealPage.
-const revealPageBody = revealBody(fs.readFileSync('./core/common.js', 'utf8'), 'revealPage');
-for (const [name, html, src, reveal] of [
-  ['options', optionsHtml, optionsSrc, /\.finally\(revealPage\);/],
-  ['popup', popupHtml, popupSrc, /finally\s*\{\s*revealPage\(\);/],
+// Both pages reveal through core/common.js's revealPage: the popup once its
+// init settles, the settings page through runPageLoad.
+const coreSrc = fs.readFileSync('./core/common.js', 'utf8');
+const revealPageBody = revealBody(coreSrc, 'revealPage');
+assert(/function runPageLoad\([\s\S]*?\.finally\(\(\) => \{[\s\S]*?revealPage\(\);/.test(coreSrc),
+  'runPageLoad reveals the page once its load is answered');
+for (const [name, html, src, reveal, calls] of [
+  ['options', optionsHtml, optionsSrc, /runPageLoad\(\(\) => requestChannelWrite\('migrateLegacyGains'\)/, 0],
+  ['popup', popupHtml, popupSrc, /finally\s*\{\s*revealPage\(\);/, 1],
 ]) {
   assert(html.includes('<body class="initializing">'),
     `${name} remains hidden while asynchronous settings load`);
@@ -363,7 +367,7 @@ for (const [name, html, src, reveal] of [
   const drop = body === null ? -1 : body.indexOf("classList.remove('initializing')");
   assert(flush !== -1 && frame !== -1 && drop !== -1 && flush < frame && frame < drop,
     `${name} flushes the written values before dropping the class on the next frame`);
-  assert((src.match(/revealPage/g) || []).length === 1,
+  assert((src.match(/revealPage/g) || []).length === calls,
     `${name} reveals from one place, after the values are written`);
 }
 assert(optionsSrc.indexOf("requestChannelWrite('migrateLegacyGains')") !== -1 &&
@@ -431,7 +435,7 @@ assert(/<div id="settingsError" class="settings-error hidden" role="status" data
   'options ship a line naming a failed settings read, hidden');
 assert(/\.settings-error\.hidden\s*\{\s*display:\s*none;/.test(optionsHtml),
   'the line stays out of the layout until it is shown');
-assert(/\.catch\(err => \{[\s\S]{0,400}?loadFailed = true;[\s\S]{0,200}?showSettingsError\(true, 'settingsLoadFailed'\);/
+assert(/onFailed\(err\) \{[\s\S]{0,400}?loadFailed = true;[\s\S]{0,200}?showSettingsError\(true, 'settingsLoadFailed'\);/
   .test(optionsSrc),
   'a load that fails records the failure and shows the line');
 {

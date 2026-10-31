@@ -7999,11 +7999,15 @@ async function runTests() {
       }
     });
 
+    // Held, not run: the page arms one to end a load that never answers, and a
+    // stub that fires it at once ends every load.
+    const timers = [];
     const sandbox = {
       window: { addEventListener: (type, fn) => (windowListeners[type] ||= []).push(fn) },
       console: { log() {}, warn() {}, error: (...args) => errors.push(args) },
       Promise, Math, JSON, Date, Object, Array, Number, String, Boolean, isNaN, parseFloat, parseInt,
-      setTimeout: (fn) => { fn(); return 0; },
+      setTimeout: (fn, delay) => timers.push({ fn, delay }),
+      clearTimeout: (id) => { if (timers[id - 1]) timers[id - 1].cleared = true; },
       requestAnimationFrame: (fn) => fn(),
       confirm(message) { confirms.push(message); return confirmAnswer; },
       document: {
@@ -8065,6 +8069,12 @@ async function runTests() {
         return deleteButtons.get(id);
       },
       async settle() { await settle(); },
+      // The delays of the timers armed and not let go of.
+      timerDelays() { return timers.filter((timer) => !timer.cleared).map((timer) => timer.delay); },
+      async fireTimers() {
+        for (const timer of timers) if (!timer.cleared) { timer.cleared = true; timer.fn(); }
+        await settle();
+      },
       // Reads of either area fail from here on.
       failReads() { failStorageGet = true; },
       async releaseStorage() {
@@ -10008,6 +10018,29 @@ async function runTests() {
       assert(options.node('settingsError').classList.contains('hidden') === false &&
         options.node('settingsError').textContent === 'settingsLoadFailed',
         `a failed save that could not be read back asks for a reload (${options.node('settingsError').textContent})`);
+    }
+    {
+      // A load that never settles is shown, once its deadline passes, as one
+      // whose load did not arrive, and what it reads afterwards does not fill
+      // the page in behind that.
+      const options = makeOptions({ settings: { targetLufs: -24 }, deferStorageGet: true });
+      await options.settle();
+      assert(options.body.classList.contains('initializing') && JSON.stringify(options.timerDelays()) === '[3000]',
+        `hidden while the read is out, with the deadline armed (${JSON.stringify(options.timerDelays())})`);
+      await options.fireTimers();
+      assert(!options.body.classList.contains('initializing') &&
+        !options.node('settingsError').classList.contains('hidden') &&
+        options.node('settingsError').textContent === 'settingsLoadFailed',
+        `shown, asking for a reload, once the deadline passes (${options.node('settingsError').textContent})`);
+      await options.releaseStorage();
+      assert(options.node('targetValue').textContent !== '-24 LUFS' && options.node('targetSlider').disabled === true,
+        `and the read that lands after it does not fill the page in (${options.node('targetValue').textContent})`);
+    }
+    {
+      // A load that lands lets its deadline go.
+      const options = makeOptions({ settings: { targetLufs: -24 } });
+      await options.settle();
+      assert(options.timerDelays().length === 0, `a landed load leaves no deadline armed (${JSON.stringify(options.timerDelays())})`);
     }
 
     section('Audio chain refused: the gain in hand stays the one playing');

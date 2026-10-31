@@ -58,6 +58,9 @@
       readSettings(),
       chrome.storage.local.get(CHANNEL_VOLUMES_KEY)
     ]);
+    // The page has already been shown as one whose load did not arrive, so what
+    // arrives afterwards does not get to fill it in behind that.
+    if (loadFailed) return;
     if (settingsAt === settingsRevision) applySettings(settings);
     settingsLoaded = true;
     if (channelsAt === channelRevision) channelVolumes = data[CHANNEL_VOLUMES_KEY] || {};
@@ -382,21 +385,23 @@
 
   // ── Init ───────────────────────────────────────────────────────────
 
-  requestChannelWrite('migrateLegacyGains')
+  // A load that never settles would leave the page hidden for good, so the wait
+  // has an end (runPageLoad's) and it ends the same way a failure does.
+  runPageLoad(() => requestChannelWrite('migrateLegacyGains')
     .then(() => { storageMigrated = true; })
     // The table below reads channelVolumes either way; an un-folded profile
     // shows `Auto (—)` for the types whose gain is still in a legacy key.
     .catch(err => console.error('[YTCV] legacy auto gains not folded in', err))
-    .then(loadAll)
+    .then(loadAll), {
     // Everything that acts on what was read is offered once it has been read; a
     // load that never got there leaves them as the markup ships them.
-    .then(() => { setSettingsControlsDisabled(false); })
-    .catch(err => {
+    onLoaded() { setSettingsControlsDisabled(false); },
+    onFailed(err) {
       // The page is shown either way; what it says about itself is the part
       // that changes, and the controls stay as the markup ships them.
       loadFailed = true;
       showSettingsError(true, 'settingsLoadFailed');
       console.error('[YTCV] settings not loaded', err);
-    })
-    .finally(revealPage);
+    }
+  });
 })();
