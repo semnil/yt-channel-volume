@@ -1209,7 +1209,7 @@ assert(backgroundSrc.includes("importScripts('core/common.js', 'utils.js')"),
   'the worker shares the channel write definitions with the pages');
 assert(/^const settingsMoved = queueSettingsWrite\(moveSettingsToSync\)\s*\.catch\(/m.test(backgroundSrc),
   'the worker moves settings saved before they synced, at every start');
-assert(/type === 'migrateLegacyGains' \? settingsMoved : undefined/.test(backgroundSrc),
+assert(/'migrateLegacyGains'\s*\?\s*\(m\) => settingsMoved\.then\(\(\) => channelWrite\(m\)\)/.test(backgroundSrc),
   'and answers the fold, which the options page waits on, once the move has settled');
 for (const [name, src] of [['content.js', contentSrc], ['options.js', optionsSrc],
   ['popup.js', fs.readFileSync('./popup.js', 'utf8')]]) {
@@ -1553,7 +1553,7 @@ async function runMigrationTests() {
       try {
         await CHANNEL_WRITES.saveChannelGain({ channelId: 'UCrange', name: 'Range', gain, videoType: 'video', url: '' });
       } catch (err) { refused = err; }
-      assert(refused?.constructor?.name === 'ChannelWriteRefused', `gain ${String(gain)} is refused`);
+      assert(refused?.reason === 'invalid-mutation', `gain ${String(gain)} is refused`);
     }
     assert(mockStorage.channelVolumes.UCrange.gainVideo === 0.5, 'and none of them is written');
     await CHANNEL_WRITES.saveChannelGain({ channelId: 'UCrange', name: 'Range', gain: 6, videoType: 'video', url: '' });
@@ -1752,7 +1752,7 @@ async function runMigrationTests() {
       ['autoApplyLoudnessVideoDefault', 1], ['autoApplyLoudnessLiveDefault', null]]) {
       let refused = null;
       try { SETTINGS_WRITES.saveSetting({ key, value }); } catch (err) { refused = err; }
-      assert(refused?.constructor?.name === 'ChannelWriteRefused', `${key} = ${JSON.stringify(value)} is refused`);
+      assert(refused?.reason === 'invalid-mutation', `${key} = ${JSON.stringify(value)} is refused`);
     }
     assert(mockSyncStorage.autoLoudnessSettings.targetLufs === -30, 'and none of them is written');
     // The worker takes what the settings page can send: every step of the

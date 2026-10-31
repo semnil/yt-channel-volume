@@ -43,8 +43,8 @@ const SETTING_FIELDS = {
 const SETTINGS_WRITES = {
   saveSetting(msg) {
     const accepts = settingCheck(SETTING_FIELDS, msg.key);
-    if (!accepts) throw new ChannelWriteRefused('not a setting');
-    if (!accepts(msg.value)) throw new ChannelWriteRefused(`not a value ${msg.key} can hold`);
+    if (!accepts) throw new WriteRefused('not a setting');
+    if (!accepts(msg.value)) throw new WriteRefused(`not a value ${msg.key} can hold`);
     return queueSettingsWrite(() => writeSettingsChange((settings) => ({ ...settings, [msg.key]: msg.value })));
   }
 };
@@ -116,19 +116,14 @@ function isChannelId(value) {
   return typeof value === 'string' && /^UC[A-Za-z0-9_-]+$/.test(value);
 }
 
-// A channel write whose message does not describe a channel. It is refused
-// before the map is read, and the worker answers it as refused rather than as a
-// storage failure.
-class ChannelWriteRefused extends Error {}
-
 function checkChannelIdentity(msg) {
   if (!isChannelId(msg.channelId)) {
-    throw new ChannelWriteRefused('channel id is not in the UC form');
+    throw new WriteRefused('channel id is not in the UC form');
   }
   // A name that is no text is not taken (applyEntryName); a url that is no
   // text refuses the write.
   if (msg.url !== undefined && typeof msg.url !== 'string') {
-    throw new ChannelWriteRefused('channel url is not text');
+    throw new WriteRefused('channel url is not text');
   }
 }
 
@@ -138,7 +133,7 @@ function checkChannelIdentity(msg) {
 const CHANNEL_WRITES = {
   saveChannelGain(msg) {
     checkChannelIdentity(msg);
-    if (!isStorableGain(msg.gain)) throw new ChannelWriteRefused('gain is not a finite number within 0 to 6');
+    if (!isStorableGain(msg.gain)) throw new WriteRefused('gain is not a finite number within 0 to 6');
     return updateChannelVolumes(all => {
       const entry = all[msg.channelId] || {};
       applyChannelIdentity(entry, msg.channelId, msg.name, msg.url);
@@ -161,7 +156,7 @@ const CHANNEL_WRITES = {
     });
   },
   deleteChannel(msg) {
-    if (!isRowKey(msg.channelId)) throw new ChannelWriteRefused('channel id is empty or not text');
+    if (!isRowKey(msg.channelId)) throw new WriteRefused('channel id is empty or not text');
     return updateChannelVolumes(all => { delete all[msg.channelId]; });
   },
   clearChannels() {
@@ -173,7 +168,7 @@ const CHANNEL_WRITES = {
   // the channel. The name match is what prevents adopting another channel's.
   adoptHandleEntry(msg) {
     checkChannelIdentity(msg);
-    if (typeof msg.authorName !== 'string') throw new ChannelWriteRefused('author name is not text');
+    if (typeof msg.authorName !== 'string') throw new WriteRefused('author name is not text');
     return updateChannelVolumes(all => {
       if (all[msg.channelId]) return;
       const match = Object.entries(all).find(([key, value]) =>
