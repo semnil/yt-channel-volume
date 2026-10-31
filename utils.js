@@ -362,19 +362,14 @@ function effectiveLufs(loudnessDb) {
 }
 
 function calcGain(loudnessDb, targetLufs) {
-  const compensationDb = targetLufs - effectiveLufs(loudnessDb);
-  const gain = Math.pow(10, compensationDb / 20);
-  if (!isFinite(gain)) return 1.0;
-  return Math.max(MIN_GAIN, Math.min(MAX_GAIN, gain));
+  return gainForLevel(effectiveLufs(loudnessDb), targetLufs);
 }
 
 // A live stream's own level, as the player names it, is an absolute one
 // YouTube has not normalized, so the gain takes it to the target as it stands.
 function calcLiveGain(liveLkfs, targetLufs) {
-  const compensationDb = targetLufs - liveLkfs;
-  const gain = Math.pow(10, compensationDb / 20);
-  if (!isFinite(compensationDb) || !isFinite(gain)) return 1.0;
-  return Math.max(MIN_GAIN, Math.min(MAX_GAIN, gain));
+  if (!isFinite(targetLufs - liveLkfs)) return 1.0;
+  return gainForLevel(liveLkfs, targetLufs);
 }
 
 // How far apart two gains are, in dB. A gain that is not a positive finite
