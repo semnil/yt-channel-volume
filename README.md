@@ -136,6 +136,7 @@ yt-channel-volume/
 ├── gen_icons.py          # icon generation (Python pillow)
 ├── gen_screenshots.py    # screenshot generation (writes into docs/screenshots/)
 ├── pack.py               # zip packaging
+├── core/common.js        # helpers shared with the sibling extensions, from channel-volume-core
 ├── core.json             # the commit of semnil/channel-volume-core the shared files are copies of
 ├── PRIVACY_POLICY.md     # privacy policy (EN)
 ├── PRIVACY_POLICY_JA.md  # privacy policy (JA)

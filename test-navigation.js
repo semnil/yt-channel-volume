@@ -296,6 +296,7 @@ mockStorage['channelVolumes'] = {
 mockStorage['autoLoudnessFallback:UCboot:video'] = 0.62;
 mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCboot' };
 
+vm.runInThisContext(fs.readFileSync('./core/common.js', 'utf8'), { filename: 'core/common.js' });
 vm.runInThisContext(fs.readFileSync('./utils.js', 'utf8'), { filename: 'utils.js' });
 
 // background.js pulls utils.js in with importScripts, which this context has
@@ -728,6 +729,7 @@ function makePopup({ tabUrl = 'https://www.youtube.com/watch?v=abc', answer = nu
   };
   popupSandbox.globalThis = popupSandbox;
   vm.createContext(popupSandbox);
+  vm.runInContext(fs.readFileSync('./core/common.js', 'utf8'), popupSandbox, { filename: 'core/common.js' });
   vm.runInContext(fs.readFileSync('./utils.js', 'utf8'), popupSandbox, { filename: 'utils.js' });
   vm.runInContext(fs.readFileSync('./popup.js', 'utf8'), popupSandbox, { filename: 'popup.js' });
   return {
@@ -7401,6 +7403,7 @@ async function runTests() {
     if (testFlag) sandbox.__TEST_YTCV__ = true;
     sandbox.globalThis = sandbox;
     vmMod.createContext(sandbox);
+    vmMod.runInContext(fs.readFileSync('./core/common.js', 'utf8'), sandbox, { filename: 'core/common.js' });
     vmMod.runInContext(fs.readFileSync('./utils.js', 'utf8'), sandbox, { filename: 'utils.js' });
     vmMod.runInContext(fs.readFileSync('./content.js', 'utf8'), sandbox, { filename: 'content.js' });
     return { sent, storageListeners, messageListeners, exported: sandbox.__YTCV__ };
@@ -7684,6 +7687,7 @@ async function runTests() {
     worker.globalThis = worker;
     worker.importScripts = () => {};
     vm.createContext(worker);
+    vm.runInContext(fs.readFileSync('./core/common.js', 'utf8'), worker, { filename: 'core/common.js' });
     vm.runInContext(fs.readFileSync('./utils.js', 'utf8'), worker, { filename: 'utils.js' });
     vm.runInContext(fs.readFileSync('./background.js', 'utf8'), worker, { filename: 'background.js' });
 
@@ -7738,6 +7742,7 @@ async function runTests() {
     worker.globalThis = worker;
     worker.importScripts = () => {};
     vm.createContext(worker);
+    vm.runInContext(fs.readFileSync('./core/common.js', 'utf8'), worker, { filename: 'core/common.js' });
     vm.runInContext(fs.readFileSync('./utils.js', 'utf8'), worker, { filename: 'utils.js' });
     vm.runInContext(fs.readFileSync('./background.js', 'utf8'), worker, { filename: 'background.js' });
 
@@ -7965,6 +7970,7 @@ async function runTests() {
     };
     sandbox.globalThis = sandbox;
     vm.createContext(sandbox);
+    vm.runInContext(fs.readFileSync('./core/common.js', 'utf8'), sandbox, { filename: 'core/common.js' });
     vm.runInContext(fs.readFileSync('./utils.js', 'utf8'), sandbox, { filename: 'utils.js' });
     vm.runInContext(fs.readFileSync('./options.js', 'utf8'), sandbox, { filename: 'options.js' });
 

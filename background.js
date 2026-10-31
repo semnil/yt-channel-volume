@@ -4,7 +4,7 @@
 // map and then write it back over each other's entry, and a settings save is
 // queued with the move of the settings to sync.
 
-importScripts('utils.js');
+importScripts('core/common.js', 'utils.js');
 
 // Every start, so a move that failed is tried again; once local no longer holds
 // the settings this is one read. It is queued with the settings saves, so a save

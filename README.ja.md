@@ -136,6 +136,7 @@ yt-channel-volume/
 ├── gen_icons.py          # アイコン生成 (Python pillow)
 ├── gen_screenshots.py    # スクリーンショット生成 (docs/screenshots/ へ出力)
 ├── pack.py               # zip パッケージング
+├── core/common.js        # 兄弟の拡張機能と共有する小関数 (channel-volume-core から写す)
 ├── core.json             # 共有ファイルの写し元である semnil/channel-volume-core のコミット
 ├── PRIVACY_POLICY.md     # プライバシーポリシー (EN)
 ├── PRIVACY_POLICY_JA.md  # プライバシーポリシー (JA)
