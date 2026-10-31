@@ -231,7 +231,7 @@
   let targetPointerHeld = false;
   let targetPointerStart = null;
   let targetGestureEnded = false;
-  const targetKeysDown = new Set();
+  const targetKeys = createSliderKeys();
 
   targetSlider.addEventListener('pointerdown', () => {
     targetPointerHeld = true;
@@ -248,9 +248,7 @@
   targetSlider.addEventListener('pointercancel', releaseTargetPointer);
 
   targetSlider.addEventListener('keydown', (e) => {
-    if (e.repeat || !isSliderMoveKey(e.key)) return;
-    targetKeysDown.add(e.key);
-    if (targetKeyHeld) return;
+    if (!targetKeys.press(e)) return;
     targetKeyHeld = true;
     targetKeyMoved = false;
     targetGestureEnded = false;
@@ -277,15 +275,14 @@
   });
 
   function endTargetKeyHold() {
-    targetKeysDown.clear();
+    targetKeys.clear();
     if (!targetKeyHeld) return;
     targetKeyHeld = false;
     if (targetKeyMoved) saveTarget();
     else drawTarget();
   }
   targetSlider.addEventListener('keyup', (e) => {
-    if (!targetKeysDown.delete(e.key)) return;
-    if (targetKeysDown.size === 0) endTargetKeyHold();
+    if (targetKeys.release(e)) endTargetKeyHold();
   });
 
   function endTargetGestureOnBlur() {

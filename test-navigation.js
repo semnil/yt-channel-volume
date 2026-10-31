@@ -10770,10 +10770,19 @@ async function runTests() {
       // what the repeats before it moved to.
       options.sent.length = 0;
       await hold([-26]);
-      await options.fire('targetSlider', 'keydown', { key: 'ArrowRight' });
+      await options.fire('targetSlider', 'keydown', { key: 'ArrowRight', repeat: true });
       await options.fire('targetSlider', 'keyup', { key: 'ArrowRight' });
       assert(writes().length === 1 && writes()[0].value === -26,
         `a repeat that moves nothing keeps the hold's write (${JSON.stringify(writes())})`);
+
+      // The key already down, pressed again without a repeat, stays in the
+      // hold, and the release writes what the hold moved to.
+      options.sent.length = 0;
+      await hold([-27]);
+      await options.fire('targetSlider', 'keydown', { key: 'ArrowRight' });
+      await options.fire('targetSlider', 'keyup', { key: 'ArrowRight' });
+      assert(writes().length === 1 && writes()[0].value === -27,
+        `a key pressed again while it is down keeps the hold's write (${JSON.stringify(writes())})`);
 
       // A drag still writes at its change.
       options.sent.length = 0;

@@ -87,8 +87,8 @@ The retry's call. `hasLoudness` is set from the same response the check reads,
 and `retryGetState` (`core/common.js`) asks nothing while its `done()` — here
 `hasLoudness` — holds.
 
-- `popup.js:456` === becomes !== ×1 — ===
-- `popup.js:456` a guard is always taken ×1 — if (resp.contentLufs === null || resp.contentLufs === undefined) {
+- `popup.js:453` === becomes !== ×1 — ===
+- `popup.js:453` a guard is always taken ×1 — if (resp.contentLufs === null || resp.contentLufs === undefined) {
 
 ## page-bridge.js
 
