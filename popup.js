@@ -66,24 +66,6 @@
       : calcGain(currentLoudnessDb, currentTargetLufs);
   }
 
-  function setCardValue(el, text, unitText, extraClass) {
-    el.innerHTML = '';
-    el.classList.remove('unknown');
-    if (extraClass) el.className = 'value ' + extraClass;
-    el.textContent = text;
-    if (unitText) {
-      const unit = document.createElement('span');
-      unit.className = 'unit';
-      unit.textContent = unitText;
-      el.appendChild(unit);
-    }
-  }
-
-  function setUnknown(el, extraClass) {
-    el.textContent = '---';
-    el.className = 'value ' + (extraClass || '') + ' unknown';
-  }
-
   // ── UI refresh ─────────────────────────────────────────────────────
 
   function refreshDisplay() {
@@ -111,8 +93,7 @@
     presetButtons.forEach(btn => { btn.disabled = manualGainLocked; });
 
     volumeSlider.value = gainToPercent(lastGain);
-    const fv = fmtGain(lastGain);
-    volumeValueEl.textContent = fv.text + fv.unit;
+    volumeValueEl.textContent = formatGainText(lastGain, displayUnit);
 
     updateApplyBtn();
   }
@@ -174,10 +155,9 @@
       applyBtn.textContent = msg('applyToChannel');
       applyHint.textContent = msg('hintAutoApplyEnabled');
     } else if (hasLoudness && currentChannel.id) {
-      const f = fmtGain(suggestedGain());
       const typeLabel = currentVideoType === 'live' ? msg('typeLive') : msg('typeVideo');
       applyBtn.disabled = false;
-      applyBtn.textContent = msg('applyToChannelWithValue', [f.text + f.unit]) + ' (' + typeLabel + ')';
+      applyBtn.textContent = msg('applyToChannelWithValue', [formatGainText(suggestedGain(), displayUnit)]) + ' (' + typeLabel + ')';
       applyHint.textContent = '';
     } else if (!currentChannel.id) {
       applyBtn.disabled = true;
