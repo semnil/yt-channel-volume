@@ -66,6 +66,9 @@ function gainKeyFor(videoType) {
   return videoType === 'live' ? 'gainLive' : 'gainVideo';
 }
 
+// The keys of an entry's gains per type.
+const GAIN_SLOTS = ['gainLive', 'gainVideo'];
+
 function autoApplyKeyFor(videoType) {
   return videoType === 'live' ? 'autoApplyLoudnessLive' : 'autoApplyLoudnessVideo';
 }
@@ -82,22 +85,14 @@ function isGainHeldAgainstPlain(entry, videoType) {
 }
 
 function getChannelGain(entry, videoType) {
-  if (!entry) return null;
-  if ('gain' in entry && !('gainLive' in entry) && !('gainVideo' in entry)) {
-    return entry.gain;
-  }
-  return entry[gainKeyFor(videoType)] ?? null;
+  return storedGain(entry, gainKeyFor(videoType), GAIN_SLOTS);
 }
 
 // Expands the legacy single-gain format so both types stay independent.
 // `heldAgainstPlain` marks the gain as held against the plain rendition; a
 // gain set without it loses any mark the type had.
 function setChannelGain(entry, videoType, gain, heldAgainstPlain = false) {
-  if ('gain' in entry && !('gainLive' in entry) && !('gainVideo' in entry)) {
-    entry.gainLive = entry.gain;
-    entry.gainVideo = entry.gain;
-    delete entry.gain;
-  }
+  expandLegacyGain(entry, GAIN_SLOTS);
   entry[gainKeyFor(videoType)] = gain;
   if (heldAgainstPlain) entry[plainMarkKeyFor(videoType)] = true;
   else delete entry[plainMarkKeyFor(videoType)];
