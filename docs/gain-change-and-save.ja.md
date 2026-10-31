@@ -29,7 +29,7 @@
 
 `channelVolumes` の 1 つのチャンネルの中身:
 
-- `gainVideo` / `gainLive`: 種別ごとの保存ゲイン (1.0 が 100%)。保存するときに上限・下限で切りそろえない。
+- `gainVideo` / `gainLive`: 種別ごとの保存ゲイン (1.0 が 100%) で、0 から 6。元の形式の値として保存する手動のゲインは、求めるときにこの範囲に切りそろえ (`playingGainToStored`)、範囲の外のものは service worker が断る。
 - `gainVideoPlain` / `gainLivePlain`: その種別のゲインが「素の音声の版」(`baseLoudnessDb`) を基準にしているとき `true`。これが無いゲインは、保存された値のまま鳴らす。
 - `autoApplyLoudnessVideo` / `autoApplyLoudnessLive`: 種別ごとの、そのチャンネル個別の Auto の設定 (フラグ)。これが無い種別は、全チャンネル共通の既定値に従う。
 - `name` と `url` (`https://www.youtube.com/channel/<channelId>`)。
@@ -93,7 +93,7 @@ sequenceDiagram
 ```
 
 - `content.js` は `requestChannelWrite` で送る。拡張機能とのつながりが切れているとき (`isContextValid()` が false) は、送らずに成功として終わる。`saveChannelGain` と `saveChannelAutoApply` は、チャンネル ID が無いときは送らない。ほかの送り手も送る前にチャンネル ID があることを確かめるので、`migrateLegacyGains` を除き、`content.js` が送る書き込みはどれもチャンネルを名指しする。
-- `CHANNEL_WRITES.saveChannelGain` / `saveChannelAutoApply` / `adoptHandleEntry` は、チャンネル ID が UC 形式でない、`name` か `url` があって文字列でない、`gain` が有限の数でない、`authorName` が文字列でない、のどれかなら、表を読む前に `ChannelWriteRefused` を投げる。`deleteChannel` はどのキーでも受け付ける。
+- `CHANNEL_WRITES.saveChannelGain` / `saveChannelAutoApply` / `adoptHandleEntry` は、チャンネル ID が UC 形式でない、`name` か `url` があって文字列でない、`gain` が 0 から 6 の有限の数でない (`isStorableGain`)、`authorName` が文字列でない、のどれかなら、表を読む前に `ChannelWriteRefused` を投げる。`deleteChannel` はどのキーでも受け付ける。
 - `updateChannelVolumes` は service worker の中の書き込みを 1 本の promise のつながり (`channelVolumesWrite`) に並べる。そのため、ある書き込みの `get` と `set` の間に別の書き込みが割り込まない。1 つが失敗しても列は止まらない。`mutate` のあとで表が変わっておらず、`extraKeys` も無ければ、何も `set` しない。
 - この流れには debounce や throttle (続けて来る呼び出しをまとめたり間引いたりする仕組み) は無い。1 回の依頼が、列に並んだ 1 回の「読んで、書き換えて、書く」になる。
 
