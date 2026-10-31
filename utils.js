@@ -17,10 +17,10 @@ const UNIFIED_GAINS_KEY = 'unifiedGains';
 // key, so a read-modify-write started before another one's set lands drops its
 // entry; Auto stores a gain for every video, which makes that overlap routine.
 // Serializing per document keeps the writers in this context in order.
-let channelVolumesWrite = Promise.resolve();
+const queueChannelVolumesWrite = createSerialQueue();
 
 function updateChannelVolumes(mutate, extraKeys) {
-  const write = channelVolumesWrite.then(async () => {
+  return queueChannelVolumesWrite(async () => {
     if (!isContextValid()) return;
     const data = await chrome.storage.local.get(CHANNEL_VOLUMES_KEY);
     const all = data[CHANNEL_VOLUMES_KEY] || {};
@@ -31,21 +31,13 @@ function updateChannelVolumes(mutate, extraKeys) {
     if (JSON.stringify(all) === before && !extraKeys) return;
     await chrome.storage.local.set({ [CHANNEL_VOLUMES_KEY]: all, ...extraKeys });
   });
-  channelVolumesWrite = write.catch(() => {});
-  return write;
 }
 
 // Every settings write the worker makes goes through here, the move among them.
 // The move reads sync before it writes it, so a save landing in between would
 // be put back to local's older copy; queued one after the other, a save waits
 // for the move and the move for a save, whichever worker start the move is in.
-let settingsWrite = Promise.resolve();
-
-function queueSettingsWrite(work) {
-  const write = settingsWrite.then(work);
-  settingsWrite = write.catch(() => {});
-  return write;
-}
+const queueSettingsWrite = createSerialQueue();
 
 // The fields the settings page saves, and what each of them may hold.
 const SETTING_FIELDS = {
@@ -75,21 +67,6 @@ const SETTINGS_WRITES = {
     });
   }
 };
-
-// Moves settings saved before they synced out of local. Settings another
-// Chrome the user is signed in to already put in sync, with Chrome sync on, are
-// the ones every such Chrome reads, so they stay and the local copy goes. Sync
-// is written before local is cleared, so a reader always finds one of the two.
-async function moveSettingsToSync() {
-  const local = await chrome.storage.local.get(SETTINGS_KEY);
-  if (!local[SETTINGS_KEY]) return false;
-  const synced = await chrome.storage.sync.get(SETTINGS_KEY);
-  if (!synced[SETTINGS_KEY]) {
-    await chrome.storage.sync.set({ [SETTINGS_KEY]: local[SETTINGS_KEY] });
-  }
-  await chrome.storage.local.remove(SETTINGS_KEY);
-  return true;
-}
 
 function normalizeStoredGain(value) {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;

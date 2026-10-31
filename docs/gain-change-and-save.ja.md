@@ -585,7 +585,7 @@ sequenceDiagram
 - 読み込まれたときに拡張機能とのつながりが切れていれば、取り込みは頼まない。再生ページなら `triggerApply()` を呼ぶが、すぐに戻って見張りを止める。
 - 設定画面は開いたときに取り込みを頼み、そのあと 2 つのキーを読む (`loadAll`)。失敗は記録され、`unifiedGains` が届くまで一覧は古い決まりで描かれる。
 
-図のもと: `content.js` の起動部分、`foldLegacyGains`、`triggerApply`。`background.js` の起動部分。`utils.js` の `migrateLegacyAutoGains`、`clearLegacyKeys`、`resolveAutoApplySetting`、`moveSettingsToSync`、`queueSettingsWrite`。`core/common.js` の `readSettings`。`options.js` の起動の処理。
+図のもと: `content.js` の起動部分、`foldLegacyGains`、`triggerApply`。`background.js` の起動部分。`utils.js` の `migrateLegacyAutoGains`、`clearLegacyKeys`、`resolveAutoApplySetting`、`queueSettingsWrite`。`core/common.js` の `readSettings`、`moveSettingsToSync`。`options.js` の起動の処理。
 
 ## 他のタブ: `content.js` の `chrome.storage.onChanged`
 

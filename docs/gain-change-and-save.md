@@ -585,7 +585,7 @@ sequenceDiagram
 - When the extension context is invalid at injection, no fold is asked for; `triggerApply()` is called on a watch page and returns at once, disconnecting the observer.
 - The settings page asks for the fold when it opens and then reads both keys (`loadAll`). A failure is logged, and the list is drawn under the old rule until `unifiedGains` arrives.
 
-Drawn from: `content.js` the startup block, `foldLegacyGains`, `triggerApply`; `background.js` the start; `utils.js` `migrateLegacyAutoGains`, `clearLegacyKeys`, `resolveAutoApplySetting`, `moveSettingsToSync`, `queueSettingsWrite`; `core/common.js` `readSettings`; `options.js` the startup chain.
+Drawn from: `content.js` the startup block, `foldLegacyGains`, `triggerApply`; `background.js` the start; `utils.js` `migrateLegacyAutoGains`, `clearLegacyKeys`, `resolveAutoApplySetting`, `queueSettingsWrite`; `core/common.js` `readSettings`, `moveSettingsToSync`; `options.js` the startup chain.
 
 ## Other tabs: `chrome.storage.onChanged` in `content.js`
 
