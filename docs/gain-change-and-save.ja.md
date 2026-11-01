@@ -190,14 +190,14 @@ sequenceDiagram
   Note over C: chrome.storage には何も書き込まない
 ```
 
-- `pointerdown` も `keydown` も無いまま来た `input` は、その `input` 自身が `currentAppliesTo` の写しを取る。1 回のドラッグの間の `input` は、すべて同じ写しを運ぶ。
+- 操作は `core/common.js` の `holdPopupSlider`。操作の途中でないときに来た `input` か `change` は、それ自身が `currentAppliesTo` の写しを取る。1 回のドラッグの間の `input` は、すべて同じ写しを運ぶ。
 - 「Manual Volume」(スライダーとプリセット) は、その種別の Auto が ON で Loudness が表示されている間はポップアップ側で操作できなくなり、`content.js` も同じ状態を断る。
 - `input` イベント 1 回ごとに `setGainLive` を 1 回送る。debounce は無い。
 - 試し聞きが続いていて、`currentGestureState()` がまだその `appliesTo` と同じ間は、ほかから来たゲインをかけずに取っておく: `applyPreferredGain`、`applyAutomaticLoudnessGain`、`channelVolumes` の変更の受け取り側は `commitGainFromElsewhere` を通して (ライブのゲインは `commitLiveGain` を通して) ゲインを入れ、これらはゲインをそのままにして、ページが今鳴らしている要素にかけ直す。このため、試し聞きの間に作り直されたプレイヤーも、試し聞きのゲインでつながる。`commitLiveGain` はライブのゲインを出す前に戻るので、ブリッジのメッセージでは `liveRaiseFrom` はそのまま残る。受け取り側は `liveGainToPlay` でライブのゲインを出してから取っておくので、別のタブの保存が届くと、`liveRaiseFrom` は試し聞きのゲインを基準に進む。それぞれのほかの仕事 (受け取る状態、Auto 自身の保存、ライブの保存の判定) は続ける。状態が動いた試し聞きは、何も取っておかない。
-- ポップアップが保存していない試し聞きのあとでスライダーをポインターで押さえ続けている間は、ポップアップはその試し聞きを `PREVIEW_KEEP_ALIVE_MS` (1000 ms、`keepPreviewAlive`) ごとに送り直し、タブはそれを受け付けるたびに待ち直す。送り直しは、ポインターを離したとき、試し聞きを保存したとき、ポップアップを閉じたときに止まる。
+- ポップアップが保存していない試し聞きのあとでスライダーをポインターで押さえ続けている間は、ポップアップはその試し聞きを `PREVIEW_KEEP_ALIVE_MS` (1000 ms) ごとに送り直し、タブはそれを受け付けるたびに待ち直す。送り直しは、ポインターを離したとき、試し聞きを保存したとき、ポップアップを閉じたときに止まる。
 - 試し聞きは、`setGain` が来たとき (次の節を参照) か、最後に受け付けた `setGainLive` から `PREVIEW_IDLE_MS` (2000 ms) たったときに終わる。後者で終わると、`applyPreferredGain()` がその時点の保存内容をかけ、ポップアップに知らせる。
 
-図のもと: `popup.js` の `beginSliderGesture`、`volumeSlider` の `input` の受け取り側、`keepPreviewAlive`、`sendManualGain`、`refreshDisplay`。`content.js` の `handleMessage` (`setGainLive`)、`currentGestureState`、`isCurrentManualGainLocked`、`commitGain`、`startPreview`、`endPreview`、`endIdlePreview`、`commitGainFromElsewhere`。
+図のもと: `popup.js` の `volumeSlider` に対する `holdPopupSlider` の呼び出し、`sendManualGain`、`refreshDisplay`。`core/common.js` の `holdPopupSlider`、`PREVIEW_KEEP_ALIVE_MS`。`content.js` の `handleMessage` (`setGainLive`)、`currentGestureState`、`isCurrentManualGainLocked`、`commitGain`、`startPreview`、`endPreview`、`endIdlePreview`、`commitGainFromElsewhere`。
 
 ## ポップアップ: スライダーを離したとき (`change`) とプリセットボタン
 
@@ -243,8 +243,8 @@ sequenceDiagram
 ```
 
 - プリセットボタンは「0%」「50%」「100%」「200%」「400%」「MAX」(`data-vol` は 600)。ポップアップがチャンネル ID を持っていなければ、何も送らない。
-- スライダーでキーを押し続ける間は、1 つの操作になる。押し続けになるのは値を動かすキー (`core/common.js` の `createSliderKeys`: 矢印キー、PageUp / PageDown、Home / End) だけで、ほかのキー (Tab や修飾キー) は操作の状態に触れない。そのキーの `keydown` で始まり (繰り返しや、押している間のほかのそのキー、押しているキーをもう一度押したときは始め直さない)、`input` のたびに `setGainLive` を送り、繰り返しごとに来る `change` では何も送らず、押し続けている間に `input` があれば、押していたそのキーの最後の 1 つの `keyup` で、たどり着いたゲインの `setGain` を 1 回送る。保存していない試し聞きのあとでキーを押し続けている間は、ポインターを押さえているときと同じく、ポップアップがその試し聞きを `PREVIEW_KEEP_ALIVE_MS` ごとに送り直す (前の節を参照)。
-- スライダーをポインターかキーで押さえている間にポップアップのウィンドウかスライダーがフォーカスを失う (`blur`) と、操作はそこで終わる。その `blur` より前に来た `change` は、離したときと同じく保存し、キーを押し続けていたときは `blur` の時点で `setGain` を送る。`blur` のあとは、次にスライダーで `pointerdown` か、キーの繰り返しでない `keydown` があるまで、`input` も `change` も何も送らない。そのような `change` は、つまみを `blur` の時点で保存したゲイン (`lastGain`) に戻す。
+- スライダーでキーを押し続ける間は、1 つの操作になる。押し続けになるのは値を動かすキー (`core/common.js` の `createSliderKeys`: 矢印キー、PageUp / PageDown、Home / End) だけで、ほかのキー (Tab や修飾キー) は操作の状態に触れない。そのキーの `keydown` で始まり (繰り返しや、押している間のほかのそのキー、押しているキーをもう一度押したときは始め直さない)、`input` のたびに `setGainLive` を送り、繰り返しごとに来る `change` では (押し続けている間のドラッグのものも。ポインターを押しても押し続けはそのまま続く) 何も送らず、押し続けている間に `input` があれば、押していたそのキーの最後の 1 つの `keyup` で、たどり着いたゲインの `setGain` を 1 回送る。保存していない試し聞きのあとでキーを押し続けている間は、ポインターを押さえているときと同じく、ポップアップがその試し聞きを `PREVIEW_KEEP_ALIVE_MS` ごとに送り直す (前の節を参照)。
+- スライダーをポインターかキーで押さえている間にポップアップのウィンドウかスライダーがフォーカスを失う (`blur`) と、操作はそこで終わる。その `blur` より前に来た `change` は、離したときと同じく保存し、キーを押し続けていたときは `blur` の時点で `setGain` を送る。`blur` のあとは、次にスライダーで `pointerdown` か、キーの繰り返しでない `keydown` があるまで、`input` も `change` も何も送らない。そのような `change` は、つまみを `blur` の時点の値に戻す。キーを押していないときの `pointercancel` も同じく操作を終え、`setGain` を送らず、何も描き直さない。試し聞きが止まると、タブが保存されたゲインに戻し (`PREVIEW_IDLE_MS`)、ポップアップはそのとき知らされた状態から描く。
 - 保存する値は、適用ゲイン (`commitGain` が切りそろえたあとの値) を版の比率で割ったもので、素の音声の版を基準にした値になる。どちらのレベルも分からないときは、比率は 1 で `heldAgainstPlain` は false。
 - `autoApply` はその時点のその種別の Auto の状態で、チャンネル個別のフラグとして書かれる。Auto が ON でレベルがあるときは操作が断られるので、Auto が ON のまま保存されるのはレベルを持っていないとき (Auto が代わりに保存ゲインを使うとき) で、その保存はチャンネルの Auto を ON に固定する。
 - `restoreGainAfterFailedSave()` は、続いている試し聞きを終わらせて `applyPreferredGain()` を動かすので、ゲインはその関数が保存内容から決める値に戻る。ポップアップへの返事はそのあと。

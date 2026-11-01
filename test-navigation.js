@@ -11306,6 +11306,72 @@ async function runTests() {
       assert(!popup.node('autoApplyLiveToggle').disabled, 'and back in use once it is answered');
     }
 
+    section('Popup slider: a press of the pointer keeps a key hold, and a drag the browser cancels saves nothing');
+    {
+      const popup = makePopup({ answer: async (m) => (m.type === 'setGain' || m.type === 'setGainLive' ? { ok: true } : {
+        isWatchPage: true, channel: { id: 'UCgesture', name: 'Gesture Ch', url: '' }, appliesTo: 'UCgesture|video|gestureVid',
+        loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0, targetLufs: -18, videoType: 'video',
+        autoApplyLoudnessVideo: false, autoApplyLoudnessLive: false
+      }) });
+      await popup.ready();
+      const saves = () => popup.asked.filter((m) => m.type === 'setGain').map((m) => m.gain);
+      const previews = () => popup.asked.filter((m) => m.type === 'setGainLive').map((m) => m.gain);
+
+      // A key held through a press of the pointer: the key's release saves.
+      await popup.fire('volumeSlider', 'keydown', { key: 'ArrowRight' });
+      popup.node('volumeSlider').value = '120';
+      await popup.fire('volumeSlider', 'input');
+      await popup.fire('volumeSlider', 'pointerdown');
+      await popup.fire('volumeSlider', 'pointerup');
+      await popup.fire('volumeSlider', 'keyup', { key: 'ArrowRight' });
+      assert(JSON.stringify(saves()) === '[1.2]', `a press of the pointer during a key hold leaves the key's save (${JSON.stringify(saves())})`);
+
+      // A drag the browser cancels.
+      popup.asked.length = 0;
+      await popup.fire('volumeSlider', 'pointerdown');
+      popup.node('volumeSlider').value = '300';
+      await popup.fire('volumeSlider', 'input');
+      await popup.fire('volumeSlider', 'pointercancel');
+      assert(popup.node('volumeSlider').value === '300',
+        `a cancelled drag draws nothing of its own (${popup.node('volumeSlider').value})`);
+      await popup.runTimers();
+      popup.node('volumeSlider').value = '320';
+      await popup.fire('volumeSlider', 'input');
+      await popup.fire('volumeSlider', 'change');
+      assert(saves().length === 0 && JSON.stringify(previews()) === '[3]',
+        `and nothing is sent again or saved after it (${JSON.stringify(popup.asked.map((m) => m.type))})`);
+
+      // A key held through a press of the pointer saves at its release, and
+      // the pointer's release after it saves nothing more.
+      popup.asked.length = 0;
+      await popup.fire('volumeSlider', 'keydown', { key: 'ArrowRight' });
+      await popup.fire('volumeSlider', 'pointerdown');
+      popup.node('volumeSlider').value = '195';
+      await popup.fire('volumeSlider', 'input');
+      await popup.fire('volumeSlider', 'keyup', { key: 'ArrowRight' });
+      await popup.fire('volumeSlider', 'pointerup');
+      await popup.fire('volumeSlider', 'change');
+      assert(JSON.stringify(saves()) === '[1.95]', `the key's release saves once, and the pointer's adds nothing (${JSON.stringify(saves())})`);
+
+      // A cancel with no press held ends nothing, and one during a key hold
+      // leaves the hold to the key; a change with no gesture before it saves.
+      popup.asked.length = 0;
+      await popup.fire('volumeSlider', 'pointercancel');
+      popup.node('volumeSlider').value = '205';
+      await popup.fire('volumeSlider', 'input');
+      await popup.fire('volumeSlider', 'change');
+      await popup.fire('volumeSlider', 'keydown', { key: 'ArrowRight' });
+      await popup.fire('volumeSlider', 'pointerdown');
+      await popup.fire('volumeSlider', 'pointercancel');
+      popup.node('volumeSlider').value = '210';
+      await popup.fire('volumeSlider', 'input');
+      await popup.fire('volumeSlider', 'keyup', { key: 'ArrowRight' });
+      popup.node('volumeSlider').value = '215';
+      await popup.fire('volumeSlider', 'change');
+      assert(JSON.stringify(saves()) === '[2.05,2.1,2.15]',
+        `a cancel with nothing pressed, or during a key hold, ends nothing, and a change alone saves (${JSON.stringify(saves())})`);
+    }
+
     section('Sliders: a gesture begins on the primary button alone');
     for (const button of [1, 2]) {
       // Another button moves no value and its release goes to the window, so

@@ -316,136 +316,28 @@
     handleAutoApplyChange(autoApplyLiveToggle, 'live');
   });
 
-  // input: real-time gain change (no storage write)
-  // A drag begins where the pointer goes down or a key is pressed on the
-  // slider. Chrome fires no change when the value ends where it began, so a
-  // release can pass unseen: the start of the next gesture is what says the
-  // one before it is over. Taking the copy here rather than on every movement
-  // keeps a drag on the state it began on.
-  const beginSliderGesture = () => {
-    sliderAppliesTo = currentAppliesTo;
-    sliderOwner = ownerKey();
-    sliderGestureEnded = false;
-  };
-  // A drag also ends where the popup loses focus during it. Chrome fires
-  // `change` at that blur, ahead of the blur itself, and that change saves;
-  // the input and change that come after it belong to no gesture until the
-  // next press.
-  let sliderPointerHeld = false;
-  let sliderGestureEnded = false;
-  // A key held on the slider is one gesture as well: each repeat previews,
-  // and the gain is saved once, when the last key that moves the value is let
-  // go. Losing focus while a key is held ends it there, as a blur ends a drag,
-  // and saves the gain reached. A key that moves no value (Tab, a modifier)
-  // leaves the gesture as it is.
-  let sliderKeyHeld = false;
-  let sliderKeyMoved = false;
-  const sliderKeys = createSliderKeys();
-  // Only the primary button drags the slider; another button moves no value,
-  // and its release goes to the window, so it begins no gesture.
-  volumeSlider.addEventListener('pointerdown', (event) => {
-    if (event.button !== 0) return;
-    sliderPointerHeld = true;
-    sliderKeyHeld = false;
-    sliderKeys.clear();
-    beginSliderGesture();
-  });
-  // A key repeat is not a new press, and does not end what a blur ended.
-  volumeSlider.addEventListener('keydown', (e) => {
-    if (!sliderKeys.press(e)) return;
-    sliderKeyHeld = true;
-    sliderKeyMoved = false;
-    beginSliderGesture();
-  });
-  const endSliderKeyHold = () => {
-    sliderKeys.clear();
-    if (!sliderKeyHeld) return;
-    sliderKeyHeld = false;
-    if (sliderKeyMoved) saveSliderGain();
-  };
-  volumeSlider.addEventListener('keyup', (e) => {
-    if (sliderKeys.release(e)) endSliderKeyHold();
-  });
-  const releaseSliderPointer = () => { sliderPointerHeld = false; };
-  volumeSlider.addEventListener('pointerup', releaseSliderPointer);
-  volumeSlider.addEventListener('pointercancel', releaseSliderPointer);
-  // While the pointer or a key is held on the slider after a preview it has
-  // not saved, the preview is sent again every PREVIEW_KEEP_ALIVE_MS, so the
-  // tab keeps the gesture for as long as it is held and ends it once the
-  // sending stops.
-  const PREVIEW_KEEP_ALIVE_MS = 1000;
-  let previewUnsaved = false;
-  let keepAliveSet = false;
-
-  function keepPreviewAlive() {
-    if (keepAliveSet) return;
-    keepAliveSet = true;
-    setTimeout(() => {
-      keepAliveSet = false;
-      if (!(sliderPointerHeld || sliderKeyHeld) || !previewUnsaved || !currentChannel.id) return;
-      sendManualGain({ type: 'setGainLive', appliesTo: sliderAppliesTo, gain: lastGain });
-      keepPreviewAlive();
-    }, PREVIEW_KEEP_ALIVE_MS);
-  }
-
-  const endSliderGestureOnBlur = () => {
-    if (!sliderPointerHeld && !sliderKeyHeld) return;
-    endSliderKeyHold();
-    sliderPointerHeld = false;
-    sliderGestureEnded = true;
-    sliderAppliesTo = null;
-  };
-  window.addEventListener('blur', endSliderGestureOnBlur);
-  volumeSlider.addEventListener('blur', endSliderGestureOnBlur);
-
-  volumeSlider.addEventListener('input', () => {
-    if (sliderGestureEnded) return;
-    if (sliderKeyHeld) sliderKeyMoved = true;
-    // An input that arrived without either of those begins one too.
-    if (sliderAppliesTo === null) {
+  // One save per gesture on the slider, heard while it moves
+  // (holdPopupSlider in core/common.js), against the state the gesture began
+  // on.
+  holdPopupSlider(volumeSlider, {
+    begin: () => {
       sliderAppliesTo = currentAppliesTo;
       sliderOwner = ownerKey();
+    },
+    draw: (percent) => {
+      lastGain = percentToGain(percent);
+      const f = fmtGain(lastGain);
+      volumeValueEl.textContent = f.text + f.unit;
+      setCardValue(currentVolEl, f.text, f.unit, 'current');
+    },
+    canPreview: () => !!currentChannel.id,
+    preview: (percent) => {
+      sendManualGain({ type: 'setGainLive', appliesTo: sliderAppliesTo, gain: percentToGain(percent) });
+    },
+    save: (percent) => {
+      if (!currentChannel.id) return;
+      sendGainSave({ type: 'setGain', appliesTo: sliderAppliesTo, gain: percentToGain(percent) }, sliderOwner);
     }
-    const pct = Number(volumeSlider.value);
-    const gain = percentToGain(pct);
-    lastGain = gain;
-    const f = fmtGain(gain);
-    volumeValueEl.textContent = f.text + f.unit;
-    setCardValue(currentVolEl, f.text, f.unit, 'current');
-    if (currentChannel.id) {
-      sendManualGain({
-        type: 'setGainLive',
-        appliesTo: sliderAppliesTo,
-        gain
-      });
-      previewUnsaved = true;
-      keepPreviewAlive();
-    }
-  });
-
-  function saveSliderGain() {
-    const appliesTo = sliderAppliesTo ?? currentAppliesTo;
-    const owner = sliderAppliesTo === null ? ownerKey() : sliderOwner;
-    sliderAppliesTo = null;
-    previewUnsaved = false;
-    if (currentChannel.id) {
-      sendGainSave({
-        type: 'setGain',
-        appliesTo,
-        gain: lastGain
-      }, owner);
-    }
-  }
-
-  // change: save to storage on slider release; a key held waits for keyup
-  volumeSlider.addEventListener('change', () => {
-    if (sliderGestureEnded) {
-      // The thumb goes back to the gain the blur saved.
-      volumeSlider.value = gainToPercent(lastGain);
-      return;
-    }
-    if (sliderKeyHeld) return;
-    saveSliderGain();
   });
 
   presetButtons.forEach(btn => {
