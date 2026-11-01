@@ -7871,6 +7871,7 @@ async function runTests() {
     const sent = [];
     const errors = [];
     const confirms = [];
+    const alerts = [];
     let confirmAnswer = true;
     const storageListeners = [];
     const pendingReads = [];
@@ -8010,6 +8011,7 @@ async function runTests() {
       clearTimeout: (id) => { if (timers[id - 1]) timers[id - 1].cleared = true; },
       requestAnimationFrame: (fn) => fn(),
       confirm(message) { confirms.push(message); return confirmAnswer; },
+      alert(message) { alerts.push(message); },
       document: {
         body,
         documentElement: node('html'),
@@ -8061,7 +8063,7 @@ async function runTests() {
 
     const settle = async () => { for (let turn = 0; turn < 12; turn++) await tick(); };
     return {
-      node, body, unitButtons, i18nNodes, sent, errors, confirms, stored, synced,
+      node, body, unitButtons, i18nNodes, sent, errors, confirms, alerts, stored, synced,
       answerConfirm(answer) { confirmAnswer = answer; },
       listMarkup() { return markupWithin(node('channelList')); },
       deleteButton(id) {
@@ -8582,6 +8584,8 @@ async function runTests() {
     assert(named.length === 1, `a refused delete is named (${options.errors.length} logged)`);
     assert(String(named[0]?.[1]?.message) === 'store refused',
       `carrying the reason the store gave (${named[0]?.[1]?.message})`);
+    assert(JSON.stringify(options.alerts) === '["channelUpdateFailed"]',
+      `and the viewer is told in an alert (${JSON.stringify(options.alerts)})`);
   }
 
   {
@@ -8595,6 +8599,8 @@ async function runTests() {
 
     assert(options.errors.some((args) => String(args[0]).includes('channels not cleared')),
       'a refused clear is named');
+    assert(JSON.stringify(options.alerts) === '["channelUpdateFailed"]',
+      `and the viewer is told in an alert (${JSON.stringify(options.alerts)})`);
   }
 
   {

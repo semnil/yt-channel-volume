@@ -80,6 +80,9 @@
   "clearAllConfirm": {
     "message": "Delete all saved channels?"
   },
+  "channelUpdateFailed": {
+    "message": "Could not update saved channels. Please try again."
+  },
   "manualVolume": {
     "message": "Manual Volume"
   },

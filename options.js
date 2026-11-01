@@ -207,6 +207,7 @@
           await requestChannelWrite('deleteChannel', { channelId: id });
         } catch (err) {
           console.error('[YTCV] channel not deleted', err);
+          alert(msg('channelUpdateFailed'));
         }
         // The worker's write comes back as a change notification, which carries
         // the list the table is redrawn from.
@@ -334,6 +335,7 @@
       await requestChannelWrite('clearChannels');
     } catch (err) {
       console.error('[YTCV] channels not cleared', err);
+      alert(msg('channelUpdateFailed'));
     }
   });
 
