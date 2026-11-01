@@ -101,8 +101,11 @@
       : autoApplyLoudnessVideo;
     fallbackBadge.style.display = autoApplyCurrentType && !hasLoudness ? '' : 'none';
     const manualGainLocked = isManualGainLocked(autoApplyCurrentType, hasLoudness);
-    volumeSlider.disabled = manualGainLocked || autoUpdatePending;
-    presetButtons.forEach(btn => { btn.disabled = manualGainLocked || autoUpdatePending; });
+    // The gain is saved against a channel, so there is nothing to set on a
+    // page that has none.
+    const manualDisabled = manualGainLocked || autoUpdatePending || !currentChannel.id;
+    volumeSlider.disabled = manualDisabled;
+    presetButtons.forEach(btn => { btn.disabled = manualDisabled; });
 
     volumeSlider.value = gainToPercent(lastGain);
     volumeValueEl.textContent = formatGainText(lastGain, displayUnit);
@@ -114,14 +117,11 @@
     if (state.channel?.id) {
       currentChannel = state.channel;
       currentAppliesTo = state.appliesTo || '';
-      channelNameEl.textContent = state.channel.name;
-      channelNameEl.classList.remove('empty');
     } else {
       currentChannel = { id: '', name: '' };
       currentAppliesTo = '';
-      channelNameEl.textContent = msg('channelNotDetected');
-      channelNameEl.classList.add('empty');
     }
+    drawOwnerName(channelNameEl, currentChannel.name, 'channelNotDetected');
 
     hasLoudness = state.contentLufs !== null && state.contentLufs !== undefined;
     currentLoudnessDb = state.loudnessDb;

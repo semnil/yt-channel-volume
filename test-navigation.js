@@ -6663,8 +6663,9 @@ async function runTests() {
       'the page declares the language the catalog answers with');
     const drawn = (el) => popup.node(el).textContent
       + (popup.node(el).children[0] ? popup.node(el).children[0].textContent : '');
-    assert(popup.node('channelName').textContent === 'Draw Ch',
-      `the channel is named (${popup.node('channelName').textContent})`);
+    assert(popup.node('channelName').textContent === 'Draw Ch'
+      && popup.node('channelName').title === 'Draw Ch',
+      `the channel is named, with the full name on hover (${popup.node('channelName').textContent} / ${popup.node('channelName').title})`);
     assert(drawn('contentLufs') === (YT_REFERENCE_LUFS - 6).toFixed(1) + ' LUFS',
       `the level is drawn with its unit (${drawn('contentLufs')})`);
     assert(drawn('suggestedVol') === String(gainToPercent(calcGain(-6, -18))) + '%',
@@ -6759,6 +6760,8 @@ async function runTests() {
     assert(noChannel.node('autoApplyVideoToggle').disabled === true
       && noChannel.node('autoApplyLiveToggle').disabled === true,
       'with neither Auto toggle available');
+    assert(noChannel.node('volumeSlider').disabled === true && noChannel.presets.every((b) => b.disabled),
+      `nor the slider and the presets, the gain being saved against a channel (${noChannel.node('volumeSlider').disabled})`);
   }
 
   section('Popup: Auto takes the manual controls, and says it has');
