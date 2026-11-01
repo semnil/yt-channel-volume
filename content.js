@@ -14,30 +14,9 @@
   }
 
   // A write the viewer did not ask for is made again by the next video, the
-  // next navigation or the next apply. Each of them keeps a stretch of its own,
-  // under the name it is reported by: the start is named at info, the error is
-  // left for a write of that name that failed after another, and a write of
-  // that name that lands ends the stretch. Chrome collects the error as an
-  // error of the extension.
-  const unaskedWriteStretches = new Map();
-
-  function nameUnaskedWrite(what, write) {
-    return write.then(() => {
-      unaskedWriteStretches.delete(what);
-    }, (err) => {
-      if (!isContextValid()) return;
-      const stretch = unaskedWriteStretches.get(what);
-      if (!stretch) {
-        unaskedWriteStretches.set(what, { reported: false });
-        console.info('[YTCV] ' + what, err);
-        return;
-      }
-      if (!stretch.reported) {
-        stretch.reported = true;
-        console.error('[YTCV] ' + what, err);
-      }
-    });
-  }
+  // next navigation or the next apply (createUnaskedWriteReporter in
+  // core/common.js).
+  const nameUnaskedWrite = createUnaskedWriteReporter('[YTCV]');
 
   /** @type {AudioContext | null} */
   let audioCtx = null;
@@ -441,8 +420,7 @@
   // video: not paused and not muted. A volume of 0 and a gain of 0 still count
   // as playing.
   function isVideoPlaying() {
-    const video = document.querySelector('video.html5-main-video, video');
-    return !!video && !video.paused && !video.muted;
+    return isMediaPlaying(document.querySelector('video.html5-main-video, video'));
   }
 
   function applyAutomaticLoudnessGain(source) {

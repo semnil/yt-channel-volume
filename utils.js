@@ -5,7 +5,6 @@ const CHANNEL_VOLUMES_KEY = 'channelVolumes';
 const LEGACY_AUTO_FALLBACKS_KEY = 'autoLoudnessFallbacks';
 const LEGACY_AUTO_FALLBACK_KEY_PREFIX = 'autoLoudnessFallback:';
 const YT_REFERENCE_LUFS = -14;
-const DEFAULT_AUTO_APPLY_LOUDNESS = false;
 // Marks a profile whose gains already went through the unification below. Auto
 // stores gains without an Auto flag, which is the same shape the migration
 // reads as "saved manually", so it must run at most once. It is a top-level
@@ -102,13 +101,11 @@ const AUTO_SLOTS = ['autoApplyLoudnessLive', 'autoApplyLoudnessVideo'];
 
 // Expands the legacy all-types flag so one type can be set on its own.
 function setChannelAutoApply(entry, videoType, enabled) {
-  expandLegacyAutoFlag(entry, AUTO_SLOTS);
-  entry[autoApplyKeyFor(videoType)] = !!enabled;
+  setAutoFlag(entry, autoApplyKeyFor(videoType), AUTO_SLOTS, enabled);
 }
 
 function hasExplicitAutoApply(entry, videoType) {
-  if (!entry) return false;
-  return autoApplyKeyFor(videoType) in entry || 'autoApplyLoudness' in entry;
+  return hasAutoFlag(entry, autoApplyKeyFor(videoType));
 }
 
 // A channel id in the UC form, the form every channel is saved under.
@@ -274,10 +271,6 @@ async function clearLegacyKeys(removeKeys) {
   } catch (err) {
     console.error('[YTCV] legacy Auto keys not cleared', err);
   }
-}
-
-function isManualGainLocked(autoApplyEnabled, hasLoudness) {
-  return !!autoApplyEnabled && !!hasLoudness;
 }
 
 // The level YouTube plays a rendition at, after its own normalization.

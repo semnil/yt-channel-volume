@@ -195,14 +195,6 @@ assert(resolveAutoApplySetting({ autoApplyLoudnessVideo: true, gainVideo: 0.5 },
 assert(resolveAutoApplySetting({ name: 'No gain' }, 'video', true, true) === true,
   'a channel with no gain still inherits the default before the fold');
 
-section('isManualGainLocked');
-assert(isManualGainLocked(true, true) === true,
-  'detected loudness locks manual gain while Auto controls playback');
-assert(isManualGainLocked(true, false) === false,
-  'missing loudness keeps manual fallback adjustment available');
-assert(isManualGainLocked(false, true) === false,
-  'manual mode keeps gain adjustment available');
-
 section('manifest content utilities');
 // Chrome reads a manifest and a catalog with a byte order mark and with
 // comments, so this suite reads them that way too. Written as a scanner over
@@ -1280,9 +1272,6 @@ for (const [gain, baseline] of [[0, 1], [1, 0], [-1, 1], [1, -1], [NaN, 1], [1, 
 
 section('Constants');
 assert(YT_REFERENCE_LUFS === -14, 'YT_REFERENCE_LUFS = -14');
-assert(DEFAULT_TARGET_LUFS === -18, 'DEFAULT_TARGET_LUFS = -18');
-assert(DEFAULT_AUTO_APPLY_LOUDNESS === false, 'DEFAULT_AUTO_APPLY_LOUDNESS = false');
-assert(SETTINGS_KEY === 'autoLoudnessSettings', 'SETTINGS_KEY');
 assert(CHANNEL_VOLUMES_KEY === 'channelVolumes', 'CHANNEL_VOLUMES_KEY');
 assert(LEGACY_AUTO_FALLBACKS_KEY === 'autoLoudnessFallbacks', 'LEGACY_AUTO_FALLBACKS_KEY');
 assert(LEGACY_AUTO_FALLBACK_KEY_PREFIX === 'autoLoudnessFallback:',
