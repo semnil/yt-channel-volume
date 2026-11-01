@@ -83,7 +83,7 @@
   let currentVideoType = 'video';
   let currentVideoTypeDetected = false;
   let currentIsLiveNow = false;
-  let showGainOverlay = true;
+  let showGainOverlay = DEFAULT_SHOW_GAIN_OVERLAY;
   // Invalidates asynchronous preference reads when a newer storage change has
   // already been applied. Without this, an older read can undo a cross-tab
   // gain update after storage.onChanged commits it.
@@ -120,7 +120,7 @@
       s.autoApplyLoudnessVideoDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS;
     defaultAutoApplyLoudnessLive =
       s.autoApplyLoudnessLiveDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS;
-    showGainOverlay = s.showGainOverlay ?? true;
+    showGainOverlay = s.showGainOverlay ?? DEFAULT_SHOW_GAIN_OVERLAY;
   }
 
   function resolveAutoApplyForType(entry, videoType) {
