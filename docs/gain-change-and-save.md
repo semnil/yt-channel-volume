@@ -312,7 +312,7 @@ sequenceDiagram
   participant G as GainNode
   participant W as background.js
   V->>P: change on the Auto-apply LUFS toggle of the type being watched
-  Note over P: autoUpdatePending; the toggles, the slider, the presets and Apply are disabled until the answer
+  Note over P: autoUpdatePending, the toggles, the slider, the presets and Apply are disabled until the answer
   P->>C: setAutoApplyLoudness, appliesTo, enabled
   alt appliesTo differs, or no channel is named for the URL's video
     C-->>P: ok false, state moved
