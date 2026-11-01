@@ -23,9 +23,7 @@
   const volumeValueEl = document.getElementById('volumeValue');
   const settingsBtn = document.getElementById('settingsBtn');
   const mainEl = document.getElementById('main');
-  const notWatchEl = document.getElementById('notWatch');
-  const notYtEl = document.getElementById('notYt');
-  const reloadNeededEl = document.getElementById('reloadNeeded');
+  const statusLineEl = document.getElementById('statusLine');
 
   let currentChannel = { id: '', name: '' };
   // What the state on screen was when it was drawn. It goes back with every
@@ -365,6 +363,14 @@
     }
   });
 
+  // The unit follows the settings in sync while the popup is open
+  // (followDisplayUnit in core/common.js), and the first read does not undo a
+  // change that arrived while it was out.
+  const readDisplayUnit = followDisplayUnit((unit) => {
+    displayUnit = unit;
+    refreshDisplay();
+  });
+
   // ── Init ───────────────────────────────────────────────────────────
 
   async function init() {
@@ -372,21 +378,18 @@
       // Load display unit preference. A popup that cannot read the settings is
       // one the extension cannot reach as it stands, and says so as it does
       // for a tab it cannot reach.
-      let settings;
       try {
-        settings = await readSettings();
+        const unit = await readDisplayUnit();
+        if (unit !== null) displayUnit = unit;
       } catch (err) {
         console.error('[YTCV] settings not read', err);
-        mainEl.style.display = 'none';
-        reloadNeededEl.style.display = '';
+        showPopupStatus(statusLineEl, mainEl, 'reloadPageNeeded');
         return;
       }
-      displayUnit = settings.displayUnit || '%';
 
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (!tab || !tab.url?.includes('youtube.com')) {
-        mainEl.style.display = 'none';
-        notYtEl.style.display = '';
+      if (!tab || !isSiteTab(tab, 'youtube.com')) {
+        showPopupStatus(statusLineEl, mainEl, 'openOnYoutube');
         return;
       }
 
@@ -396,8 +399,7 @@
         const resp = await chrome.tabs.sendMessage(tab.id, { type: 'forceDetect' });
         if (resp) {
           if (!resp.isWatchPage) {
-            mainEl.style.display = 'none';
-            notWatchEl.style.display = '';
+            showPopupStatus(statusLineEl, mainEl, 'openOnVideoPage');
             return;
           }
           updateUI(resp);
@@ -414,8 +416,7 @@
         // cause is runtime context invalidation: when this or another extension
         // is reloaded, existing tabs' content scripts lose their chrome.runtime
         // connection. The page must be reloaded for content.js to be re-injected.
-        mainEl.style.display = 'none';
-        reloadNeededEl.style.display = '';
+        showPopupStatus(statusLineEl, mainEl, 'reloadPageNeeded');
       }
     } finally {
       revealPage();

@@ -318,6 +318,7 @@ body.initializing *::after { transition: none !important; }
   text-align: center;
   color: #555;
 }
+.hidden { display: none; }
 </style>
 </head>
 <body class="initializing">
@@ -392,11 +393,7 @@ body.initializing *::after { transition: none !important; }
   </div>
 </div>
 
-<div id="notWatch" class="status-msg" style="display:none;" data-i18n="openOnVideoPage">openOnVideoPage</div>
-
-<div id="notYt" class="status-msg" style="display:none;" data-i18n="openOnYoutube">openOnYoutube</div>
-
-<div id="reloadNeeded" class="status-msg" style="display:none;" data-i18n="reloadPageNeeded">reloadPageNeeded</div>
+<div id="statusLine" class="status-msg hidden" role="status"></div>
 
 <script src="core/common.js"></script>
 <script src="utils.js"></script>
