@@ -39,6 +39,9 @@
   // the save at the end. Read at send time instead, the drag would move the
   // level of the video it moved to and save its gain under it.
   let sliderAppliesTo = null;
+  // The channel and type the gesture was made for, which its save's notice
+  // is left to.
+  let sliderOwner = '';
   let activeTabId = null;
   let hasLoudness = false;
   let currentLoudnessDb = null;
@@ -56,6 +59,7 @@
   // core/common.js). It stands until a save lands or the tab is on another
   // channel or type.
   const saveNotice = createSaveNotice();
+  const ownerKey = () => (currentChannel.id ? currentChannel.id + '|' + currentVideoType : '');
 
   function fmtGain(gain) { return formatGain(gain, displayUnit); }
 
@@ -117,7 +121,7 @@
     currentContentLufs = hasLoudness ? state.contentLufs : null;
     lastGain = state.gain ?? 1.0;
     currentVideoType = state.videoType || 'video';
-    saveNotice.showOwner(currentChannel.id ? currentChannel.id + '|' + currentVideoType : '');
+    saveNotice.showOwner(ownerKey());
     autoApplyLoudnessVideo = !!state.autoApplyLoudnessVideo;
     autoApplyLoudnessLive = !!state.autoApplyLoudnessLive;
     autoApplyVideoToggle.checked = autoApplyLoudnessVideo;
@@ -212,8 +216,8 @@
 
   // A save that did not land, refused or failed, is said so, and the state is
   // read again: the tab has the level storage holds.
-  function sendGainSave(msg) {
-    const answered = saveNotice.send();
+  function sendGainSave(msg, owner) {
+    const answered = saveNotice.send(owner);
     sendMsg(msg).catch(() => null).then(resp => {
       const saved = answered(resp);
       updateApplyBtn();
@@ -293,6 +297,7 @@
   // keeps a drag on the state it began on.
   const beginSliderGesture = () => {
     sliderAppliesTo = currentAppliesTo;
+    sliderOwner = ownerKey();
     sliderGestureEnded = false;
   };
   // A drag also ends where the popup loses focus during it. Chrome fires
@@ -370,7 +375,10 @@
     if (sliderGestureEnded) return;
     if (sliderKeyHeld) sliderKeyMoved = true;
     // An input that arrived without either of those begins one too.
-    if (sliderAppliesTo === null) sliderAppliesTo = currentAppliesTo;
+    if (sliderAppliesTo === null) {
+      sliderAppliesTo = currentAppliesTo;
+      sliderOwner = ownerKey();
+    }
     const pct = Number(volumeSlider.value);
     const gain = percentToGain(pct);
     lastGain = gain;
@@ -390,6 +398,7 @@
 
   function saveSliderGain() {
     const appliesTo = sliderAppliesTo ?? currentAppliesTo;
+    const owner = sliderAppliesTo === null ? ownerKey() : sliderOwner;
     sliderAppliesTo = null;
     previewUnsaved = false;
     if (currentChannel.id) {
@@ -397,7 +406,7 @@
         type: 'setGain',
         appliesTo,
         gain: lastGain
-      });
+      }, owner);
     }
   }
 

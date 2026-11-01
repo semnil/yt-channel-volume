@@ -10939,6 +10939,44 @@ async function runTests() {
       assert(hint() !== 'gainSaveFailed', `and a failure answered for the channel before does not put it up (${hint()})`);
     }
 
+    section('Popup: a slider gesture begun on one channel and let go of on another leaves the notice to the one shown');
+    for (const by of ['drag', 'key']) {
+      const shown = {
+        isWatchPage: true, channel: { id: 'UCbegun', name: 'Begun Ch', url: '' }, appliesTo: 'UCbegun|video|begunVid',
+        loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0, targetLufs: -18, videoType: 'video',
+        autoApplyLoudnessVideo: false, autoApplyLoudnessLive: false
+      };
+      const popup = makePopup({ answer: async (m) => {
+        if (m.type === 'setGain') return m.appliesTo === shown.appliesTo ? { ok: false, reason: 'request failed' } : { ok: false, reason: 'state moved' };
+        if (m.type === 'setGainLive') return { ok: true };
+        return JSON.parse(JSON.stringify(shown));
+      } });
+      await popup.ready();
+      const hint = () => popup.node('applyHint').textContent;
+      const begin = () => popup.fire('volumeSlider', by === 'drag' ? 'pointerdown' : 'keydown', by === 'drag' ? {} : { key: 'ArrowRight' });
+      const end = () => (by === 'drag' ? popup.fire('volumeSlider', 'change') : popup.fire('volumeSlider', 'keyup', { key: 'ArrowRight' }));
+      await begin();
+      popup.node('volumeSlider').value = '150';
+      await popup.fire('volumeSlider', 'input');
+      shown.channel = { id: 'UCshown', name: 'Shown Ch', url: '' };
+      shown.appliesTo = 'UCshown|video|shownVid';
+      await popup.deliver({ type: 'stateChanged', ...shown });
+      popup.node('volumeSlider').value = '160';
+      await popup.fire('volumeSlider', 'input');
+      await end();
+      for (let turn = 0; turn < 4; turn++) await tick();
+      const save = popup.asked.filter((m) => m.type === 'setGain').at(-1);
+      assert(save?.appliesTo === 'UCbegun|video|begunVid' && hint() !== 'gainSaveFailed',
+        `${by}: the save carries the state it began on, and its refusal is not put up for the channel shown (${JSON.stringify(save)} / ${hint()})`);
+      // A gesture begun on the channel shown is said so.
+      await begin();
+      popup.node('volumeSlider').value = '170';
+      await popup.fire('volumeSlider', 'input');
+      await end();
+      for (let turn = 0; turn < 4; turn++) await tick();
+      assert(hint() === 'gainSaveFailed', `${by}: one begun on the channel shown is said not to have landed (${hint()})`);
+    }
+
     section('Sliders: a gesture begins on the primary button alone');
     for (const button of [1, 2]) {
       // Another button moves no value and its release goes to the window, so
