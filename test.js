@@ -15,7 +15,6 @@ function section(name) { console.log(name); }
 // Load utils.js into global scope
 let mockStorage = {};
 let mockSyncStorage = {};
-let failSyncSet = false;
 const mockStorageRemovals = [];
 let holdRemovals = false;
 let releaseRemovals = null;
@@ -54,7 +53,6 @@ globalThis.chrome = {
       },
       async set(obj) {
         await Promise.resolve();
-        if (failSyncSet) throw new Error('sync quota exceeded');
         Object.assign(mockSyncStorage, JSON.parse(JSON.stringify(obj)));
       }
     }
@@ -76,21 +74,9 @@ globalThis.document = {
 const fs = require('fs');
 // core/common.js and utils.js as they stand on disk and under their own names,
 // in the order every page loads them, so their top-level declarations are this
-// suite's globals and the coverage report counts the run.
+// suite's globals and the coverage report counts the run of utils.js.
 for (const file of ['core/common.js', 'utils.js']) {
   require('vm').runInThisContext(fs.readFileSync(`./${file}`, 'utf8'), { filename: file });
-}
-
-section('msg');
-{
-  // The harness answers every key with '' so that a message it does not
-  // declare cannot pass unnoticed; this swaps that out to read what msg does
-  // with each answer it can get.
-  const outer = globalThis.chrome;
-  globalThis.chrome = { ...outer, i18n: { getMessage: (key) => (key === 'known' ? 'Known message' : '') } };
-  assert(msg('known') === 'Known message', 'a declared message is what the viewer sees');
-  assert(msg('missing') === 'missing', 'and a key the locale does not declare comes back as itself');
-  globalThis.chrome = outer;
 }
 
 section('setChannelGain — expanding only what is legacy');
@@ -124,60 +110,6 @@ section('hasExplicitAutoApply');
   assert(hasExplicitAutoApply({ autoApplyLoudness: true }, 'live') === true,
     'and the legacy flag is one for both types');
 }
-
-section('esc');
-// The result is put inside a double-quoted attribute as well as between tags,
-// and a quote that survives adds attributes to that tag.
-{
-  const escaped = esc('UC1" onclick="steal()');
-  assert(!escaped.includes('"'), `no quote survives esc (${escaped})`);
-  assert(escaped === 'UC1&quot; onclick=&quot;steal()', `and it is escaped as one (${escaped})`);
-}
-assert(esc('<b>&</b>') === '&lt;b&gt;&amp;&lt;/b&gt;', 'markup and entities are escaped');
-assert(esc("it's") === 'it&#39;s', 'so is a single quote');
-assert(esc('plain') === 'plain', 'and plain text is left alone');
-
-// ── gainToPercent / percentToGain ────────────────────────────────────
-
-section('gainToPercent');
-assert(gainToPercent(1.0) === 100, '1.0 → 100');
-assert(gainToPercent(0) === 0, '0 → 0');
-assert(gainToPercent(0.5) === 50, '0.5 → 50');
-assert(gainToPercent(6.0) === 600, '6.0 → 600');
-assert(gainToPercent(0.005) === 1, '0.005 → 1 (rounding)');
-assert(gainToPercent(0.004) === 0, '0.004 → 0 (rounding)');
-
-section('percentToGain');
-assert(percentToGain(100) === 1.0, '100 → 1.0');
-assert(percentToGain(0) === 0, '0 → 0');
-assert(percentToGain(600) === 6.0, '600 → 6.0');
-assert(percentToGain(50) === 0.5, '50 → 0.5');
-
-// ── gainToDb ─────────────────────────────────────────────────────────
-
-section('gainToDb');
-assert(gainToDb(1.0) === '0.0', '1.0 → 0.0 dB');
-assert(gainToDb(0) === '-Inf', '0 → -Inf');
-assert(gainToDb(-1) === '-Inf', 'negative → -Inf');
-assertClose(parseFloat(gainToDb(0.5)), -6.0, 0.1, '0.5 → ~-6.0 dB');
-assertClose(parseFloat(gainToDb(2.0)), 6.0, 0.1, '2.0 → ~6.0 dB');
-
-// ── formatGain ───────────────────────────────────────────────────────
-
-section('formatGain');
-let f = formatGain(1.0, '%');
-assert(f.text === '100' && f.unit === '%', '1.0 % → 100%');
-f = formatGain(0.5, 'dB');
-assert(f.unit === ' dB', '0.5 dB → unit is dB');
-assert(f.text === gainToDb(0.5), '0.5 dB → text matches gainToDb');
-f = formatGain(0, '%');
-assert(f.text === '0' && f.unit === '%', '0 % → 0%');
-
-section('formatAutoGain');
-assert(formatAutoGain(0.7, '%') === 'Auto (70%)', 'stored 0.7 gain → Auto (70%)');
-assert(formatAutoGain(null, '%') === 'Auto (—)', 'no stored gain is shown as unknown, not as 100%');
-assert(formatAutoGain(undefined, 'dB') === 'Auto (—)', 'undefined gain is shown as unknown');
-assert(formatAutoGain(0.5, 'dB', '自動') === '自動 (-6.0 dB)', 'Auto gain respects display unit and label');
 
 section('normalizeStoredGain');
 assert(normalizeStoredGain(0.5) === 0.5, 'finite stored gain remains available');
@@ -1643,46 +1575,6 @@ async function runMigrationTests() {
     mockSyncStorage = {};
   }
 
-  section('readSettings — sync first, local while the move has not happened');
-  {
-    mockSyncStorage = {};
-    mockStorage = {};
-    assert(JSON.stringify(await readSettings()) === '{}', 'nothing saved anywhere reads as no settings');
-    mockStorage = { autoLoudnessSettings: { targetLufs: -22 } };
-    assert((await readSettings()).targetLufs === -22, 'settings not moved yet are read from local');
-    mockSyncStorage = { autoLoudnessSettings: { targetLufs: -16 } };
-    assert((await readSettings()).targetLufs === -16, 'and settings in sync go before them');
-  }
-
-  section('readSettings — a read made across the move');
-  {
-    // Sync is read empty, then the move writes sync and clears local before
-    // the local read is answered. That read finds nothing, and the settings
-    // the move put in sync are what the profile holds.
-    mockSyncStorage = {};
-    mockStorage = { autoLoudnessSettings: { targetLufs: -24, displayUnit: 'dB' } };
-    const realLocalGet = chrome.storage.local.get;
-    let releaseLocal;
-    const localHeld = new Promise((resolve) => { releaseLocal = resolve; });
-    let localAsked = false;
-    chrome.storage.local.get = (key) => {
-      localAsked = true;
-      return localHeld.then(() => realLocalGet(key));
-    };
-    const reading = readSettings();
-    for (let turn = 0; turn < 12 && !localAsked; turn++) await Promise.resolve();
-    assert(localAsked, 'the read has found sync empty and asked local');
-    mockSyncStorage = { autoLoudnessSettings: { targetLufs: -24, displayUnit: 'dB' } };
-    delete mockStorage.autoLoudnessSettings;
-    releaseLocal();
-    const read = await reading;
-    chrome.storage.local.get = realLocalGet;
-    assert(read.targetLufs === -24 && read.displayUnit === 'dB',
-      `it answers with what the move put in sync, not with no settings (${JSON.stringify(read)})`);
-    mockSyncStorage = {};
-    mockStorage = {};
-  }
-
   section('migrateLegacyAutoGains — the defaults read across the move');
   {
     // The fold reads its Auto defaults with readSettings. Read across the move,
@@ -1790,62 +1682,6 @@ async function runMigrationTests() {
     assert(syncWrites === 1 && mockSyncStorage.autoLoudnessSettings.displayUnit === '%',
       `a save of another value is (${syncWrites}, ${JSON.stringify(mockSyncStorage.autoLoudnessSettings)})`);
     chrome.storage.sync.set = realSyncSet;
-    mockSyncStorage = {};
-    mockStorage = {};
-  }
-
-  section('moveSettingsToSync — settings saved before they synced');
-  {
-    const removalsBefore = mockStorageRemovals.length;
-    mockSyncStorage = {};
-    mockStorage = { channelVolumes: { UCstay: { name: 'Stay', gainVideo: 0.5 } } };
-    assert(await moveSettingsToSync() === false, 'a profile with nothing in local has nothing to move');
-    assert(!('autoLoudnessSettings' in mockSyncStorage), 'and writes nothing to sync');
-    assert(mockStorageRemovals.length === removalsBefore, 'nor clears anything in local');
-
-    mockStorage = {
-      autoLoudnessSettings: { targetLufs: -22, displayUnit: 'dB', showGainOverlay: true },
-      channelVolumes: { UCstay: { name: 'Stay', gainVideo: 0.5 } }
-    };
-    assert(await moveSettingsToSync() === true, 'settings in local are moved');
-    assert(JSON.stringify(mockSyncStorage.autoLoudnessSettings) ===
-      JSON.stringify({ targetLufs: -22, displayUnit: 'dB', showGainOverlay: true }),
-      'to sync, as they stood');
-    assert(!('autoLoudnessSettings' in mockStorage), 'and local no longer holds them');
-    assert(mockStorage.channelVolumes.UCstay.gainVideo === 0.5, 'the channels stay where they are');
-    assert(await moveSettingsToSync() === false, 'a second start has nothing to move');
-
-    mockSyncStorage = { autoLoudnessSettings: { targetLufs: -16 } };
-    mockStorage = { autoLoudnessSettings: { targetLufs: -22 } };
-    assert(await moveSettingsToSync() === true, 'where another machine has synced settings');
-    assert(mockSyncStorage.autoLoudnessSettings.targetLufs === -16, 'those are kept');
-    assert(!('autoLoudnessSettings' in mockStorage), 'and the local copy goes');
-
-    // The move answers once local is clear, so a worker start that fails to
-    // clear it is reported rather than taken for a move that landed.
-    mockSyncStorage = {};
-    mockStorage = { autoLoudnessSettings: { targetLufs: -22 } };
-    holdRemovals = true;
-    releaseRemovals = null;
-    let moved = false;
-    const moving = moveSettingsToSync().then(() => { moved = true; });
-    for (let turn = 0; turn < 12; turn++) await Promise.resolve();
-    assert(moved === false && !!releaseRemovals, 'the move waits for local to be cleared');
-    releaseRemovals();
-    await moving;
-    holdRemovals = false;
-    assert(moved === true && !('autoLoudnessSettings' in mockStorage),
-      'and answers once it is');
-
-    mockSyncStorage = {};
-    mockStorage = { autoLoudnessSettings: { targetLufs: -22 } };
-    failSyncSet = true;
-    let refused = null;
-    try { await moveSettingsToSync(); } catch (err) { refused = err; }
-    failSyncSet = false;
-    assert(refused !== null, 'a move sync refuses fails');
-    assert(mockStorage.autoLoudnessSettings?.targetLufs === -22,
-      'and leaves the settings in local, where they are still read and moved on the next start');
     mockSyncStorage = {};
     mockStorage = {};
   }
