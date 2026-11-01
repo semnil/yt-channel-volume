@@ -11130,6 +11130,108 @@ async function runTests() {
         `a saved toggle leaves no line (${popup.node('autoError').style.display})`);
     }
 
+    section('Popup: a toggle not saved is said so for the channel and type it was made for alone');
+    for (const moveTo of ['video', 'live']) {
+      let release = null;
+      const shown = {
+        isWatchPage: true, channel: { id: 'UCautoA', name: 'Auto A', url: '' }, appliesTo: 'UCautoA|video|autoAVid',
+        loudnessDb: null, contentLufs: null, gain: 1.0, targetLufs: -18, videoType: 'video',
+        autoApplyLoudnessVideo: false, autoApplyLoudnessLive: false
+      };
+      const popup = makePopup({ answer: async (m) => {
+        if (m.type === 'setAutoApplyLoudness') {
+          await new Promise((resolve) => { release = resolve; });
+          return { ok: false, reason: 'request failed' };
+        }
+        return JSON.parse(JSON.stringify(shown));
+      } });
+      await popup.ready();
+      const line = () => popup.node('autoError').style.display;
+      // A failure answered after the popup came to show another channel.
+      popup.node('autoApplyVideoToggle').checked = true;
+      const toggling = popup.fire('autoApplyVideoToggle', 'change');
+      for (let turn = 0; turn < 10 && !release; turn++) await tick();
+      Object.assign(shown, { channel: { id: 'UCautoB', name: 'Auto B', url: '' }, appliesTo: `UCautoB|${moveTo}|autoBVid`, videoType: moveTo });
+      await popup.deliver({ type: 'stateChanged', ...shown });
+      release();
+      await toggling;
+      for (let turn = 0; turn < 6; turn++) await tick();
+      assert(line() === 'none', `${moveTo}: a failure for the channel left is not said on the one shown (${line()})`);
+      // A failure said for a channel, then another channel shown.
+      Object.assign(shown, { channel: { id: 'UCautoA', name: 'Auto A', url: '' }, appliesTo: 'UCautoA|video|autoAVid', videoType: 'video' });
+      await popup.deliver({ type: 'stateChanged', ...shown });
+      release = null;
+      popup.node('autoApplyVideoToggle').checked = true;
+      const again = popup.fire('autoApplyVideoToggle', 'change');
+      for (let turn = 0; turn < 10 && !release; turn++) await tick();
+      release();
+      await again;
+      for (let turn = 0; turn < 6; turn++) await tick();
+      assert(line() === '', `${moveTo}: a failure for the channel shown is said (${line()})`);
+      Object.assign(shown, { channel: { id: 'UCautoB', name: 'Auto B', url: '' }, appliesTo: `UCautoB|${moveTo}|autoBVid`, videoType: moveTo });
+      await popup.deliver({ type: 'stateChanged', ...shown });
+      assert(line() === 'none', `${moveTo}: and another channel shown takes it down (${line()})`);
+    }
+
+    {
+      let fail = true;
+      const shown = {
+        isWatchPage: true, channel: { id: 'UCautoA', name: 'Auto A', url: '' }, appliesTo: 'UCautoA|video|autoAVid',
+        loudnessDb: null, contentLufs: null, gain: 1.0, targetLufs: -18, videoType: 'video',
+        autoApplyLoudnessVideo: false, autoApplyLoudnessLive: false
+      };
+      const popup = makePopup({ answer: async (m) => {
+        if (m.type === 'setAutoApplyLoudness') {
+          if (fail) return { ok: false, reason: 'request failed' };
+          shown.autoApplyLoudnessVideo = m.enabled;
+          return { ok: true, ...JSON.parse(JSON.stringify(shown)) };
+        }
+        return JSON.parse(JSON.stringify(shown));
+      } });
+      await popup.ready();
+      popup.node('autoApplyVideoToggle').checked = true;
+      await popup.fire('autoApplyVideoToggle', 'change');
+      for (let turn = 0; turn < 6; turn++) await tick();
+      assert(popup.node('autoError').style.display === '', `a toggle not saved is said (${popup.node('autoError').style.display})`);
+      fail = false;
+      popup.node('autoApplyVideoToggle').checked = true;
+      await popup.fire('autoApplyVideoToggle', 'change');
+      for (let turn = 0; turn < 6; turn++) await tick();
+      assert(popup.node('autoError').style.display === 'none', `and the retry that saves takes it down (${popup.node('autoError').style.display})`);
+    }
+
+    {
+      // The failure answered after another channel came on screen, with the
+      // state asked for afterwards not answered either.
+      let release = null;
+      let stateFails = false;
+      const shown = {
+        isWatchPage: true, channel: { id: 'UCautoA', name: 'Auto A', url: '' }, appliesTo: 'UCautoA|video|autoAVid',
+        loudnessDb: null, contentLufs: null, gain: 1.0, targetLufs: -18, videoType: 'video',
+        autoApplyLoudnessVideo: false, autoApplyLoudnessLive: false
+      };
+      const popup = makePopup({ answer: async (m) => {
+        if (m.type === 'setAutoApplyLoudness') {
+          await new Promise((resolve) => { release = resolve; });
+          return { ok: false, reason: 'request failed' };
+        }
+        if (stateFails) throw new Error('Could not establish connection. Receiving end does not exist.');
+        return JSON.parse(JSON.stringify(shown));
+      } });
+      await popup.ready();
+      popup.node('autoApplyVideoToggle').checked = true;
+      const toggling = popup.fire('autoApplyVideoToggle', 'change');
+      for (let turn = 0; turn < 10 && !release; turn++) await tick();
+      Object.assign(shown, { channel: { id: 'UCautoB', name: 'Auto B', url: '' }, appliesTo: 'UCautoB|video|autoBVid' });
+      await popup.deliver({ type: 'stateChanged', ...shown });
+      stateFails = true;
+      release();
+      await toggling;
+      for (let turn = 0; turn < 6; turn++) await tick();
+      assert(popup.node('autoError').style.display === 'none',
+        `nor is it said when the state asked for after it is not answered (${popup.node('autoError').style.display})`);
+    }
+
     section('Popup: on a stream, the Live toggle waits for its own save as well');
     {
       let release = null;

@@ -65,6 +65,9 @@
   // the manual controls and Apply are out of use: a gain saved then would pin
   // the Auto state from before the toggle.
   let autoUpdatePending = false;
+  // The channel and type a toggle not saved was made for. The line saying so
+  // stands only while the popup shows that channel and type.
+  let autoErrorOwner = '';
 
   function fmtGain(gain) { return formatGain(gain, displayUnit); }
 
@@ -127,6 +130,10 @@
     lastGain = state.gain ?? 1.0;
     currentVideoType = state.videoType || 'video';
     saveNotice.showOwner(ownerKey());
+    if (autoErrorOwner && autoErrorOwner !== ownerKey()) {
+      autoErrorOwner = '';
+      autoErrorEl.style.display = 'none';
+    }
     autoApplyLoudnessVideo = !!state.autoApplyLoudnessVideo;
     autoApplyLoudnessLive = !!state.autoApplyLoudnessLive;
     if (!autoUpdatePending) {
@@ -270,7 +277,9 @@
   function handleAutoApplyChange(toggle, videoType) {
     if (autoUpdatePending || !currentChannel.id || videoType !== currentVideoType) return;
     const enabled = toggle.checked;
+    const owner = ownerKey();
     autoUpdatePending = true;
+    autoErrorOwner = '';
     autoErrorEl.style.display = 'none';
     toggle.disabled = true;
     refreshDisplay();
@@ -286,8 +295,11 @@
       }
       // The write may have landed before the failure, so show what the page
       // holds rather than assuming the toggle never moved, and say it was not
-      // saved.
-      autoErrorEl.style.display = '';
+      // saved, while the popup still shows the channel and type it was for.
+      if (owner === ownerKey()) {
+        autoErrorOwner = owner;
+        autoErrorEl.style.display = '';
+      }
       resyncFromContent(toggle, videoType);
     });
   }
