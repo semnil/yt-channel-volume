@@ -7868,6 +7868,8 @@ async function runTests() {
     failStorageGet = false,
     failStorageSet = false,
     failMutation = '',
+    // A write whose answer is held until the case lets it go.
+    holdMutation = '',
     deferStorageGet = false
   } = {}) {
     // The two areas the page reads, apart as Chrome keeps them: the settings
@@ -7882,6 +7884,7 @@ async function runTests() {
     const errors = [];
     const confirms = [];
     const alerts = [];
+    let releaseMutation = null;
     let confirmAnswer = true;
     const storageListeners = [];
     const pendingReads = [];
@@ -8046,6 +8049,9 @@ async function runTests() {
             if (failMutation && message.type === failMutation) {
               return { ok: false, reason: 'store refused' };
             }
+            if (holdMutation && message.type === holdMutation) {
+              await new Promise((resolve) => { releaseMutation = resolve; });
+            }
             // The settings writes run as the worker runs them, against the
             // areas this page reads.
             const settingsWrites = vm.runInContext('SETTINGS_WRITES', sandbox);
@@ -8075,6 +8081,12 @@ async function runTests() {
     return {
       node, body, unitButtons, i18nNodes, sent, errors, confirms, alerts, stored, synced,
       answerConfirm(answer) { confirmAnswer = answer; },
+      // Lets the held write answer.
+      async releaseMutation() {
+        assert(!!releaseMutation, 'a write is held');
+        releaseMutation?.();
+        await settle();
+      },
       listMarkup() { return markupWithin(node('channelList')); },
       deleteButton(id) {
         node('channelList').querySelectorAll('.ch-del');
@@ -8359,6 +8371,20 @@ async function runTests() {
   }
 
   {
+    // The toggle is out of use while its save is out.
+    const options = makeOptions({ holdMutation: 'store:saveSetting' });
+    await options.settle();
+    options.node('defaultAutoLiveToggle').checked = true;
+    const changed = options.fire('defaultAutoLiveToggle', 'change');
+    await options.settle();
+    assert(options.node('defaultAutoLiveToggle').disabled === true, 'the toggle is out of use while its save is out');
+    await options.releaseMutation();
+    await changed;
+    assert(options.node('defaultAutoLiveToggle').disabled === false && options.synced[SETTINGS_KEY].autoApplyLoudnessLiveDefault === true,
+      'and handed back once it lands');
+  }
+
+  {
     const options = makeOptions({ settings: { targetLufs: -18 } });
     await options.settle();
 
@@ -8633,13 +8659,15 @@ async function runTests() {
   {
     // The gain the page shows is the one it saved. A save that did not happen
     // leaves the toggle where the stored value stands, not where the click did.
-    const options = makeOptions({ failStorageSet: true });
+    const options = makeOptions({ failStorageSet: true, channels: { UC1: { name: 'Alpha', gainVideo: 2 } } });
     await options.settle();
 
     options.node('defaultAutoVideoToggle').checked = true;
     await options.fire('defaultAutoVideoToggle', 'change');
     assert(options.node('defaultAutoVideoToggle').checked === false,
       'a video default that could not be saved goes back');
+    assert(!options.listMarkup().includes('labelAuto'),
+      `and the table stays under the default the settings hold (${options.listMarkup().slice(0, 160)})`);
     assert(options.node('defaultAutoVideoToggle').disabled === false,
       'and the toggle is handed back either way');
     assert(!options.node('settingsError').classList.contains('hidden')

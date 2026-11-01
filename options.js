@@ -103,11 +103,13 @@
   // so the page goes back to what storage holds and says that it did. Where
   // the settings cannot be read back either, nothing goes back, and the line
   // asks for a reload.
+  // Answers whether the write landed.
   async function saveSettingOrRestore(key, value) {
-    if (!settingsLoaded) return;
+    if (!settingsLoaded) return false;
     try {
       await saveSetting(key, value);
       showSettingsError(false);
+      return true;
     } catch (err) {
       const revision = settingsRevision;
       let shown = 'settingsSaveFailed';
@@ -121,6 +123,7 @@
       }
       showSettingsError(true, shown);
       console.error('[YTCV] setting not saved', err);
+      return false;
     }
   }
 
@@ -295,21 +298,21 @@
   targetSlider.addEventListener('blur', endTargetGestureOnBlur);
   window.addEventListener('blur', endTargetGestureOnBlur);
 
-  // A default is taken out of use while its save is out. The table follows it
-  // at once; a save that does not land puts both back to what the settings
-  // hold and says so.
-  for (const [toggle, field] of [
-    [defaultAutoVideoToggle, 'autoApplyLoudnessVideoDefault'],
-    [defaultAutoLiveToggle, 'autoApplyLoudnessLiveDefault']
+  // A default is taken out of use while its save is out, and the table follows
+  // it once the save lands. A save that does not land puts the toggle back to
+  // what the settings hold and says so.
+  for (const [toggle, field, take] of [
+    [defaultAutoVideoToggle, 'autoApplyLoudnessVideoDefault', (enabled) => { defaultAutoApplyVideo = enabled; }],
+    [defaultAutoLiveToggle, 'autoApplyLoudnessLiveDefault', (enabled) => { defaultAutoApplyLive = enabled; }]
   ]) {
     toggle.addEventListener('change', async () => {
-      if (!settingsLoaded) return;
+      const enabled = toggle.checked;
       toggle.disabled = true;
-      if (field === 'autoApplyLoudnessVideoDefault') defaultAutoApplyVideo = toggle.checked;
-      else defaultAutoApplyLive = toggle.checked;
-      renderChannels(channelVolumes);
       try {
-        await saveSettingOrRestore(field, toggle.checked);
+        if (await saveSettingOrRestore(field, enabled)) {
+          take(enabled);
+          renderChannels(channelVolumes);
+        }
       } finally {
         toggle.disabled = false;
       }
