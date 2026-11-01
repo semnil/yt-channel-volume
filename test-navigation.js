@@ -9077,6 +9077,19 @@ async function runTests() {
       `and the ask after a failed read has the new level (${afterFailed?.loudnessDb})`);
   }
 
+  section('Settings: the gain overlay is on unless the settings turn it off');
+  {
+    for (const [what, settings, want] of [
+      ['settings that name no overlay', { targetLufs: -18, displayUnit: '%' }, true],
+      ['the overlay turned off', { targetLufs: -18, displayUnit: '%', showGainOverlay: false }, false],
+      ['the overlay turned on', { targetLufs: -18, displayUnit: '%', showGainOverlay: true }, true]
+    ]) {
+      simulateStorageChange({ [SETTINGS_KEY]: { newValue: settings } });
+      await tick();
+      assert(ytcv.state.showGainOverlay === want, `${what}: the overlay is ${want ? 'on' : 'off'} (${ytcv.state.showGainOverlay})`);
+    }
+  }
+
   // ── A live stream's own level, followed while it is on air ───────────
   {
     const LIVE_CH = 'UCliveFollow';

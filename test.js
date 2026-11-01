@@ -493,9 +493,11 @@ assert(/displayUnit = s\.displayUnit \|\| '%';/.test(optionsSrc),
   'and that is what the load falls back to');
 assert(DEFAULT_AUTO_APPLY_LOUDNESS === false,
   'auto-apply is off by default');
-assert(/overlayToggle\.checked = !!s\.showGainOverlay;/.test(optionsSrc),
-  'the gain overlay is off by default');
-for (const id of ['defaultAutoVideoToggle', 'defaultAutoLiveToggle', 'overlayToggle']) {
+assert(/overlayToggle\.checked = s\.showGainOverlay \?\? true;/.test(optionsSrc),
+  'the gain overlay is on by default');
+assert(/<input[^>]+id="overlayToggle"[^>]*\bchecked\b/.test(optionsHtml),
+  'and overlayToggle ships checked');
+for (const id of ['defaultAutoVideoToggle', 'defaultAutoLiveToggle']) {
   const tag = optionsHtml.match(new RegExp(`<input[^>]+id="${id}"[^>]*>`));
   assert(tag && !/\bchecked\b/.test(tag[0]), `${id} ships unchecked`);
 }
