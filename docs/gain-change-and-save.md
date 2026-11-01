@@ -133,12 +133,13 @@ sequenceDiagram
     C->>C: setCurrentAutoApplyFromEntry(entry), syncLiveFollow()
     alt Auto on for the type and a live level is held
       C->>G: commitLiveGain(), commitGain(calcGainFromLiveLevel())
-      C->>C: await evaluateLiveSave(source)
+      C->>C: evaluateLiveSave(source), awaited unless waitsForSave is false
     else Auto on for the type and loudnessDb is held
       C->>G: commitGain(calcGain(loudnessDb))
       opt storageMigrated, the video playing, and, for an apply a bridge message starts, the first apply for the URL has run
         C->>W: store:saveChannelGain, calcGain(baseLoudnessDb), no autoApply (unasked)
         W-->>C: answer, a failure goes to nameUnaskedWrite
+        Note over C: awaited unless waitsForSave is false
       end
     else a gain is stored for the type
       C->>G: commitGain(stored gain, times the rendition ratio when marked)
@@ -151,6 +152,7 @@ sequenceDiagram
 - The read is dropped when anything it was taken for has moved: another navigation, a bridge answer that changed the channel or the type, or a change notification (`storageRevision` goes up on every `channelVolumes` or `autoLoudnessSettings` change notification, and when `unifiedGains` from another context is taken in).
 - Auto's own save sends no `autoApply`, so the channel keeps following the all-channel default. It sends `heldAgainstPlain: true` when `baseLoudnessDb` is known. A save whose map comes out unchanged is not set by the worker (see "Common path of a channel write").
 - Nothing is saved before the legacy fold has landed (`storageMigrated` false), nor by a tab whose `<video>` is paused or muted (`isVideoPlaying()`; a volume of 0 or a gain of 0 still counts as playing). An apply a bridge message starts (`fromMessage`) saves nothing either before the first apply after a change of URL has run for the URL's video (`appliedVideoId`). The gain is still applied.
+- `waitsForSave: false` ends the apply once the gain is in force, without waiting for Auto's own save or the live save; the save still runs, under the same conditions, and a failure is still named through `nameUnaskedWrite`. `applyVideoVolume` passes it (see "SPA navigation and the other apply triggers"); every other caller waits for the save.
 - While a slider preview holds (see "Popup: slider drag (`input`)"), the gain in the diagram is held back rather than committed, and the rest runs.
 - When the entry read rejects or the audio chain cannot be built, the apply stops there. Each caller that starts it without waiting for it (the bridge message, the retry after a navigation, and the `autoLoudnessSettings` and `unifiedGains` change notifications) logs the failure with `reportFailure('apply failed')`, as `triggerApply` does for the navigation's own apply.
 
@@ -543,19 +545,19 @@ sequenceDiagram
     Note over C: unless the bridge already answered for this video, loudnessDb, baseLoudnessDb, both live levels and isLiveNow are cleared and videoType is video
     C->>C: on the document's first video only, detectChannel() from the canonical link, the owner link or meta itemprop channelId, used unless the bridge already named the channel for this video
     C->>S: readSettings() (loadSettings), taken unless a settings change arrived while it was out
-    C->>C: await applyPreferredGain()
+    C->>C: await applyPreferredGain('apply', { waitsForSave: false }), the gain in force without waiting for the save
     C->>B: requestLoudnessWithRetry(10, 500)
     B-->>C: bridge answer, handled as in the bridge section
     C->>C: applyPreferredGain() again
   end
 ```
 
-- The triggers: `yt-navigate-finish` on `document`; `popstate` on `window`; a `MutationObserver` on the document, which on a watch page calls `triggerApply()` when the page's `<video>` element is a different one from the last processed, or the URL's video id differs from `_lastVideoId`; `visibilitychange`, which calls `triggerApply()` when the tab becomes visible on a watch page before any video was processed. The first load is described in the next section. Apart from these, a `play` of the page's `<video>` runs `applyPreferredGain('play')` alone, so a tab whose video starts playing after its applies makes Auto's own save or the live save then.
-- `triggerApply()` uses `_applyRunning` as a lock. A call that arrives while an apply runs returns at once and is not queued. There is no debounce. When the extension context is invalid, it disconnects the observer.
+- The triggers: `yt-navigate-finish` on `document`; `popstate` on `window`; a `MutationObserver` on the document, which on a watch page calls `triggerApply()` when the page's `<video>` element is a different one from the last processed, or the URL's video id differs from `_lastVideoId`; `visibilitychange`, which calls `triggerApply()` when the tab becomes visible on a watch page before any video was processed. The first load is described in the next section. Apart from these, a `play` of the page's `<video>` runs `applyPreferredGain('play')` alone, so a tab whose video starts playing after its applies makes Auto's own save or the live save then. A `volumechange` that unmutes the page's `<video>` while it plays does the same: the video's muted state is kept from its last `play` or `volumechange`, and from the script's start for the videos on the page then, and a change of volume that leaves it muted, one made while it is paused, one that is no unmute, and one of another element run nothing.
+- `triggerApply()` uses `_applyRunning` as a lock. A call that arrives while an apply runs returns at once and is not queued. The lock is held until the first `applyPreferredGain()` has put the gain in force, not while a save it started is out, so a navigation during Auto's own save or the live save runs its own apply. There is no debounce. When the extension context is invalid, it disconnects the observer.
 - `detectChannel()` returns a UC id only, and it is asked for the document's first video alone (`_lastVideoId` empty when the apply begins). After a navigation the page can still name the channel of the video left, so the channel stays empty until the bridge names it for the video, and so it does where the page carries no UC id. With no channel id, `applyPreferredGain()` reads no entry: it plays the Auto gain where the all-channel default is on with a level held, 1.0 otherwise, and saves nothing.
 - When the navigation cleared the bridge state, videoType is `'video'` until the bridge sends `isLiveContent`, so on a live stream the gain stored for videos is applied first.
 - `requestLoudnessWithRetry(10, 500)` resolves at the next bridge message. When 500 ms pass without one, it resolves if a level is held and otherwise asks again, 10 times at most. The bridge answer applies on its own (see the bridge section), and `applyPreferredGain()` runs once more after it.
-- Saves on this path are Auto's own save and the live save inside `applyPreferredGain()`. Once the first `applyPreferredGain()` of `applyVideoVolume` has run, the video goes into `appliedVideoId`. Until then a bridge message makes neither save for the URL's video, so one that lands before that apply, with the channel of the page the tab left still in hand, stores nothing. A settings change and the popup's opening store as before.
+- Saves on this path are Auto's own save and the live save inside `applyPreferredGain()`. Once the first `applyPreferredGain()` of `applyVideoVolume` has put the gain in force, the video goes into `appliedVideoId`. Until then a bridge message makes neither save for the URL's video, so one that lands before that apply, with the channel of the page the tab left still in hand, stores nothing. A settings change and the popup's opening store as before.
 - A failure in `applyVideoVolume` is logged by `reportFailure('apply failed')`.
 
 Drawn from: `content.js` the `yt-navigate-finish`, `popstate` and `visibilitychange` listeners, the `MutationObserver` callback, `triggerApply`, `applyVideoVolume`, `detectChannel`, `loadSettings`, `requestLoudnessWithRetry`, `applyPreferredGain`.
@@ -732,6 +734,7 @@ Drawn from: `options.js` `renderChannels` (the `.ch-del` click listener), the `c
 | Live follow timer (1 s) | As the bridge answer rows | As the bridge answer rows | `syncLiveFollow`, `followLive` |
 | SPA navigation, observer, `visibilitychange` | Yes | Auto's own save or the live save, with Auto on and a level, after the fold | `triggerApply`, `applyVideoVolume`, `applyPreferredGain` |
 | `play` of the page's `<video>` | Through `applyPreferredGain` | Auto's own save or the live save, with Auto on and a level, in a tab that is not muted | the `play` listener, `applyPreferredGain` |
+| `volumechange` that unmutes the page's playing `<video>` | Through `applyPreferredGain` | As the `play` row | the `volumechange` listener, `applyPreferredGain` |
 | Popup open | Through `applyPreferredGain` | As SPA navigation | `handleMessage` (`forceDetect`) |
 | Startup, settings page open | No | `channelVolumes` and `unifiedGains`, when the marker is absent | `foldLegacyGains`, `migrateLegacyAutoGains` |
 | Worker start | No | Settings still in local, moved to sync | `moveSettingsToSync` |

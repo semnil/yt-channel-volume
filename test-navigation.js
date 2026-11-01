@@ -2145,6 +2145,10 @@ async function runTests() {
     'delayed navigation does not replace calculated gain with fallback');
   assert(Math.abs(ytcv.state.gainNode.gain.value - expectedAutoGain) < 0.001,
     'calculated archive gain remains applied to audio node');
+  // The apply ends without waiting for Auto's own save; it lands before the
+  // next case writes the channel map of its own.
+  await tick();
+  await tick();
   mockDOMElements['canonical'] = null;
   mockDOMElements['channelName'] = null;
 
@@ -7730,6 +7734,88 @@ async function runTests() {
     assert(live.exported !== undefined, 'and to a test that did');
   }
 
+  section('Auto\'s own save: a video already playing muted when the script starts is stored once unmuted');
+  {
+    // A copy of content.js started on a watch page whose video already plays
+    // muted, so no play is seen for it.
+    const vmMod = require('vm');
+    const sent = [];
+    const listeners = {};
+    const video = { id: 'muted-from-start', paused: false, muted: true };
+    const sandbox = {
+      console: { log() {}, warn() {}, error() {}, info() {} },
+      Promise, Math, JSON, Date, Object, Array, String, Number, Boolean, Symbol,
+      isNaN, parseFloat, parseInt, Set, Map, WeakSet, WeakMap, Error, TypeError, RegExp,
+      setTimeout: () => 0,
+      clearTimeout() {},
+      setInterval: () => 0,
+      clearInterval() {},
+      URL,
+      AudioContext: globalThis.AudioContext,
+      location: { pathname: '/watch', href: 'https://www.youtube.com/watch?v=mutedStart', search: '?v=mutedStart' },
+      MutationObserver: class { observe() {} disconnect() {} },
+      window: { addEventListener() {}, postMessage() {} },
+      document: {
+        readyState: 'complete',
+        visibilityState: 'visible',
+        documentElement: {},
+        querySelector: (selector) => (selector.startsWith('video') ? video : null),
+        querySelectorAll: (selector) => (selector === 'video' ? [video] : []),
+        addEventListener: (type, fn) => { (listeners[type] ||= []).push(fn); },
+        removeEventListener() {},
+        createElement: () => ({ style: {}, classList: { add() {}, remove() {} } }),
+        contains: () => true
+      },
+      chrome: {
+        runtime: {
+          id: 'test-extension-id',
+          async sendMessage(message) { sent.push(message); return { ok: true }; },
+          onMessage: { addListener() {} }
+        },
+        storage: {
+          local: {
+            async get() {
+              return { unifiedGains: true, channelVolumes: { UCmutedStart: { name: 'Muted Start', gainVideo: 0.5, autoApplyLoudnessVideo: true } } };
+            },
+            async set() {}
+          },
+          sync: { async get() { return { autoLoudnessSettings: { targetLufs: -18 } }; } },
+          onChanged: { addListener() {} }
+        }
+      },
+      __TEST_YTCV__: true
+    };
+    sandbox.globalThis = sandbox;
+    vmMod.createContext(sandbox);
+    vmMod.runInContext(fs.readFileSync('./core/common.js', 'utf8'), sandbox, { filename: 'core/common.js' });
+    vmMod.runInContext(fs.readFileSync('./utils.js', 'utf8'), sandbox, { filename: 'utils.js' });
+    vmMod.runInContext(fs.readFileSync('./content.js', 'utf8'), sandbox, { filename: 'content.js' });
+    const started = sandbox.__YTCV__;
+    await tick();
+    // The bridge has named the channel and the level for the video.
+    started._set('currentChannel', { id: 'UCmutedStart', name: 'Muted Start', url: 'https://www.youtube.com/channel/UCmutedStart' });
+    started._set('currentChannelVideoId', 'mutedStart');
+    started._set('currentLoudnessVideoId', 'mutedStart');
+    started._set('currentLoudnessDb', -6);
+    started._set('currentBaseLoudnessDb', -6);
+    started._set('currentVideoType', 'video');
+    started._set('currentVideoTypeDetected', true);
+    started._set('storageReady', Promise.resolve());
+    started._set('storageMigrated', true);
+    started._set('storageSettled', true);
+    started._set('_lastVideoId', 'mutedStart');
+    started._set('appliedVideoId', 'mutedStart');
+    const saves = () => sent.filter((m) => m?.type === 'store:saveChannelGain' && m.channelId === 'UCmutedStart');
+    await started.applyPreferredGain();
+    await tick();
+    assert(saves().length === 0, `nothing is stored while it plays muted (${JSON.stringify(saves())})`);
+    video.muted = false;
+    for (const fn of listeners.volumechange || []) fn({ target: video });
+    await tick();
+    assert(saves().length === 1 && saves()[0].gain === calcGain(-6, -18),
+      `its first unmute stores Auto's gain (${JSON.stringify(saves().map((m) => m.gain))})`);
+  }
+
   section('The worker takes the writes and leaves the rest alone');
   {
     // Every tab's saves share one channel with the other runtime messages.
@@ -10073,6 +10159,43 @@ async function runTests() {
         `a flag alone that fails is answered as failed, with the gain where it was (${JSON.stringify(flagRefused)} / ${ytcv.state.currentGain})`);
     }
 
+    section('Live level: a navigation while the live save is out is applied to the new video');
+    {
+      onAir({ entry: { autoApplyLoudnessLive: true } });
+      mockStorage['channelVolumes'].UClvNavB = { name: 'Live Nav B', gainVideo: 0.4, autoApplyLoudnessVideo: false };
+      Object.assign(mockVideoEl, { paused: false, muted: false });
+      ytcv._set('currentLiveLkfs', -24.8);
+      ytcv._set('readLiveLkfs', -24.8);
+      const realSend = chrome.runtime.sendMessage;
+      const held = [];
+      chrome.runtime.sendMessage = (m) => (m?.type === 'store:saveChannelGain'
+        ? new Promise((resolve) => held.push(() => resolve(realSend.call(chrome.runtime, m))))
+        : realSend.call(chrome.runtime, m));
+      try {
+        const applying = ytcv.triggerApply();
+        await settle();
+        assert(held.length === 1, `the live save is out (${held.length})`);
+        setURL('/watch', 'liveNavBvid');
+        mockVideoEl = { id: 'live-nav-b-video', paused: false, muted: false };
+        fireNavigateFinish();
+        await settle();
+        simulateBridgeMessage({ videoId: 'liveNavBvid', loudnessDb: null, isLiveContent: false, isLiveNow: false,
+          channelId: 'UClvNavB', author: 'Live Nav B', liveLkfs: null });
+        await settle();
+        for (const let_go of held.splice(0)) let_go();
+        await applying;
+        await settle();
+        const s = ytcv.state;
+        assert(s._lastVideoId === 'liveNavBvid' && s.appliedVideoId === 'liveNavBvid' && s._lastProcessedVideo === mockVideoEl,
+          `the apply has run for the new video (${s._lastVideoId} / ${s.appliedVideoId} / ${s._lastProcessedVideo?.id})`);
+        assert(s.currentChannel.id === 'UClvNavB' && s.currentGain === 0.4 && s.connectedVideo === mockVideoEl,
+          `with the new channel's gain on the new player (${s.currentChannel.id} / ${s.currentGain} / ${s.connectedVideo?.id})`);
+        assert(entryNow().gainLive !== undefined, `and the live save, let go of, still lands (${JSON.stringify(entryNow())})`);
+      } finally {
+        chrome.runtime.sendMessage = realSend;
+      }
+    }
+
     // Leave nothing following for the cases after these.
     onAir({ autoLive: false });
     ytcv._set('currentIsLiveNow', false);
@@ -10605,6 +10728,136 @@ async function runTests() {
       await firePlay({ id: 'an-ad-preview' });
       assert(mockSentMessages.filter((m) => m?.type === 'store:saveChannelGain').length === 0,
         'a play of another element applies nothing');
+    }
+
+    // Holds every channel write the content script sends until the case lets
+    // it go, answered then as the worker answers it, or as a refusal.
+    const holdChannelWrites = () => {
+      const realSend = chrome.runtime.sendMessage;
+      const held = [];
+      chrome.runtime.sendMessage = (m) => (m?.type === 'store:saveChannelGain'
+        ? new Promise((resolve) => held.push((refuse) => resolve(refuse
+          ? { ok: false, reason: 'storage-update-failed' }
+          : realSend.call(chrome.runtime, m))))
+        : realSend.call(chrome.runtime, m));
+      return {
+        held,
+        release(refuse = false) { for (const let_go of held.splice(0)) let_go(refuse); },
+        restore() { chrome.runtime.sendMessage = realSend; }
+      };
+    };
+
+    section('Navigation: a navigation while Auto\'s own save is out is applied to the new video');
+    for (const [mode, stored] of [['lands', 0.5], ['same value', null], ['fails', 0.5]]) {
+      await onVideo({ entry: { gainVideo: 0.5, autoApplyLoudnessVideo: true }, loudnessDb: -6 });
+      if (stored === null) mockStorage.channelVolumes[TT_CH].gainVideo = calcGain(-6, -18);
+      else mockStorage.channelVolumes[TT_CH].gainVideo = stored;
+      mockStorage.channelVolumes.UCnavB = { name: 'Nav B', gainVideo: 0.4, autoApplyLoudnessVideo: false };
+      Object.assign(mockVideoEl, { paused: false, muted: false });
+      const writes = holdChannelWrites();
+      try {
+        const applying = ytcv.triggerApply();
+        await settle();
+        assert(writes.held.length === 1, `Auto's own save for the first video is out (${mode}: ${writes.held.length})`);
+        setURL('/watch', 'navBvid');
+        mockVideoEl = { id: 'nav-b-video', paused: false, muted: false };
+        fireNavigateFinish();
+        await settle();
+        simulateBridgeMessage({ videoId: 'navBvid', loudnessDb: null, isLiveContent: false, channelId: 'UCnavB', author: 'Nav B' });
+        await settle();
+        writes.release(mode === 'fails');
+        await applying;
+        await settle();
+        const s = ytcv.state;
+        assert(s._lastVideoId === 'navBvid' && s.appliedVideoId === 'navBvid' && s._lastProcessedVideo === mockVideoEl,
+          `the apply has run for the new video (${mode}: ${s._lastVideoId} / ${s.appliedVideoId} / ${s._lastProcessedVideo?.id})`);
+        assert(s.currentChannel.id === 'UCnavB' && s.currentAutoApplyLoudnessVideo === false && s.currentGain === 0.4
+          && s.connectedVideo === mockVideoEl,
+          `with the new channel's Auto state and gain on the new player (${mode}: ${s.currentChannel.id} / ${s.currentAutoApplyLoudnessVideo} / ${s.currentGain} / ${s.connectedVideo?.id})`);
+      } finally {
+        writes.restore();
+      }
+    }
+
+    section('Navigation: after a navigation while Auto\'s own save is out, the new video\'s Auto save is made from its message');
+    {
+      await onVideo({ entry: { gainVideo: 0.5, autoApplyLoudnessVideo: true }, loudnessDb: -6 });
+      mockStorage.channelVolumes.UCnavC = { name: 'Nav C', autoApplyLoudnessVideo: true };
+      Object.assign(mockVideoEl, { paused: false, muted: false });
+      const writes = holdChannelWrites();
+      let applying;
+      try {
+        applying = ytcv.triggerApply();
+        await settle();
+        setURL('/watch', 'navCvid');
+        mockVideoEl = { id: 'nav-c-video', paused: false, muted: false };
+        fireNavigateFinish();
+        await settle();
+        writes.release();
+        await applying;
+        await settle();
+      } finally {
+        writes.restore();
+      }
+      mockSentMessages.length = 0;
+      simulateBridgeMessage({ videoId: 'navCvid', loudnessDb: -6, baseLoudnessDb: -6, isLiveContent: false, channelId: 'UCnavC', author: 'Nav C' });
+      await settle();
+      const saves = mockSentMessages.filter((m) => m?.type === 'store:saveChannelGain' && m.channelId === 'UCnavC');
+      assert(ytcv.state.appliedVideoId === 'navCvid',
+        `the first apply for the new video has run before its message (${ytcv.state.appliedVideoId})`);
+      assert(saves.length > 0 && saves.every((m) => m.gain === calcGain(-6, -18))
+        && mockStorage.channelVolumes.UCnavC.gainVideo === calcGain(-6, -18),
+        `and the new video's level is stored by Auto (${JSON.stringify(saves.map((m) => m.gain))})`);
+    }
+
+    section('Auto\'s own save: unmuting a playing video makes it');
+    {
+      const fire = async (type, target) => {
+        for (const fn of mockEventListeners[type] || []) fn({ target });
+        await settle();
+      };
+      const auto = () => mockSentMessages.filter((m) => m?.type === 'store:saveChannelGain' && m.channelId === TT_CH);
+      await onVideo({ entry: { gainVideo: 0.5, autoApplyLoudnessVideo: true } });
+      ytcv._set('currentLoudnessDb', -6);
+      ytcv._set('currentBaseLoudnessDb', -6);
+      Object.assign(mockVideoEl, { paused: false, muted: true });
+      await fire('play', mockVideoEl);
+      assert(auto().length === 0, `a muted start stores nothing (${JSON.stringify(auto())})`);
+      await fire('volumechange', mockVideoEl);
+      assert(auto().length === 0, 'nor a volume change that leaves it muted');
+      mockVideoEl.muted = false;
+      await fire('volumechange', mockVideoEl);
+      assert(auto().length === 1 && mockStorage.channelVolumes[TT_CH].gainVideo === calcGain(-6, -18),
+        `unmuted while playing, Auto's gain is stored (${JSON.stringify(auto().map((m) => m.gain))})`);
+      // A later apply with no level falls back to the gain stored then.
+      ytcv._set('currentLoudnessDb', null);
+      ytcv._set('currentBaseLoudnessDb', null);
+      await ytcv.applyPreferredGain();
+      await settle();
+      assert(ytcv.state.currentGain === calcGain(-6, -18), `and the fallback plays it (${ytcv.state.currentGain})`);
+
+      // Unmuted while paused: nothing is stored.
+      await onVideo({ entry: { gainVideo: 0.5, autoApplyLoudnessVideo: true } });
+      ytcv._set('currentLoudnessDb', -6);
+      ytcv._set('currentBaseLoudnessDb', -6);
+      Object.assign(mockVideoEl, { paused: true, muted: true });
+      await fire('volumechange', mockVideoEl);
+      mockVideoEl.muted = false;
+      await fire('volumechange', mockVideoEl);
+      assert(auto().length === 0, `unmuted while paused, nothing is stored (${JSON.stringify(auto())})`);
+
+      // A volume change of a video playing unmuted, and another element's
+      // unmute, apply nothing.
+      await onVideo({ entry: { gainVideo: 0.5, autoApplyLoudnessVideo: true } });
+      ytcv._set('currentLoudnessDb', -6);
+      ytcv._set('currentBaseLoudnessDb', -6);
+      Object.assign(mockVideoEl, { paused: false, muted: false });
+      await fire('volumechange', mockVideoEl);
+      const ad = { id: 'an-ad-preview', paused: false, muted: true };
+      await fire('volumechange', ad);
+      ad.muted = false;
+      await fire('volumechange', ad);
+      assert(auto().length === 0, `a volume change that is no unmute, and another element's unmute, store nothing (${JSON.stringify(auto())})`);
     }
 
     section('Navigation: nothing a message brings is stored before the first apply for the new URL');
