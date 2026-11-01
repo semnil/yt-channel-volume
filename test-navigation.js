@@ -646,7 +646,7 @@ const playerResponse = (over = {}) => ({
 // popup.js in this repository before — it was read as text and matched against
 // regular expressions — so every branch of it, and every message it builds,
 // was reached by nobody.
-function makePopup({ tabUrl = 'https://www.youtube.com/watch?v=abc', answer = null, displayUnit = '%' } = {}) {
+function makePopup({ tabUrl = 'https://www.youtube.com/watch?v=abc', answer = null, displayUnit = '%', failSettingsRead = false } = {}) {
   const nodes = new Map();
   const popupTimers = [];
   const asked = [];
@@ -730,7 +730,10 @@ function makePopup({ tabUrl = 'https://www.youtube.com/watch?v=abc', answer = nu
         openOptionsPage() {},
         onMessage: { addListener: (fn) => broadcastListeners.push(fn) }
       },
-      storage: { sync: { get: async () => ({ [SETTINGS_KEY]: { displayUnit } }) } }
+      storage: { sync: { get: async () => {
+        if (failSettingsRead) throw new Error('the settings read failed');
+        return { [SETTINGS_KEY]: { displayUnit } };
+      } } }
     }
   };
   popupSandbox.globalThis = popupSandbox;
@@ -6725,6 +6728,13 @@ async function runTests() {
     assert(gone.node('main').style.display === 'none'
       && gone.node('reloadNeeded').style.display === '',
       `a page that cannot answer is asked to be reloaded (${gone.node('reloadNeeded').style.display})`);
+
+    // So is a popup that cannot read the settings: it asks no tab anything.
+    const unread = makePopup({ failSettingsRead: true });
+    await unread.settled();
+    assert(unread.node('main').style.display === 'none'
+      && unread.node('reloadNeeded').style.display === '' && unread.attempts.length === 0,
+      `a popup that cannot read the settings asks to be reloaded, and asks the tab nothing (${JSON.stringify(unread.attempts)})`);
   }
 
   section('Popup: a broadcast from its own tab only');

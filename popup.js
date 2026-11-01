@@ -416,8 +416,19 @@
 
   async function init() {
     try {
-      // Load display unit preference
-      displayUnit = (await readSettings()).displayUnit || '%';
+      // Load display unit preference. A popup that cannot read the settings is
+      // one the extension cannot reach as it stands, and says so as it does
+      // for a tab it cannot reach.
+      let settings;
+      try {
+        settings = await readSettings();
+      } catch (err) {
+        console.error('[YTCV] settings not read', err);
+        mainEl.style.display = 'none';
+        reloadNeededEl.style.display = '';
+        return;
+      }
+      displayUnit = settings.displayUnit || '%';
 
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (!tab || !tab.url?.includes('youtube.com')) {
