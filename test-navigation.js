@@ -10380,11 +10380,18 @@ async function runTests() {
         failStorageSet: true
       });
       await options.settle();
+      const tableBefore = options.node('channelList').children[0];
       await act(options);
       await options.settle();
       watched.stop();
       assert(shows(options),
         `${what}: the control shows the stored value again`);
+      // The table is drawn again only where the unit moved, so a control of it
+      // keeps its focus through the failed save of another setting.
+      if (what !== 'Display unit') {
+        assert(tableBefore && options.node('channelList').children[0] === tableBefore,
+          `${what}: and the table, whose unit did not move, is not drawn again`);
+      }
       assert(options.node('settingsError').classList.contains('hidden') === false &&
         options.node('settingsError').textContent === 'settingsSaveFailed',
         `${what}: and the page says the setting was not saved (${options.node('settingsError').className} / ${options.node('settingsError').textContent})`);
