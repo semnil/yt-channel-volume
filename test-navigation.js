@@ -10895,6 +10895,16 @@ async function runTests() {
       assert(writes().length === 1 && writes()[0].value === -26,
         `a repeat that moves nothing keeps the hold's write (${JSON.stringify(writes())})`);
 
+      // A press of the pointer during the hold keeps the hold and what the key
+      // moved to, and the key's release writes it.
+      options.sent.length = 0;
+      await hold([-30]);
+      await options.fire('targetSlider', 'pointerdown');
+      await options.fire('targetSlider', 'pointerup');
+      await options.fire('targetSlider', 'keyup', { key: 'ArrowRight' });
+      assert(writes().length === 1 && writes()[0].value === -30,
+        `a press of the pointer during a key hold leaves the key's value to its release (${JSON.stringify(writes())})`);
+
       // The key already down, pressed again without a repeat, stays in the
       // hold, and the release writes what the hold moved to.
       options.sent.length = 0;
@@ -10910,6 +10920,30 @@ async function runTests() {
       await options.fire('targetSlider', 'input');
       await options.fire('targetSlider', 'change');
       assert(writes().length === 1 && writes()[0].value === -12, `a drag writes at its end (${JSON.stringify(writes())})`);
+
+      // A drag the browser cancels writes nothing: the slider and its label go
+      // back to the target, and the change after it moves nothing.
+      options.sent.length = 0;
+      await options.fire('targetSlider', 'pointerdown');
+      options.node('targetSlider').value = '-8';
+      await options.fire('targetSlider', 'input');
+      await options.fire('targetSlider', 'pointercancel');
+      assert(Number(options.node('targetSlider').value) === -12 && options.node('targetValue').textContent === '-12 LUFS',
+        `a cancelled drag draws the target (${options.node('targetSlider').value} / ${options.node('targetValue').textContent})`);
+      options.node('targetSlider').value = '-9';
+      await options.fire('targetSlider', 'input');
+      await options.fire('targetSlider', 'change');
+      assert(writes().length === 0 && Number(options.node('targetSlider').value) === -12,
+        `and writes nothing after it (${JSON.stringify(writes())} / ${options.node('targetSlider').value})`);
+
+      // A key held through a cancelled press stays held, and its release
+      // writes what it moved to.
+      await hold([-14]);
+      await options.fire('targetSlider', 'pointerdown');
+      await options.fire('targetSlider', 'pointercancel');
+      await options.fire('targetSlider', 'keyup', { key: 'ArrowRight' });
+      assert(writes().length === 1 && writes()[0].value === -14,
+        `a cancelled press during a key hold leaves the key's value to its release (${JSON.stringify(writes())})`);
     }
 
     section('Settings page: a drag on Target LUFS that loses focus ends there');

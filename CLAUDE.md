@@ -100,6 +100,7 @@ flowchart LR
 - Popup cards: setCardValue (a card's value, its unit in a span.unit, and its classes), setUnknown (`---` with the classes and `unknown`)
 - Gain for a level: gainForLevel (10^((target - level) / 20), within the gain range, 1 where that is not finite)
 - Slider keys: SLIDER_VALUE_KEYS, isSliderMoveKey, createSliderKeys (the keys that move a range input's value, which alone make a key hold on the popup's and the settings page's sliders, and the tracker of those down on one slider)
+- Settings slider gesture: holdSettingsSlider (one write per key hold or drag on a settings slider; a press of the pointer during a key hold keeps the key's value for its keyup; answers whether a key or the pointer is held)
 - i18n: msg(), applyI18n (each `data-i18n` element's message, the key itself where the catalog has none, and `<html lang>` from `pageLanguage`)
 - Page reveal: revealPage (lays out what was written, then takes `body.initializing` off on the next frame)
 - Page load: runPageLoad (a page's first load, failed where it rejects or has not settled within PAGE_LOAD_TIMEOUT_MS, 3 s, and the page shown once it is answered)
@@ -128,7 +129,7 @@ flowchart LR
 
 **options.html / options.js (settings screen, opened in its own tab)**
 
-- Target LUFS slider (-30 to -6 LUFS, default -18). A key held on it — the keys that move the value alone (`createSliderKeys`); Tab or a modifier leaves the hold as it is — changes the label alone and writes once, at the `keyup` of the last such key held or at a `blur` that comes first. A drag ends at a `blur` during it, where Chrome's `change` writes; until the next press (a `pointerdown`, or a `keydown` that is not a repeat) the `input` and `change` after a blur that ended a drag or a key hold move nothing, and the `change` puts the slider back to the target
+- Target LUFS slider (-30 to -6 LUFS, default -18), held to one write per gesture by `holdSettingsSlider`. A key held on it — the keys that move the value alone (`createSliderKeys`); Tab or a modifier leaves the hold as it is — changes the label alone and writes once, at the `keyup` of the last such key held or at a `blur` that comes first. A drag ends at a `blur` during it, where Chrome's `change` writes; until the next press (a `pointerdown`, or a `keydown` that is not a repeat) the `input` and `change` after a blur that ended a drag or a key hold move nothing, and the `change` puts the slider back to the target
 - Auto-apply LUFS for all channels (Video / Live separately, default OFF, inherited by a type with no individual Auto flag)
 - Display unit toggle (% / dB). The button already active writes nothing
 - Gain overlay toggle (shown next to the player's volume bar, default OFF)
