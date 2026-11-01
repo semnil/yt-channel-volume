@@ -20,6 +20,9 @@
   "hintNoLoudness": {
     "message": "Loudness のある動画で使用"
   },
+  "gainSaveFailed": {
+    "message": "ゲインを保存できませんでした。もう一度お試しください"
+  },
   "hintNoChannel": {
     "message": "チャンネル未検出"
   },

@@ -39,6 +39,9 @@
   // the save at the end. Read at send time instead, the drag would move the
   // level of the video it moved to and save its gain under it.
   let sliderAppliesTo = null;
+  // The channel and type the gesture was made for, which its save's notice
+  // is left to.
+  let sliderOwner = '';
   let activeTabId = null;
   let hasLoudness = false;
   let currentLoudnessDb = null;
@@ -52,6 +55,11 @@
   let currentVideoType = 'video';
   let autoApplyLoudnessVideo = false;
   let autoApplyLoudnessLive = false;
+  // The last save the viewer asked for did not land (createSaveNotice in
+  // core/common.js). It stands until a save lands or the tab is on another
+  // channel or type.
+  const saveNotice = createSaveNotice();
+  const ownerKey = () => (currentChannel.id ? currentChannel.id + '|' + currentVideoType : '');
 
   function fmtGain(gain) { return formatGain(gain, displayUnit); }
 
@@ -113,6 +121,7 @@
     currentContentLufs = hasLoudness ? state.contentLufs : null;
     lastGain = state.gain ?? 1.0;
     currentVideoType = state.videoType || 'video';
+    saveNotice.showOwner(ownerKey());
     autoApplyLoudnessVideo = !!state.autoApplyLoudnessVideo;
     autoApplyLoudnessLive = !!state.autoApplyLoudnessLive;
     autoApplyVideoToggle.checked = autoApplyLoudnessVideo;
@@ -164,13 +173,21 @@
       applyBtn.textContent = msg('applyToChannel');
       applyHint.textContent = msg('hintNoLoudness');
     }
+    // The save failure is the viewer's own last action, so it takes the hint's
+    // place.
+    saveNotice.draw(applyHint);
   }
 
   // ── Send messages to content script ────────────────────────────────
 
   function sendMsg(msg) {
-    if (!activeTabId) return Promise.reject();
-    return chrome.tabs.sendMessage(activeTabId, msg);
+    return sendTabMessage(activeTabId, msg);
+  }
+
+  function readState() {
+    sendMsg({ type: 'getState' }).then(state => {
+      if (state) updateUI(state);
+    }).catch(() => {});
   }
 
   // While the page shows a stream on air or a live level, the live level is
@@ -193,11 +210,19 @@
 
   function sendManualGain(msg) {
     sendMsg(msg).then(resp => {
-      if (resp?.ok) return;
-      sendMsg({ type: 'getState' }).then(state => {
-        if (state) updateUI(state);
-      }).catch(() => {});
+      if (!resp?.ok) readState();
     }).catch(() => {});
+  }
+
+  // A save that did not land, refused or failed, is said so, and the state is
+  // read again: the tab has the level storage holds.
+  function sendGainSave(msg, owner) {
+    const answered = saveNotice.send(owner);
+    sendMsg(msg).catch(() => null).then(resp => {
+      const saved = answered(resp);
+      updateApplyBtn();
+      if (!saved) readState();
+    });
   }
 
   // ── Event handlers ─────────────────────────────────────────────────
@@ -207,13 +232,14 @@
   });
 
   applyBtn.addEventListener('click', () => {
-    sendMsg({ type: 'applyLoudness', appliesTo: currentAppliesTo }).then(() => {
-      // Whether it went through or was refused for a state that has moved, what
-      // is on screen came from before the gesture and is read again.
-      sendMsg({ type: 'getState' }).then(state => {
-        if (state) updateUI(state);
-      }).catch(() => {});
-    }).catch(() => {});
+    const answered = saveNotice.send();
+    sendMsg({ type: 'applyLoudness', appliesTo: currentAppliesTo }).catch(() => null).then(resp => {
+      // Whether it went through or not, what is on screen came from before the
+      // gesture and is read again; one that did not is said so.
+      answered(resp);
+      updateApplyBtn();
+      readState();
+    });
   });
 
   function resyncFromContent(toggle, videoType) {
@@ -271,6 +297,7 @@
   // keeps a drag on the state it began on.
   const beginSliderGesture = () => {
     sliderAppliesTo = currentAppliesTo;
+    sliderOwner = ownerKey();
     sliderGestureEnded = false;
   };
   // A drag also ends where the popup loses focus during it. Chrome fires
@@ -348,7 +375,10 @@
     if (sliderGestureEnded) return;
     if (sliderKeyHeld) sliderKeyMoved = true;
     // An input that arrived without either of those begins one too.
-    if (sliderAppliesTo === null) sliderAppliesTo = currentAppliesTo;
+    if (sliderAppliesTo === null) {
+      sliderAppliesTo = currentAppliesTo;
+      sliderOwner = ownerKey();
+    }
     const pct = Number(volumeSlider.value);
     const gain = percentToGain(pct);
     lastGain = gain;
@@ -368,14 +398,15 @@
 
   function saveSliderGain() {
     const appliesTo = sliderAppliesTo ?? currentAppliesTo;
+    const owner = sliderAppliesTo === null ? ownerKey() : sliderOwner;
     sliderAppliesTo = null;
     previewUnsaved = false;
     if (currentChannel.id) {
-      sendManualGain({
+      sendGainSave({
         type: 'setGain',
         appliesTo,
         gain: lastGain
-      });
+      }, owner);
     }
   }
 
@@ -400,7 +431,7 @@
       volumeValueEl.textContent = f.text + f.unit;
       setCardValue(currentVolEl, f.text, f.unit, 'current');
       if (currentChannel.id) {
-        sendManualGain({
+        sendGainSave({
           type: 'setGain',
           appliesTo: currentAppliesTo,
           gain

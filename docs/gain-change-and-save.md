@@ -233,7 +233,8 @@ sequenceDiagram
       C-->>P: ok false, request failed
     end
   end
-  opt the answer is not ok
+  opt the answer is not ok, or sending failed
+    Note over P: gainSaveFailed in the hint
     P->>C: getState
     C-->>P: state, drawn by updateUI
   end
@@ -245,8 +246,9 @@ sequenceDiagram
 - The stored value is the applied gain (after `commitGain` clamped it) divided by the rendition ratio, so it is held against the plain rendition. Where neither level is known, the ratio is 1 and `heldAgainstPlain` is false.
 - `autoApply` is the Auto state of the type at that moment, written as the channel's own flag. Since the lock refuses Auto on with a level, a save with Auto on is one made where no level is held (the gain Auto falls back to), and it pins Auto on for the channel.
 - `restoreGainAfterFailedSave()` ends a preview still running and runs `applyPreferredGain()`, so the gain goes back to whatever that function resolves from storage. The popup is answered after it.
+- Any answer that is not `ok` — a refusal, a write that failed, or a send that rejects — raises the popup's notice (`createSaveNotice` in `core/common.js`): `#applyHint` reads "Could not save the gain. Please try again." (`gainSaveFailed`) in the `error` colour in place of its hint, and the popup reads the state again. Only the answer to the latest save sent while the channel and type shown now were shown is taken: an earlier save's, and one made for another channel, leave the notice as it is. A save or an Apply answered `ok` takes the notice down, and so does a state naming another channel, or the same channel as the other type; a state naming no channel leaves it as it is.
 
-Drawn from: `popup.js` the `volumeSlider` `change` listener, the preset `click` listeners, `sendManualGain`; `content.js` `handleMessage` (`setGain`), `fillCurrentChannelNameFromDomFallback`, `playingGainToStored`, `saveManualChannelGain`, `restoreGainAfterFailedSave`.
+Drawn from: `popup.js` the `volumeSlider` `change` listener, the preset `click` listeners, `sendGainSave`, `updateApplyBtn`; `core/common.js` `sendTabMessage`, `createSaveNotice`; `content.js` `handleMessage` (`setGain`), `fillCurrentChannelNameFromDomFallback`, `playingGainToStored`, `saveManualChannelGain`, `restoreGainAfterFailedSave`.
 
 ## Popup: "Apply to channel"
 
@@ -280,6 +282,9 @@ sequenceDiagram
       C-->>P: ok false, request failed
     end
   end
+  opt the answer is not ok, or sending failed
+    Note over P: gainSaveFailed in the hint
+  end
   P->>C: getState
   C-->>P: state, drawn by updateUI
 ```
@@ -287,9 +292,9 @@ sequenceDiagram
 - The button is enabled where Auto is off for the type, a Loudness is shown and a channel is detected. Its label is `applyToChannelWithValue` ("Apply $VALUE$ to channel") with the suggested gain, followed by the type label in parentheses.
 - `autoApply` is the Auto state at that moment, which is off because the handler has refused Auto on before this point. The channel's flag for the type is written as `false`, so the channel stops following the all-channel default for that type.
 - The live level in hand (`readLiveLkfs`) goes before `loudnessDb`. Its gain is stored as played, without the mark.
-- Whatever the answer, the popup asks `getState` and redraws.
+- Whatever the answer, the popup asks `getState` and redraws. An answer that is not `ok`, and a send that rejects, raise the notice that the gain is not saved, as for the slider's save (see the previous section).
 
-Drawn from: `popup.js` `updateApplyBtn`, the `applyBtn` `click` listener; `content.js` `handleMessage` (`applyLoudness`), `calcGainFromLiveLevel`, `calcGainFromLoudness`, `calcStoredGainFromLoudness`, `saveLiveChannelGain`, `saveManualChannelGain`, `restoreGainAfterFailedSave`.
+Drawn from: `popup.js` `updateApplyBtn`, the `applyBtn` `click` listener; `core/common.js` `createSaveNotice`; `content.js` `handleMessage` (`applyLoudness`), `calcGainFromLiveLevel`, `calcGainFromLoudness`, `calcStoredGainFromLoudness`, `saveLiveChannelGain`, `saveManualChannelGain`, `restoreGainAfterFailedSave`.
 
 ## Popup: "Auto-apply LUFS" toggle
 

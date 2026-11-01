@@ -20,6 +20,9 @@
   "hintNoLoudness": {
     "message": "Use on a video with Loudness data"
   },
+  "gainSaveFailed": {
+    "message": "Could not save the gain. Please try again."
+  },
   "hintNoChannel": {
     "message": "Channel not detected"
   },
