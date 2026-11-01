@@ -679,7 +679,7 @@ sequenceDiagram
     O->>W: store:clearChannels
   end
   W->>S: そのキーを除いた、またはキーが 1 つも無い channelVolumes を set
-  W-->>O: ok true、または ok false をコンソールに記録
+  W-->>O: ok true、または ok false をコンソールに記録して alert で知らせる (channelUpdateFailed)
   S-->>O: storage.onChanged、renderChannels(newValue)
   S-->>C: channelVolumes の storage.onChanged
   Note over C: 消されたチャンネルを開いているタブは全チャンネル共通の既定値に従い、1.0、または Auto が ON でレベルがあれば Auto のゲインを鳴らす
@@ -687,7 +687,7 @@ sequenceDiagram
 
 - 削除ボタンは行の「×」(マウスを重ねると「削除」と出る)。「全削除」は先に「保存済みチャンネルをすべて削除しますか？」と聞く。
 - `deleteChannel` は一覧に出ているキーをそのまま受け取るので、`@handle` のキーも消せる。
-- 一覧は変更の知らせからだけ描き直す。失敗すると一覧はそのままで、`[YTCV] channel not deleted` / `[YTCV] channels not cleared` を記録する。
+- 一覧は変更の知らせからだけ描き直す。失敗すると一覧はそのままで、`[YTCV] channel not deleted` / `[YTCV] channels not cleared` を記録し、alert (`channelUpdateFailed`) で知らせる。
 - `content.js` の受け取り側は何も書き戻さない。そのチャンネルを開いているタブで次に適用が動くと (ブリッジの返事、移動)、Auto が ON でレベルがあれば、Auto のゲインがまた保存される。
 
 図のもと: `options.js` の `renderChannels` (`.ch-del` の `click` の受け取り側)、`clearAllBtn` の受け取り側、`requestChannelWrite`。`utils.js` の `CHANNEL_WRITES.deleteChannel`、`CHANNEL_WRITES.clearChannels`。`content.js` の `chrome.storage.onChanged` の受け取り側。

@@ -679,7 +679,7 @@ sequenceDiagram
     O->>W: store:clearChannels
   end
   W->>S: set channelVolumes without the key, or with no key
-  W-->>O: ok true, or ok false logged to the console
+  W-->>O: ok true, or ok false logged to the console and alerted (channelUpdateFailed)
   S-->>O: storage.onChanged, renderChannels(newValue)
   S-->>C: storage.onChanged for channelVolumes
   Note over C: a tab on a removed channel follows the all-channel default and plays 1.0, or the Auto gain when Auto is on with a level
@@ -687,7 +687,7 @@ sequenceDiagram
 
 - The delete button is the "×" on a row (title "Delete"). "Clear all" asks "Delete all saved channels?" first.
 - `deleteChannel` takes the key as it is listed, so an `@handle` key can be deleted too.
-- The list is redrawn only from the change notification; a failure leaves it as it was and logs `[YTCV] channel not deleted` / `[YTCV] channels not cleared`.
+- The list is redrawn only from the change notification; a failure leaves it as it was, logs `[YTCV] channel not deleted` / `[YTCV] channels not cleared`, and says so in an alert (`channelUpdateFailed`).
 - The `content.js` listener writes nothing back. The next apply in a tab on that channel (a bridge answer, a navigation) stores Auto's gain again when Auto is on with a level.
 
 Drawn from: `options.js` `renderChannels` (the `.ch-del` click listener), the `clearAllBtn` listener, `requestChannelWrite`; `utils.js` `CHANNEL_WRITES.deleteChannel`, `CHANNEL_WRITES.clearChannels`; `content.js` the `chrome.storage.onChanged` listener.
