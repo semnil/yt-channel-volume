@@ -246,7 +246,7 @@ sequenceDiagram
 - 保存する値は、適用ゲイン (`commitGain` が切りそろえたあとの値) を版の比率で割ったもので、素の音声の版を基準にした値になる。どちらのレベルも分からないときは、比率は 1 で `heldAgainstPlain` は false。
 - `autoApply` はその時点のその種別の Auto の状態で、チャンネル個別のフラグとして書かれる。Auto が ON でレベルがあるときは操作が断られるので、Auto が ON のまま保存されるのはレベルを持っていないとき (Auto が代わりに保存ゲインを使うとき) で、その保存はチャンネルの Auto を ON に固定する。
 - `restoreGainAfterFailedSave()` は、続いている試し聞きを終わらせて `applyPreferredGain()` を動かすので、ゲインはその関数が保存内容から決める値に戻る。ポップアップへの返事はそのあと。
-- 返事が `ok` でないとき (断られた、書き込みが失敗した、送信が失敗した) は、ポップアップの知らせを立てる (`core/common.js` の `createSaveNotice`)。`#applyHint` はヒントの代わりに「ゲインを保存できませんでした。もう一度お試しください」(`gainSaveFailed`) を `error` の色で出し、ポップアップは状態を読み直す。保存か適用の返事が `ok` なら知らせは消え、別のチャンネルの状態、または同じチャンネルのもう一方の種別の状態を受け取ったときも消える。チャンネルの無い状態では、知らせはそのまま。
+- 返事が `ok` でないとき (断られた、書き込みが失敗した、送信が失敗した) は、ポップアップの知らせを立てる (`core/common.js` の `createSaveNotice`)。`#applyHint` はヒントの代わりに「ゲインを保存できませんでした。もう一度お試しください」(`gainSaveFailed`) を `error` の色で出し、ポップアップは状態を読み直す。使うのは、今のチャンネルと種別を表示している間に送った最後の保存の返事だけで、それより前の保存の返事と、別のチャンネルのときに送った保存の返事では、知らせは変わらない。保存か適用の返事が `ok` なら知らせは消え、別のチャンネルの状態、または同じチャンネルのもう一方の種別の状態を受け取ったときも消える。チャンネルの無い状態では、知らせはそのまま。
 
 図のもと: `popup.js` の `volumeSlider` の `change` の受け取り側、プリセットの `click` の受け取り側、`sendGainSave`、`updateApplyBtn`。`core/common.js` の `sendTabMessage`、`createSaveNotice`。`content.js` の `handleMessage` (`setGain`)、`fillCurrentChannelNameFromDomFallback`、`playingGainToStored`、`saveManualChannelGain`、`restoreGainAfterFailedSave`。
 

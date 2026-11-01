@@ -107,7 +107,7 @@ flowchart LR
 - HTML escape: esc()
 - Settings page error line: showSettingsError (`#settingsError`, shown with a catalog message or hidden)
 - Popup state retry: retryGetState (asks again for the state every interval, a set number of times, until a level is in hand)
-- Popup messages: sendTabMessage (the popup's message to its tab, refused where it holds none), createSaveNotice (the notice under the Apply button that a gain is not saved, raised by an answer that is not ok and taken down by one that is or by another owner)
+- Popup messages: sendTabMessage (the popup's message to its tab, refused where it holds none), createSaveNotice (the notice under the Apply button that a gain is not saved, raised by the answer to the latest save sent for the owner shown where it is not ok, and taken down by one that is or by another owner)
 
 **utils.js (shared, loaded by content / popup / options / background + tests)**
 

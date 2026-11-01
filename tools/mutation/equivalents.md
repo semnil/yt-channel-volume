@@ -81,14 +81,14 @@ branch then writes values nothing reads differently.
 lines the false branch does, and reading a field of `undefined` is what sends it
 there.
 
-- `popup.js:241` a guard is always taken ×1 — if (state) {
+- `popup.js:243` a guard is always taken ×1 — if (state) {
 
 The retry's call. `hasLoudness` is set from the same response the check reads,
 and `retryGetState` (`core/common.js`) asks nothing while its `done()` — here
 `hasLoudness` — holds.
 
-- `popup.js:474` === becomes !== ×1 — ===
-- `popup.js:474` a guard is always taken ×1 — if (resp.contentLufs === null || resp.contentLufs === undefined) {
+- `popup.js:476` === becomes !== ×1 — ===
+- `popup.js:476` a guard is always taken ×1 — if (resp.contentLufs === null || resp.contentLufs === undefined) {
 
 ## page-bridge.js
 

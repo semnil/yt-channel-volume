@@ -10900,6 +10900,45 @@ async function runTests() {
         `the channel's other type takes it down (${hint().textContent})`);
     }
 
+    section('Popup: the notice takes the latest save\'s answer, for the channel it was made for');
+    {
+      // Each save is answered when the case lets it go.
+      const pending = [];
+      const shown = {
+        isWatchPage: true, channel: { id: 'UCorder', name: 'Order Ch', url: '' }, appliesTo: 'UCorder|video|orderVid',
+        loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0, targetLufs: -18, videoType: 'video',
+        autoApplyLoudnessVideo: false, autoApplyLoudnessLive: false
+      };
+      const popup = makePopup({ answer: async (m) => {
+        if (m.type === 'setGain' || m.type === 'applyLoudness') return new Promise((resolve) => pending.push(resolve));
+        return JSON.parse(JSON.stringify(shown));
+      } });
+      await popup.ready();
+      const hint = () => popup.node('applyHint').textContent;
+
+      // An earlier save that lands after a later one was refused.
+      await popup.firePreset(1, 'click');
+      await popup.firePreset(2, 'click');
+      pending[1]({ ok: false, reason: 'state moved' });
+      await tick(); await tick();
+      assert(hint() === 'gainSaveFailed', `the later save's refusal is said (${hint()})`);
+      pending[0]({ ok: true });
+      await tick(); await tick();
+      assert(hint() === 'gainSaveFailed', `and the earlier one landing does not take it down (${hint()})`);
+
+      // A save made for one channel that fails once another is shown.
+      pending.length = 0;
+      await popup.fire('applyBtn', 'click');
+      for (let turn = 0; turn < 4; turn++) await tick();
+      shown.channel = { id: 'UCother', name: 'Other Ch', url: '' };
+      shown.appliesTo = 'UCother|video|otherVid';
+      await popup.deliver({ type: 'stateChanged', ...shown });
+      assert(hint() !== 'gainSaveFailed', `another channel takes the notice down (${hint()})`);
+      pending[0]({ ok: false, reason: 'request failed' });
+      for (let turn = 0; turn < 4; turn++) await tick();
+      assert(hint() !== 'gainSaveFailed', `and a failure answered for the channel before does not put it up (${hint()})`);
+    }
+
     section('Sliders: a gesture begins on the primary button alone');
     for (const button of [1, 2]) {
       // Another button moves no value and its release goes to the window, so

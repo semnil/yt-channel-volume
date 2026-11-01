@@ -213,8 +213,9 @@
   // A save that did not land, refused or failed, is said so, and the state is
   // read again: the tab has the level storage holds.
   function sendGainSave(msg) {
+    const answered = saveNotice.send();
     sendMsg(msg).catch(() => null).then(resp => {
-      const saved = saveNotice.take(resp);
+      const saved = answered(resp);
       updateApplyBtn();
       if (!saved) readState();
     });
@@ -227,10 +228,11 @@
   });
 
   applyBtn.addEventListener('click', () => {
+    const answered = saveNotice.send();
     sendMsg({ type: 'applyLoudness', appliesTo: currentAppliesTo }).catch(() => null).then(resp => {
       // Whether it went through or not, what is on screen came from before the
       // gesture and is read again; one that did not is said so.
-      saveNotice.take(resp);
+      answered(resp);
       updateApplyBtn();
       readState();
     });
