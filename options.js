@@ -100,31 +100,17 @@
   }
 
   // A write that did not land leaves the control showing a value nothing holds,
-  // so the page goes back to what storage holds and says that it did. Where
-  // the settings cannot be read back either, nothing goes back, and the line
-  // asks for a reload.
-  // Answers whether the write landed.
-  async function saveSettingOrRestore(key, value) {
-    if (!settingsLoaded) return false;
-    try {
-      await saveSetting(key, value);
-      showSettingsError(false);
-      return true;
-    } catch (err) {
-      const revision = settingsRevision;
-      let shown = 'settingsSaveFailed';
-      try {
-        const settings = await readSettings();
-        if (revision === settingsRevision) applySettings(settings);
-        renderChannels(channelVolumes);
-      } catch (readErr) {
-        shown = 'settingsLoadFailed';
-        console.error('[YTCV] settings not read back after a failed save', readErr);
-      }
-      showSettingsError(true, shown);
-      console.error('[YTCV] setting not saved', err);
-      return false;
-    }
+  // so the page goes back to what storage holds and says that it did
+  // (saveSettingOrRestore in core/common.js). Answers whether the write landed.
+  function saveField(key, value) {
+    return saveSettingOrRestore(() => saveSetting(key, value), {
+      loaded: () => settingsLoaded,
+      read: () => readSettings(),
+      apply: applySettings,
+      revision: () => settingsRevision,
+      redraw: () => renderChannels(channelVolumes),
+      prefix: '[YTCV]'
+    });
   }
 
   function updateUnitButtons() {
@@ -227,7 +213,7 @@
     drawLabel: (value) => { targetValueEl.textContent = value + ' LUFS'; },
     save: (value) => {
       targetLufs = value;
-      saveSettingOrRestore('targetLufs', value);
+      saveField('targetLufs', value);
     }
   });
 
@@ -242,7 +228,7 @@
       const enabled = toggle.checked;
       toggle.disabled = true;
       try {
-        if (await saveSettingOrRestore(field, enabled)) {
+        if (await saveField(field, enabled)) {
           take(enabled);
           renderChannels(channelVolumes);
         }
@@ -253,7 +239,7 @@
   }
 
   overlayToggle.addEventListener('change', () => {
-    saveSettingOrRestore('showGainOverlay', overlayToggle.checked);
+    saveField('showGainOverlay', overlayToggle.checked);
   });
 
   clearAllBtn.addEventListener('click', async () => {
@@ -274,7 +260,7 @@
     displayUnit = btn.dataset.unit;
     updateUnitButtons();
     renderChannels(channelVolumes);
-    saveSettingOrRestore('displayUnit', displayUnit);
+    saveField('displayUnit', displayUnit);
   });
 
   // ── Storage change listener ─────────────────────────────────────
