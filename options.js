@@ -106,9 +106,14 @@
     return saveSettingOrRestore(() => saveSetting(key, value), {
       loaded: () => settingsLoaded,
       read: () => readSettings(),
-      apply: applySettings,
+      // The table is drawn again only where the unit moved, so a control of
+      // the table the viewer is on keeps its focus.
+      apply: (settings) => {
+        const unitBefore = displayUnit;
+        applySettings(settings);
+        if (displayUnit !== unitBefore) renderChannels(channelVolumes);
+      },
       revision: () => settingsRevision,
-      redraw: () => renderChannels(channelVolumes),
       prefix: '[YTCV]'
     });
   }
