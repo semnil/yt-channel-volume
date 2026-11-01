@@ -8632,6 +8632,9 @@ async function runTests() {
       'a video default that could not be saved goes back');
     assert(options.node('defaultAutoVideoToggle').disabled === false,
       'and the toggle is handed back either way');
+    assert(!options.node('settingsError').classList.contains('hidden')
+      && options.node('settingsError').textContent === 'settingsSaveFailed',
+      `and the page says the setting was not saved (${options.node('settingsError').textContent})`);
 
     options.node('defaultAutoLiveToggle').checked = true;
     await options.fire('defaultAutoLiveToggle', 'change');

@@ -295,35 +295,26 @@
   targetSlider.addEventListener('blur', endTargetGestureOnBlur);
   window.addEventListener('blur', endTargetGestureOnBlur);
 
-  defaultAutoVideoToggle.addEventListener('change', async () => {
-    const previous = defaultAutoApplyVideo;
-    const enabled = defaultAutoVideoToggle.checked;
-    defaultAutoVideoToggle.disabled = true;
-    try {
-      await saveSetting('autoApplyLoudnessVideoDefault', enabled);
-      defaultAutoApplyVideo = enabled;
+  // A default is taken out of use while its save is out. The table follows it
+  // at once; a save that does not land puts both back to what the settings
+  // hold and says so.
+  for (const [toggle, field] of [
+    [defaultAutoVideoToggle, 'autoApplyLoudnessVideoDefault'],
+    [defaultAutoLiveToggle, 'autoApplyLoudnessLiveDefault']
+  ]) {
+    toggle.addEventListener('change', async () => {
+      if (!settingsLoaded) return;
+      toggle.disabled = true;
+      if (field === 'autoApplyLoudnessVideoDefault') defaultAutoApplyVideo = toggle.checked;
+      else defaultAutoApplyLive = toggle.checked;
       renderChannels(channelVolumes);
-    } catch (_) {
-      defaultAutoVideoToggle.checked = previous;
-    } finally {
-      defaultAutoVideoToggle.disabled = false;
-    }
-  });
-
-  defaultAutoLiveToggle.addEventListener('change', async () => {
-    const previous = defaultAutoApplyLive;
-    const enabled = defaultAutoLiveToggle.checked;
-    defaultAutoLiveToggle.disabled = true;
-    try {
-      await saveSetting('autoApplyLoudnessLiveDefault', enabled);
-      defaultAutoApplyLive = enabled;
-      renderChannels(channelVolumes);
-    } catch (_) {
-      defaultAutoLiveToggle.checked = previous;
-    } finally {
-      defaultAutoLiveToggle.disabled = false;
-    }
-  });
+      try {
+        await saveSettingOrRestore(field, toggle.checked);
+      } finally {
+        toggle.disabled = false;
+      }
+    });
+  }
 
   overlayToggle.addEventListener('change', () => {
     saveSettingOrRestore('showGainOverlay', overlayToggle.checked);
