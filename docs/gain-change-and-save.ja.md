@@ -36,7 +36,7 @@
 - 古い形式の項目: `gain` (2 つの種別で共通の 1 つのゲイン) と `autoApplyLoudness` (2 つの種別で共通の 1 つのフラグ) は、両方の種別の値として読む。`setChannelGain` と `setChannelAutoApply` は、書き込みがそれに触れたときに種別ごとの項目へ広げる。
 - キーは UC 形式のチャンネル ID (`UC` の後に `[A-Za-z0-9_-]` が続く)。`@handle` のキーで保存されたものは、`adoptHandleEntry` が移すまでそのキーに残る。
 
-設定を読む側は、どれも `readSettings()` を通す: まず sync、service worker がまだ移していなければ local の写し、local が空で返ったときはもう一度 sync。
+設定を読む側は、どれも `readSettings()` ([channel-volume-core](https://github.com/semnil/channel-volume-core/blob/main/docs/shared-files.ja.md#settings)) を通す。
 
 ### 用語
 
@@ -93,8 +93,8 @@ sequenceDiagram
 ```
 
 - `content.js` は `requestChannelWrite` で送る。拡張機能とのつながりが切れているとき (`isContextValid()` が false) は、送らずに成功として終わる。`saveChannelGain` と `saveChannelAutoApply` は、チャンネル ID が無いときは送らない。ほかの送り手も送る前にチャンネル ID があることを確かめるので、`migrateLegacyGains` を除き、`content.js` が送る書き込みはどれもチャンネルを名指しする。
-- `CHANNEL_WRITES.saveChannelGain` / `saveChannelAutoApply` / `adoptHandleEntry` は、チャンネル ID が UC 形式でない、`url` があって文字列でない、`gain` が 0 から 6 の有限の数でない (`isStorableGain`)、`authorName` が文字列でない、のどれかなら、表を読む前に `WriteRefused` (`core/common.js`) を投げる。`deleteChannel` は空でない文字ならどのキーでも受け付け (`core/common.js` の `isRowKey`)、それ以外は断る。 文字でない・空の・チャンネル ID と同じ `name` は使わず (`core/common.js` の `applyEntryName`)、名前の無い行はチャンネル ID を名前にする。
-- `updateChannelVolumes` は service worker の中の書き込みを 1 本の promise のつながり (`channelVolumesWrite`) に並べる。そのため、ある書き込みの `get` と `set` の間に別の書き込みが割り込まない。1 つが失敗しても列は止まらない。`mutate` のあとで表が変わっておらず、`extraKeys` も無ければ、何も `set` しない。
+- `CHANNEL_WRITES.saveChannelGain` / `saveChannelAutoApply` / `adoptHandleEntry` は、チャンネル ID が UC 形式でない、`url` があって文字列でない、`gain` が 0 から 6 の有限の数でない (`isStorableGain`)、`authorName` が文字列でない、のどれかなら、表を読む前に `WriteRefused` (`core/common.js`) を投げる。`deleteChannel` は空でない文字ならどのキーでも受け付け (`core/common.js` の `isRowKey`)、それ以外は断る。 名前は `applyEntryName` ([channel-volume-core](https://github.com/semnil/channel-volume-core/blob/main/docs/shared-files.ja.md#stored-map)) で付け、名前の無い行はチャンネル ID を名前にする。
+- `updateChannelVolumes` は、`createStoredMapWriter` ([channel-volume-core](https://github.com/semnil/channel-volume-core/blob/main/docs/shared-files.ja.md#stored-map)) で作った service worker の `channelVolumes` の書き手。
 - この流れには debounce や throttle (続けて来る呼び出しをまとめたり間引いたりする仕組み) は無い。1 回の依頼が、列に並んだ 1 回の「読んで、書き換えて、書く」になる。
 
 それぞれの操作が書き込むもの:
@@ -189,11 +189,11 @@ sequenceDiagram
   Note over C: chrome.storage には何も書き込まない
 ```
 
-- 操作は `core/common.js` の `holdPopupSlider`。操作の途中でないときに来た `input` か `change` は、それ自身が `currentAppliesTo` の写しを取る。1 回のドラッグの間の `input` は、すべて同じ写しを運ぶ。
+- 操作は `holdPopupSlider` ([channel-volume-core](https://github.com/semnil/channel-volume-core/blob/main/docs/shared-files.ja.md#sliders))。操作の途中でないときに来た `input` か `change` は、それ自身が `currentAppliesTo` の写しを取る。1 回のドラッグの間の `input` は、すべて同じ写しを運ぶ。
 - 「Manual Volume」(スライダーとプリセット) は、その種別の Auto が ON で Loudness が表示されている間はポップアップ側で操作できなくなり、`content.js` も同じ状態を断る。
 - `input` イベント 1 回ごとに `setGainLive` を 1 回送る。debounce は無い。
 - 試し聞きが続いていて、`currentGestureState()` がまだその `appliesTo` と同じ間は、ほかから来たゲインをかけずに取っておく: `applyPreferredGain`、`applyAutomaticLoudnessGain`、`channelVolumes` の変更の受け取り側は `commitGainFromElsewhere` を通して (ライブのゲインは `commitLiveGain` を通して) ゲインを入れ、これらはゲインをそのままにして、ページが今鳴らしている要素にかけ直す。このため、試し聞きの間に作り直されたプレイヤーも、試し聞きのゲインでつながる。それぞれのほかの仕事 (受け取る状態、Auto 自身の保存、ライブの保存の判定) は続ける。状態が動いた試し聞きは、何も取っておかない。
-- ポップアップが保存していない試し聞きのあとでスライダーをポインターで押さえ続けている間は、ポップアップはその試し聞きを `PREVIEW_KEEP_ALIVE_MS` (1000 ms) ごとに送り直し、タブはそれを受け付けるたびに待ち直す。送り直しは、ポインターを離したとき、試し聞きを保存したとき、ポップアップを閉じたときに止まる。
+- スライダーをポインターで押さえ続けている間は、ポップアップが閉じるまで、ポップアップは試し聞きを送り直し (`holdPopupSlider`、[channel-volume-core](https://github.com/semnil/channel-volume-core/blob/main/docs/shared-files.ja.md#sliders))、タブはそれを受け付けるたびに待ち直す。
 - 試し聞きは、`setGain` が来たとき (次の節を参照) か、最後に受け付けた `setGainLive` から `PREVIEW_IDLE_MS` (2000 ms) たったときに終わる。後者で終わると、`applyPreferredGain()` がその時点の保存内容をかけ、ポップアップに知らせる。
 
 図のもと: `popup.js` の `volumeSlider` に対する `holdPopupSlider` の呼び出し、`sendManualGain`、`refreshDisplay`。`core/common.js` の `holdPopupSlider`、`PREVIEW_KEEP_ALIVE_MS`。`content.js` の `handleMessage` (`setGainLive`)、`currentGestureState`、`isCurrentManualGainLocked`、`commitGain`、`startPreview`、`endPreview`、`endIdlePreview`、`commitGainFromElsewhere`。
@@ -242,12 +242,12 @@ sequenceDiagram
 ```
 
 - プリセットボタンは「0%」「50%」「100%」「200%」「400%」「MAX」(`data-vol` は 600)。ポップアップがチャンネル ID を持っていなければ、スライダーとプリセットのボタンは押せなくなり (disabled)、何も送らない。
-- スライダーでキーを押し続ける間は、1 つの操作になる。押し続けになるのは値を動かすキー (`core/common.js` の `createSliderKeys`: 矢印キー、PageUp / PageDown、Home / End) だけで、ほかのキー (Tab や修飾キー) は操作の状態に触れない。そのキーの `keydown` で始まり (繰り返しや、押している間のほかのそのキー、押しているキーをもう一度押したときは始め直さない)、`input` のたびに `setGainLive` を送り、繰り返しごとに来る `change` では (押し続けている間のドラッグのものも。ポインターを押しても押し続けはそのまま続く) 何も送らず、押し続けている間に `input` があれば、押していたそのキーの最後の 1 つの `keyup` で、たどり着いたゲインの `setGain` を 1 回送る。保存していない試し聞きのあとでキーを押し続けている間は、ポインターを押さえているときと同じく、ポップアップがその試し聞きを `PREVIEW_KEEP_ALIVE_MS` ごとに送り直す (前の節を参照)。
-- スライダーをポインターかキーで押さえている間にポップアップのウィンドウかスライダーがフォーカスを失う (`blur`) と、操作はそこで終わる。その `blur` より前に来た `change` は、離したときと同じく保存し、キーを押し続けていたときは `blur` の時点で `setGain` を送る。`blur` のあとは、次にスライダーで `pointerdown` か、キーの繰り返しでない `keydown` があるまで、`input` も `change` も何も送らない。そのような `change` は、つまみを `blur` の時点の値に戻す。キーを押していないときの `pointercancel` も同じく操作を終え、`setGain` を送らず、何も描き直さない。試し聞きが止まると、タブが保存されたゲインに戻し (`PREVIEW_IDLE_MS`)、ポップアップはそのとき知らされた状態から描く。
+- スライダーでキーを押し続ける間は、`holdPopupSlider` ([channel-volume-core](https://github.com/semnil/channel-volume-core/blob/main/docs/shared-files.ja.md#sliders)) の 1 つの操作になる (キーは `createSliderKeys` が数えるもの)。`input` のたびに `setGainLive` を送り、押し続けの 1 回の保存は、たどり着いたゲインの `setGain`。
+- ポップアップのウィンドウかスライダーの `blur` は操作を終わらせ、ブラウザが取り消したドラッグ (`pointercancel`) は `setGain` を送らずに操作を終わらせる (`holdPopupSlider`、[channel-volume-core](https://github.com/semnil/channel-volume-core/blob/main/docs/shared-files.ja.md#sliders))。取り消しのあとは、試し聞きが止まると、タブが保存されたゲインに戻し (`PREVIEW_IDLE_MS`)、ポップアップはそのとき知らされた状態から描く。
 - 保存する値は、適用ゲイン (`commitGain` が切りそろえたあとの値) を版の比率で割ったもので、素の音声の版を基準にした値になる。どちらのレベルも分からないときは、比率は 1 で `heldAgainstPlain` は false。
 - `autoApply` はその時点のその種別の Auto の状態で、チャンネル個別のフラグとして書かれる。Auto が ON でレベルがあるときは操作が断られるので、Auto が ON のまま保存されるのはレベルを持っていないとき (Auto が代わりに保存ゲインを使うとき) で、その保存はチャンネルの Auto を ON に固定する。
 - `restoreGainAfterFailedSave()` は、続いている試し聞きを終わらせて `applyPreferredGain()` を動かすので、ゲインはその関数が保存内容から決める値に戻る。ポップアップへの返事はそのあと。
-- 返事が `ok` でないとき (断られた、書き込みが失敗した、送信が失敗した) は、ポップアップの知らせを立てる (`core/common.js` の `createSaveNotice`)。`#applyHint` はヒントの代わりに「ゲインを保存できませんでした。もう一度お試しください」(`gainSaveFailed`) を `error` の色で出し、ポップアップは状態を読み直す。使うのは、今のチャンネルと種別を表示している間に送った最後の保存の返事だけで、それより前の保存の返事と、別のチャンネルのときに送った保存の返事では、知らせは変わらない。保存か適用の返事が `ok` なら知らせは消え、別のチャンネルの状態、または同じチャンネルのもう一方の種別の状態を受け取ったときも消える。チャンネルの無い状態では、知らせはそのまま。
+- 返事が `ok` でないとき (断られた、書き込みが失敗した、送信が失敗した) は、ポップアップの知らせを立てる (`createSaveNotice`、[channel-volume-core](https://github.com/semnil/channel-volume-core/blob/main/docs/shared-files.ja.md#popup))。知らせの持ち主は、表示しているチャンネルと種別で、ヒントは `#applyHint` (「ゲインを保存できませんでした。もう一度お試しください」、`gainSaveFailed`)。ポップアップは状態を読み直す。
 
 図のもと: `popup.js` の `volumeSlider` の `change` の受け取り側、プリセットの `click` の受け取り側、`sendGainSave`、`updateApplyBtn`。`core/common.js` の `sendTabMessage`、`createSaveNotice`。`content.js` の `handleMessage` (`setGain`)、`fillCurrentChannelNameFromDomFallback`、`playingGainToStored`、`saveManualChannelGain`、`restoreGainAfterFailedSave`。
 
@@ -595,7 +595,7 @@ sequenceDiagram
 
 - 取り込みが `channelVolumes` に書くもの: 列に並ぶ前に読んだ表でゲインがあってフラグが無く、そのあともフラグが付いていない種別に、はっきりした `false` のフラグ (古い決まり「保存ゲインがあれば Auto は OFF」)。次に、Auto が ON と決まり、その読み込みからゲインが変わっていない種別に、古いキーで覚えていたゲインを印を付けずに入れる。`unifiedGains: true` は同じ `set` に入り、`extraKeys` があるのでこの `set` は必ず行われる。
 - `clearLegacyKeys` は自分の失敗を記録するだけで、取り込みを失敗にはしない。取り込みは、全チャンネル共通の既定値を `readSettings()` で読む。
-- `moveSettingsToSync` は、sync に設定が無ければ local の設定を sync に書き (あれば sync のものを残す)、そのあとで local から消す。local を消す前に sync を書くので、読む側はどちらかで見つける。
+- 移し替えは `moveSettingsToSync` ([channel-volume-core](https://github.com/semnil/channel-volume-core/blob/main/docs/shared-files.ja.md#settings))。
 - `storageMigrated` が false の間: Auto は古い決まりで決め、Auto 自身の保存とライブの保存はしない (ゲインの適用はする)。`triggerApply()` のたびに取り込みをやり直す (`foldInFlight` で、試みは同時に 1 つだけ)。
 - `storageMigrated` は、他の場所から `unifiedGains` が `chrome.storage.onChanged` で届いたときにも true になる (次の節を参照)。
 - 読み込まれたときに拡張機能とのつながりが切れていれば、取り込みは頼まない。再生ページなら `triggerApply()` を呼ぶが、すぐに戻って見張りを止める。
@@ -668,11 +668,11 @@ sequenceDiagram
   end
 ```
 
-- 操作するもの: 「Target LUFS」(スライダーの `change`)、「全チャンネルの LUFS 自動適用」(Video と Live のトグル)、「表示単位」(`%` / `dB` のボタン)、「ゲイン表示」。どれも 1 項目で `saveSetting` を呼ぶ。「Target LUFS」でキーを押し続ける間 (ポップアップのスライダーと同じく、値を動かすキーだけ) は表示だけを変え、繰り返しごとに来る `change` では書かず、押していたそのキーの最後の 1 つの `keyup` か、それより先に来たスライダーかページのウィンドウの `blur` で、目標値を 1 回書く。押し続けの途中でマウスで押しても、押し続けとキーで動かした値はそのまま残り、その `keyup` で書く。ドラッグも、その途中でスライダーかページのウィンドウのフォーカスが外れたところで終わる。Chrome はその `blur` より先に `change` を出し、その `change` で書く。ドラッグかキーの押し続けを終えた `blur` の後は、次の `pointerdown` か、繰り返しでない `keydown` まで、`input` と `change` はどの操作にも属さない: ラベルは動かず、何も書かず、`change` はスライダーを目標値へ戻す。すでに選ばれている表示単位のボタンを押しても、何も書かない。
+- 操作するもの: 「Target LUFS」(スライダーの `change`)、「全チャンネルの LUFS 自動適用」(Video と Live のトグル)、「表示単位」(`%` / `dB` のボタン)、「ゲイン表示」。どれも 1 項目で `saveSetting` を呼ぶ。「Target LUFS」は `holdSettingsSlider` ([channel-volume-core](https://github.com/semnil/channel-volume-core/blob/main/docs/shared-files.ja.md#sliders)) で、キーの押し続けかドラッグ 1 回につき 1 回だけ書く。動くのはラベルで、描き戻すのは保存されている目標値。ドラッグも、その途中でスライダーかページのウィンドウのフォーカスが外れたところで終わる。Chrome はその `blur` より先に `change` を出し、その `change` で書く。すでに選ばれている表示単位のボタンを押しても、何も書かない。
 - `saveSetting` は、最初の読み込みが終わるまで (`settingsLoaded`) は書かずに戻り、それまでは画面の部品も操作できない状態で出てくる。その項目と値を `store:saveSetting` として `background.js` に送る。そこでは `SETTINGS_WRITES.saveSetting` が、5 つのどれでもない項目と、その項目が持てない値を断り (`invalid-mutation`)、`readSettings()` で読んだ設定を、その項目を置き換えて sync に書き戻す。この書き込みは、設定を sync へ移す処理と同じ列 `queueSettingsWrite()` に並ぶ。
 - Chrome の同期が有効なら、同じアカウントでサインインしているほかの Chrome が書いた設定も、同じく `chrome.storage.sync` の知らせで届く ([`chrome.storage`](https://developer.chrome.com/docs/extensions/reference/api/storage))。
 - Target LUFS のスライダーでキーかポインターを押している間に届いた設定の知らせ (`applySettings`) は、設定画面が持つ目標値を変えるだけで、スライダーとラベルは操作が動かした値のままにし、操作の終わりがその値を書く。このため、1 回目の押下の知らせが 2 回目の押下の最中に届いても、2 回目の押下は取り消されない。終わりで何も書かない操作は、そこで目標値を描く (`drawTarget`): 値を動かさなかったキー (範囲の端)、始めた値の上で離したドラッグ (動かしても戻しても、Chrome は `change` を出さない)、`blur` で終わった押下。
-- 2 つの既定値のトグルは、書き込みが終わるまで操作できなくなり、表は書き込みが届いてからトグルに合わせる。どの操作も書き込みを待つ。失敗したときは、`readSettings()` で設定を読み直して、保存されている値を出す (その間に変更の知らせが来ていれば、そちらを残す)。設定の下の行には `settingsSaveFailed` (「設定を保存できませんでした。保存済みの値へ戻しました」) を出す。その読み直しも失敗したときは何も戻らないので、代わりに `settingsLoadFailed` (「保存済みの設定を読み込めませんでした。ページを再読み込みしてください」) を出す。どれかの書き込みが成功すると、その行を消す。
+- 2 つの既定値のトグルは、書き込みが終わるまで操作できなくなり、表は書き込みが届いてからトグルに合わせる。どの操作も `saveSettingOrRestore` ([channel-volume-core](https://github.com/semnil/channel-volume-core/blob/main/docs/shared-files.ja.md#settings-page)) で書き込みを待ち、書き込みが失敗したときは `readSettings()` で設定を読み直す。そのとき設定の下の行には `settingsSaveFailed` (「設定を保存できませんでした。保存済みの値へ戻しました」) を出し、その読み直しも失敗したときは `settingsLoadFailed` (「保存済みの設定を読み込めませんでした。ページを再読み込みしてください」) を出す。
 - この画面の操作は、どれも `channelVolumes` を書かない。YouTube の各タブでは `applyPreferredGain()` が新しい目標値と既定値を当てはめる。その種別の Auto が ON でレベルが分かっていれば、新しい Auto のゲインを適用し、このタブが持っていた目標値か全チャンネル共通の既定値がその変更で動いたときは保存する (Auto 自身の保存、またはライブ保存の判定)。表示単位やゲイン表示の変更では、ゲインをかけ直すだけで何も保存しない (`stores: false`)。Auto が OFF かレベルが分からなければ、保存ゲインがこれまでどおり鳴る。その適用が項目を読んでいる間に変更の知らせが届いたときは、適用は何もかけず何も保存しないまま戻り (`STORAGE_MOVED`)、受け取り側がもう 1 回だけ動かす。
 - 全チャンネル共通の既定値を変えると、その種別に個別のフラグ (または古い形式のフラグ) を持たないチャンネルだけ、Auto が変わる。
 
