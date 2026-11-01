@@ -345,16 +345,14 @@
     }
   });
 
-  presetButtons.forEach(btn => {
-    btn.addEventListener('click', () => {
-      const pct = Number(btn.dataset.vol);
-      const gain = percentToGain(pct);
+  bindPresets(presetButtons, {
+    slider: volumeSlider,
+    valueEl: volumeValueEl,
+    currentEl: currentVolEl,
+    unit: () => displayUnit,
+    pick: (percent, gain) => {
       ownGainDrawn++;
       lastGain = gain;
-      volumeSlider.value = pct;
-      const f = fmtGain(gain);
-      volumeValueEl.textContent = f.text + f.unit;
-      setCardValue(currentVolEl, f.text, f.unit, 'current');
       if (currentChannel.id) {
         sendGainSave({
           type: 'setGain',
@@ -362,7 +360,7 @@
           gain
         });
       }
-    });
+    }
   });
 
   // The unit follows the settings in sync while the popup is open
