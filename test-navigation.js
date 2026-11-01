@@ -678,7 +678,12 @@ function makePopup({ tabUrl = 'https://www.youtube.com/watch?v=abc', answer = nu
         classList: {
           add: (...names) => names.forEach((c) => classes.add(c)),
           remove: (...names) => names.forEach((c) => classes.delete(c)),
-          contains: (c) => classes.has(c)
+          contains: (c) => classes.has(c),
+          toggle(c, force) {
+            const on = force === undefined ? !classes.has(c) : !!force;
+            if (on) classes.add(c); else classes.delete(c);
+            return on;
+          }
         },
         get className() { return [...classes].join(' '); },
         set className(v) { classes.clear(); String(v).split(/\s+/).filter(Boolean).forEach((c) => classes.add(c)); },
@@ -10830,6 +10835,69 @@ async function runTests() {
       await popup.fire('volumeSlider', 'pointerup');
       assert(popup.asked.filter((m) => m.type === 'setGain' && m.gain === 2.0).length === 1,
         `a drag after it saves at its release (${JSON.stringify(popup.asked)})`);
+    }
+
+    section('Popup: a save that did not land is said so, and the state is read again');
+    {
+      let saveAnswer = { ok: false, reason: 'state moved' };
+      let applyAnswer = { ok: true };
+      const shown = {
+        isWatchPage: true, channel: { id: 'UCnotice', name: 'Notice Ch', url: '' }, appliesTo: 'UCnotice|video|noticeVid',
+        loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0, targetLufs: -18, videoType: 'video',
+        autoApplyLoudnessVideo: false, autoApplyLoudnessLive: false
+      };
+      const popup = makePopup({ answer: async (m) => {
+        if (m.type === 'setGain') {
+          if (saveAnswer instanceof Error) throw saveAnswer;
+          return saveAnswer;
+        }
+        if (m.type === 'applyLoudness') return applyAnswer;
+        return JSON.parse(JSON.stringify(shown));
+      } });
+      await popup.ready();
+      const hint = () => popup.node('applyHint');
+      const reads = () => popup.asked.filter((m) => m.type === 'getState').length;
+
+      // A refused save.
+      popup.asked.length = 0;
+      await popup.firePreset(2, 'click');
+      await tick();
+      assert(hint().textContent === 'gainSaveFailed' && hint().classList.contains('error') && reads() === 1,
+        `a refused save is said so, and the state is read again (${hint().textContent} / ${reads()})`);
+
+      // An Apply that lands takes it down.
+      await popup.fire('applyBtn', 'click');
+      await tick();
+      assert(hint().textContent !== 'gainSaveFailed' && !hint().classList.contains('error'),
+        `a save that lands takes it down (${hint().textContent})`);
+
+      // An Apply refused, and a save the tab never answered.
+      applyAnswer = { ok: false, reason: 'state moved' };
+      popup.asked.length = 0;
+      await popup.fire('applyBtn', 'click');
+      await tick();
+      assert(hint().textContent === 'gainSaveFailed' && reads() === 1,
+        `a refused Apply is said so, and the state is read again (${hint().textContent} / ${reads()})`);
+      applyAnswer = { ok: true };
+      await popup.fire('applyBtn', 'click');
+      await tick();
+      saveAnswer = new Error('Could not establish connection. Receiving end does not exist.');
+      await popup.firePreset(1, 'click');
+      await tick();
+      assert(hint().textContent === 'gainSaveFailed',
+        `a save the tab never answered is said so (${hint().textContent})`);
+
+      // A state with no channel names no other one; the same channel after it
+      // keeps the notice, and the other type of it takes it down.
+      shown.channel = { id: '', name: '', url: '' };
+      await popup.deliver({ type: 'stateChanged', ...shown });
+      shown.channel = { id: 'UCnotice', name: 'Notice Ch', url: '' };
+      await popup.deliver({ type: 'stateChanged', ...shown });
+      assert(hint().textContent === 'gainSaveFailed',
+        `the same channel after a page with none keeps it (${hint().textContent})`);
+      await popup.deliver({ type: 'stateChanged', ...shown, videoType: 'live' });
+      assert(hint().textContent !== 'gainSaveFailed' && !hint().classList.contains('error'),
+        `the channel's other type takes it down (${hint().textContent})`);
     }
 
     section('Sliders: a gesture begins on the primary button alone');

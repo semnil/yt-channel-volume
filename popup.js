@@ -52,6 +52,10 @@
   let currentVideoType = 'video';
   let autoApplyLoudnessVideo = false;
   let autoApplyLoudnessLive = false;
+  // The last save the viewer asked for did not land (createSaveNotice in
+  // core/common.js). It stands until a save lands or the tab is on another
+  // channel or type.
+  const saveNotice = createSaveNotice();
 
   function fmtGain(gain) { return formatGain(gain, displayUnit); }
 
@@ -113,6 +117,7 @@
     currentContentLufs = hasLoudness ? state.contentLufs : null;
     lastGain = state.gain ?? 1.0;
     currentVideoType = state.videoType || 'video';
+    saveNotice.showOwner(currentChannel.id ? currentChannel.id + '|' + currentVideoType : '');
     autoApplyLoudnessVideo = !!state.autoApplyLoudnessVideo;
     autoApplyLoudnessLive = !!state.autoApplyLoudnessLive;
     autoApplyVideoToggle.checked = autoApplyLoudnessVideo;
@@ -164,13 +169,21 @@
       applyBtn.textContent = msg('applyToChannel');
       applyHint.textContent = msg('hintNoLoudness');
     }
+    // The save failure is the viewer's own last action, so it takes the hint's
+    // place.
+    saveNotice.draw(applyHint);
   }
 
   // ── Send messages to content script ────────────────────────────────
 
   function sendMsg(msg) {
-    if (!activeTabId) return Promise.reject();
-    return chrome.tabs.sendMessage(activeTabId, msg);
+    return sendTabMessage(activeTabId, msg);
+  }
+
+  function readState() {
+    sendMsg({ type: 'getState' }).then(state => {
+      if (state) updateUI(state);
+    }).catch(() => {});
   }
 
   // While the page shows a stream on air or a live level, the live level is
@@ -193,11 +206,18 @@
 
   function sendManualGain(msg) {
     sendMsg(msg).then(resp => {
-      if (resp?.ok) return;
-      sendMsg({ type: 'getState' }).then(state => {
-        if (state) updateUI(state);
-      }).catch(() => {});
+      if (!resp?.ok) readState();
     }).catch(() => {});
+  }
+
+  // A save that did not land, refused or failed, is said so, and the state is
+  // read again: the tab has the level storage holds.
+  function sendGainSave(msg) {
+    sendMsg(msg).catch(() => null).then(resp => {
+      const saved = saveNotice.take(resp);
+      updateApplyBtn();
+      if (!saved) readState();
+    });
   }
 
   // ── Event handlers ─────────────────────────────────────────────────
@@ -207,13 +227,13 @@
   });
 
   applyBtn.addEventListener('click', () => {
-    sendMsg({ type: 'applyLoudness', appliesTo: currentAppliesTo }).then(() => {
-      // Whether it went through or was refused for a state that has moved, what
-      // is on screen came from before the gesture and is read again.
-      sendMsg({ type: 'getState' }).then(state => {
-        if (state) updateUI(state);
-      }).catch(() => {});
-    }).catch(() => {});
+    sendMsg({ type: 'applyLoudness', appliesTo: currentAppliesTo }).catch(() => null).then(resp => {
+      // Whether it went through or not, what is on screen came from before the
+      // gesture and is read again; one that did not is said so.
+      saveNotice.take(resp);
+      updateApplyBtn();
+      readState();
+    });
   });
 
   function resyncFromContent(toggle, videoType) {
@@ -371,7 +391,7 @@
     sliderAppliesTo = null;
     previewUnsaved = false;
     if (currentChannel.id) {
-      sendManualGain({
+      sendGainSave({
         type: 'setGain',
         appliesTo,
         gain: lastGain
@@ -400,7 +420,7 @@
       volumeValueEl.textContent = f.text + f.unit;
       setCardValue(currentVolEl, f.text, f.unit, 'current');
       if (currentChannel.id) {
-        sendManualGain({
+        sendGainSave({
           type: 'setGain',
           appliesTo: currentAppliesTo,
           gain

@@ -233,7 +233,8 @@ sequenceDiagram
       C-->>P: ok false、request failed
     end
   end
-  opt 返事が ok でない
+  opt 返事が ok でない、または送れなかった
+    Note over P: ヒントに gainSaveFailed
     P->>C: getState
     C-->>P: 状態、updateUI で描き直す
   end
@@ -245,8 +246,9 @@ sequenceDiagram
 - 保存する値は、適用ゲイン (`commitGain` が切りそろえたあとの値) を版の比率で割ったもので、素の音声の版を基準にした値になる。どちらのレベルも分からないときは、比率は 1 で `heldAgainstPlain` は false。
 - `autoApply` はその時点のその種別の Auto の状態で、チャンネル個別のフラグとして書かれる。Auto が ON でレベルがあるときは操作が断られるので、Auto が ON のまま保存されるのはレベルを持っていないとき (Auto が代わりに保存ゲインを使うとき) で、その保存はチャンネルの Auto を ON に固定する。
 - `restoreGainAfterFailedSave()` は、続いている試し聞きを終わらせて `applyPreferredGain()` を動かすので、ゲインはその関数が保存内容から決める値に戻る。ポップアップへの返事はそのあと。
+- 返事が `ok` でないとき (断られた、書き込みが失敗した、送信が失敗した) は、ポップアップの知らせを立てる (`core/common.js` の `createSaveNotice`)。`#applyHint` はヒントの代わりに「ゲインを保存できませんでした。もう一度お試しください」(`gainSaveFailed`) を `error` の色で出し、ポップアップは状態を読み直す。保存か適用の返事が `ok` なら知らせは消え、別のチャンネルの状態、または同じチャンネルのもう一方の種別の状態を受け取ったときも消える。チャンネルの無い状態では、知らせはそのまま。
 
-図のもと: `popup.js` の `volumeSlider` の `change` の受け取り側、プリセットの `click` の受け取り側、`sendManualGain`。`content.js` の `handleMessage` (`setGain`)、`fillCurrentChannelNameFromDomFallback`、`playingGainToStored`、`saveManualChannelGain`、`restoreGainAfterFailedSave`。
+図のもと: `popup.js` の `volumeSlider` の `change` の受け取り側、プリセットの `click` の受け取り側、`sendGainSave`、`updateApplyBtn`。`core/common.js` の `sendTabMessage`、`createSaveNotice`。`content.js` の `handleMessage` (`setGain`)、`fillCurrentChannelNameFromDomFallback`、`playingGainToStored`、`saveManualChannelGain`、`restoreGainAfterFailedSave`。
 
 ## ポップアップ: 「チャンネルに適用」
 
@@ -280,6 +282,9 @@ sequenceDiagram
       C-->>P: ok false、request failed
     end
   end
+  opt 返事が ok でない、または送れなかった
+    Note over P: ヒントに gainSaveFailed
+  end
   P->>C: getState
   C-->>P: 状態、updateUI で描き直す
 ```
@@ -287,9 +292,9 @@ sequenceDiagram
 - ボタンが押せるのは、その種別の Auto が OFF で、Loudness が表示されていて、チャンネルが見つかっているとき。ボタンの文字は `applyToChannelWithValue` (「$VALUE$ をチャンネルに適用」) に提案ゲインを入れ、後ろに種別の名前をかっこ付きで足したもの。
 - `autoApply` はその時点の Auto の状態で、ここまでで Auto が ON なら断っているので OFF になる。その種別のチャンネル個別のフラグが `false` で書かれ、チャンネルはその種別について全チャンネル共通の既定値に従わなくなる。
 - 手元のライブのレベル (`readLiveLkfs`) は `loudnessDb` より先に使う。そのゲインは鳴らしたままの値で、印を付けずに保存する。
-- 返事がどうであっても、ポップアップは `getState` を聞いて描き直す。
+- 返事がどうであっても、ポップアップは `getState` を聞いて描き直す。返事が `ok` でないときと送信が失敗したときは、スライダーの保存と同じく、ゲインを保存できなかった知らせを立てる (前の節を参照)。
 
-図のもと: `popup.js` の `updateApplyBtn`、`applyBtn` の `click` の受け取り側。`content.js` の `handleMessage` (`applyLoudness`)、`calcGainFromLiveLevel`、`calcGainFromLoudness`、`calcStoredGainFromLoudness`、`saveLiveChannelGain`、`saveManualChannelGain`、`restoreGainAfterFailedSave`。
+図のもと: `popup.js` の `updateApplyBtn`、`applyBtn` の `click` の受け取り側。`core/common.js` の `createSaveNotice`。`content.js` の `handleMessage` (`applyLoudness`)、`calcGainFromLiveLevel`、`calcGainFromLoudness`、`calcStoredGainFromLoudness`、`saveLiveChannelGain`、`saveManualChannelGain`、`restoreGainAfterFailedSave`。
 
 ## ポップアップ: 「LUFS 自動適用」トグル
 
