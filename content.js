@@ -73,21 +73,6 @@
   // the tab can still hold the channel of the page it left, so a bridge
   // message makes neither Auto's own save nor the live save.
   let appliedVideoId = '';
-  // When a live level last set the gain playing, and for which video; null
-  // until a live gain plays for the video. `at` is null from a message that
-  // names no live level until the next live gain, so a level coming back
-  // starts its count from there, and -Infinity after Target LUFS changes, so
-  // the next live gain plays as it stands. It is kept only while the channel
-  // in hand is named for the URL's video, and null again once the bridge names
-  // another channel.
-  let liveRaiseFrom = null;
-  // The live level the bridge last named for the video, and how far the one it
-  // names now rose over it (to 0.1 dB), or null.
-  let liveLevelBefore = null;
-  let liveLevelRise = null;
-  // The gain the channel's entry holds for live, taken with the Auto flags;
-  // the first live gain a page plays is held to 3 dB over it (liveGainToPlay).
-  let storedLiveGain = null;
   let currentGain = 1.0;
   let targetLufs = DEFAULT_TARGET_LUFS;
   let defaultAutoApplyLoudnessVideo = DEFAULT_AUTO_APPLY_LOUDNESS;
@@ -148,7 +133,6 @@
   function setCurrentAutoApplyFromEntry(entry) {
     currentAutoApplyLoudnessVideo = resolveAutoApplyForType(entry, 'video');
     currentAutoApplyLoudnessLive = resolveAutoApplyForType(entry, 'live');
-    storedLiveGain = normalizeStoredGain(getChannelGain(entry, 'live'));
   }
 
   function isCurrentAutoApplyEnabled(videoType = currentVideoType) {
@@ -265,13 +249,7 @@
     // Every message says what the player names now, so one without a live
     // level takes the last one away.
     currentLiveLkfs = Number.isFinite(event.data.liveLkfs) ? event.data.liveLkfs : null;
-    const levelVideoId = bridgeVideoId || getUrlVideoId();
-    liveLevelRise = currentLiveLkfs !== null && liveLevelBefore && liveLevelBefore.videoId === levelVideoId
-      ? Math.round((currentLiveLkfs - liveLevelBefore.lkfs) * 10) / 10
-      : null;
-    if (currentLiveLkfs !== null) liveLevelBefore = { videoId: levelVideoId, lkfs: currentLiveLkfs };
     readLiveLkfs = currentLiveLkfs;
-    if (currentLiveLkfs === null && liveRaiseFrom) liveRaiseFrom = { ...liveRaiseFrom, at: null };
     const hasLiveContent = typeof event.data.isLiveContent === 'boolean';
     if (hasLiveContent) {
       currentVideoType = event.data.isLiveContent ? 'live' : 'video';
@@ -292,7 +270,6 @@
       const idChanged = oldId !== bridgeChId;
       if (idChanged) {
         currentChannel.id = bridgeChId;
-        liveRaiseFrom = null;
         currentChannel.url = 'https://www.youtube.com/channel/' + bridgeChId;
         currentAutoApplyLoudnessVideo = false;
         currentAutoApplyLoudnessLive = false;
@@ -391,9 +368,8 @@
 
   // While Auto is on for the type being watched and the video is a stream on
   // air, or the player names a live level for it, the bridge is asked again
-  // every LIVE_FOLLOW_INTERVAL_MS. Its answer goes through the message handler
+  // every AUTO_FOLLOW_INTERVAL_MS. Its answer goes through the message handler
   // above, which applies the level and decides whether to store it.
-  const LIVE_FOLLOW_INTERVAL_MS = 10000;
   let liveFollowTimer = null;
 
   function shouldFollowLive() {
@@ -408,7 +384,7 @@
       return;
     }
     if (liveFollowTimer === null) {
-      liveFollowTimer = setTimeout(followLive, LIVE_FOLLOW_INTERVAL_MS);
+      liveFollowTimer = setTimeout(followLive, AUTO_FOLLOW_INTERVAL_MS);
     }
   }
 
@@ -450,51 +426,15 @@
     return calcLiveGain(liveLkfs, targetLufs);
   }
 
-  // The gain Auto plays for the live level it holds. A level that rose
-  // LIVE_RISE_DB or more over the one the bridge named before it is taken as
-  // LIVE_RISE_AHEAD_DB louder than named. A gain below the one playing is
-  // played at once. One above it is played no more than LIVE_RAISE_DB higher
-  // for every LIVE_RAISE_PERIOD_MS since a live level last set the gain — or
-  // since a live level came back after a message that named none — and gets
-  // there over the follows that come after. The first live gain played for a
-  // video in this page is held to LIVE_START_CAP_DB over the gain the
-  // channel's entry holds for live, where it holds one above 0 and the video
-  // plays as live. One over a gain of 0 plays as it stands. Until the channel
-  // in hand is named for the URL's video, a live gain neither reads the count
-  // nor starts it, so the first one once a channel is named is held by the cap.
-  const LIVE_RAISE_DB = 1.5;
-  const LIVE_RAISE_PERIOD_MS = 30000;
-  const LIVE_START_CAP_DB = 3;
-  const LIVE_RISE_DB = 1;
-  const LIVE_RISE_AHEAD_DB = 3;
-
-  function liveGainToPlay() {
-    const ahead = liveLevelRise !== null && liveLevelRise >= LIVE_RISE_DB ? LIVE_RISE_AHEAD_DB : 0;
-    const gain = calcGainFromLiveLevel(currentLiveLkfs + ahead);
-    const videoId = getUrlVideoId();
-    const now = Date.now();
-    const named = channelNamedForUrlVideo();
-    const from = named ? liveRaiseFrom : null;
-    if (named) liveRaiseFrom = { videoId, at: now };
-    if (!from || from.videoId !== videoId) {
-      return currentVideoType === 'live' && storedLiveGain > 0
-        ? Math.min(gain, storedLiveGain * Math.pow(10, LIVE_START_CAP_DB / 20))
-        : gain;
-    }
-    if (!(currentGain > 0)) return gain;
-    const allowedDb = from.at === null ? 0 : LIVE_RAISE_DB * Math.max(0, now - from.at) / LIVE_RAISE_PERIOD_MS;
-    return Math.min(gain, currentGain * Math.pow(10, allowedDb / 20));
-  }
-
-  // While a slider preview holds gains back, no live gain is worked out, so
-  // liveRaiseFrom stays where it was; the preview's gain is set again on the
-  // element the page plays now.
+  // While a slider preview holds gains back, the preview's gain is set again on
+  // the element the page plays now; otherwise the gain the live level asks for
+  // plays.
   function commitLiveGain() {
     if (previewHoldsGain()) {
       applyGainToAudio(currentGain);
       return;
     }
-    commitGain(liveGainToPlay());
+    commitGain(calcGainFromLiveLevel());
   }
 
   // Auto's own save, and the live save, are made by a tab that is playing the
@@ -580,10 +520,9 @@
   // first one for a video is stored, and after that one that has moved
   // LIVE_SAVE_STEP_DB or more from the last gain stored, the move taken to the
   // 0.1 dB the player names levels in. Nothing is stored while the gain
-  // playing is under the one the level asks for (the start cap, the rise cut
-  // or the raise limit holding it); the gain stored is the one the level asks
-  // for, once the gain playing has reached it. What was decided is handed back
-  // as it stands.
+  // playing is under the one the level asks for (a slider preview holding
+  // it); the gain stored is the one the level asks for, once the gain playing
+  // has reached it. What was decided is handed back as it stands.
   const LIVE_SAVE_STEP_DB = 1;
 
   async function evaluateLiveSave(source, { fromMessage = false, stores = true } = {}) {
@@ -1093,7 +1032,6 @@
         const videoDefaultBefore = defaultAutoApplyLoudnessVideo;
         const liveDefaultBefore = defaultAutoApplyLoudnessLive;
         takeSettings(changes[SETTINGS_KEY].newValue || {});
-        if (liveRaiseFrom && targetLufs !== targetBefore) liveRaiseFrom = { ...liveRaiseFrom, at: -Infinity };
         // The gain is applied again on every settings change; Auto's own save
         // follows only a change of the target or of an all-channel default.
         const stores = targetLufs !== targetBefore ||
@@ -1145,7 +1083,7 @@
         // This tab's live level goes before a gain another tab stored.
         let gain;
         if (currentAutoApply && currentLiveLkfs !== null) {
-          gain = liveGainToPlay();
+          gain = calcGainFromLiveLevel();
         } else if (currentAutoApply && currentLoudnessDb !== null && currentLiveLkfs === null) {
           gain = calcGainFromLoudness(currentLoudnessDb);
         } else gain = stored != null ? storedGainToPlaying(entry, currentVideoType, stored) : stored;
@@ -1334,7 +1272,6 @@
         const videoId = getUrlVideoId();
         if (live) {
           currentLiveLkfs = readLiveLkfs;
-          liveLevelRise = null;
         }
         const gain = live ? calcGainFromLiveLevel() : calcGainFromLoudness(currentLoudnessDb);
         commitGain(gain);
@@ -1456,8 +1393,7 @@
         return {
           currentChannel, currentChannelVideoId,
           currentGain, currentLoudnessDb, currentBaseLoudnessDb, currentLoudnessVideoId,
-          currentLiveLkfs, readLiveLkfs, liveSaveBaseline, liveSaveInFlight, liveFollowTimer, liveRaiseFrom, preview, appliedVideoId,
-          storedLiveGain, liveLevelBefore, liveLevelRise,
+          currentLiveLkfs, readLiveLkfs, liveSaveBaseline, liveSaveInFlight, liveFollowTimer, preview, appliedVideoId,
           currentVideoType, currentVideoTypeDetected, currentIsLiveNow, showGainOverlay,
           currentAutoApplyLoudnessVideo, currentAutoApplyLoudnessLive,
           storageSettled, storageMigrated,
@@ -1514,10 +1450,6 @@
           case 'readLiveLkfs': readLiveLkfs = val; break;
           case 'currentIsLiveNow': currentIsLiveNow = val; break;
           case 'liveSaveBaseline': liveSaveBaseline = val; break;
-          case 'liveRaiseFrom': liveRaiseFrom = val; break;
-          case 'storedLiveGain': storedLiveGain = val; break;
-          case 'liveLevelBefore': liveLevelBefore = val; break;
-          case 'liveLevelRise': liveLevelRise = val; break;
           // The audio chain is built once per element and never taken down in
           // production; a case that means to ask what building it does starts
           // from nothing.
