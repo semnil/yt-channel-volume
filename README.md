@@ -30,7 +30,7 @@ Chrome extension (Manifest V3) that balances YouTube volume per channel. With LU
 
 ![Settings with Target LUFS -18, display unit %, and the saved channels laid out in a Video / Live two-column table](docs/screenshots/settings_en.png)
 
-**Gain overlay** — the gain in force, shown next to the player's volume bar (turned on in Settings)
+**Gain overlay** — the gain in force, shown next to the player's volume bar (on unless turned off in Settings)
 
 ![YouTube player controls with a 63% gain shown to the right of the volume bar](docs/screenshots/overlay_en.png)
 

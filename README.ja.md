@@ -30,7 +30,7 @@ YouTube の音量をチャンネルごとに揃える Chrome 拡張機能 (Manif
 
 ![設定画面。Target LUFS -18、表示単位 %、保存済みチャンネルを Video / Live の 2 列で並べた表](docs/screenshots/settings_ja.png)
 
-**ゲイン表示** — プレイヤーの音量バー横に適用中のゲインを表示 (設定で ON)
+**ゲイン表示** — プレイヤーの音量バー横に適用中のゲインを表示 (設定で OFF にしない限り ON)
 
 ![YouTube プレイヤーのコントロール。音量バーの右隣に 63% のゲインが表示されている](docs/screenshots/overlay_ja.png)
 

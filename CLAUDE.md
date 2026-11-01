@@ -136,7 +136,7 @@ flowchart LR
 - Target LUFS slider (-30 to -6 LUFS, default -18), held to one write per gesture by `holdSettingsSlider`. A key held on it — the keys that move the value alone (`createSliderKeys`); Tab or a modifier leaves the hold as it is — changes the label alone and writes once, at the `keyup` of the last such key held or at a `blur` that comes first. A drag ends at a `blur` during it, where Chrome's `change` writes; until the next press (a `pointerdown`, or a `keydown` that is not a repeat) the `input` and `change` after a blur that ended a drag or a key hold move nothing, and the `change` puts the slider back to the target
 - Auto-apply LUFS for all channels (Video / Live separately, default OFF, inherited by a type with no individual Auto flag)
 - Display unit toggle (% / dB). The button already active writes nothing
-- Gain overlay toggle (shown next to the player's volume bar, default OFF)
+- Gain overlay toggle (shown next to the player's volume bar, default ON)
 - Saved Channels table (Video / Live in two columns. Under Auto it reads `Auto (saved gain)`, with a channel link, deletable)
 - Ships with the screen hidden until the load finishes and with the settings controls and the deletions (clear all, the × on a row) disabled
 - The first read takes the settings (sync) and the channels (local) in one load and loses to a newer change notification through a per-type revision. A load that has not settled within 3 s (`runPageLoad`) is shown as one that failed, and what it reads after that is not drawn
