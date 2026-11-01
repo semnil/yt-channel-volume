@@ -76,7 +76,7 @@
       s.autoApplyLoudnessLiveDefault ?? DEFAULT_AUTO_APPLY_LOUDNESS;
     defaultAutoVideoToggle.checked = defaultAutoApplyVideo;
     defaultAutoLiveToggle.checked = defaultAutoApplyLive;
-    overlayToggle.checked = s.showGainOverlay ?? true;
+    overlayToggle.checked = s.showGainOverlay ?? DEFAULT_SHOW_GAIN_OVERLAY;
     if (!targetHeld()) drawTarget();
     updateUnitButtons();
   }
