@@ -102,6 +102,7 @@ flowchart LR
 - Slider keys: SLIDER_VALUE_KEYS, isSliderMoveKey, createSliderKeys (the keys that move a range input's value, which alone make a key hold on the popup's and the settings page's sliders, and the tracker of those down on one slider)
 - i18n: msg(), applyI18n (each `data-i18n` element's message, the key itself where the catalog has none, and `<html lang>` from `pageLanguage`)
 - Page reveal: revealPage (lays out what was written, then takes `body.initializing` off on the next frame)
+- Page load: runPageLoad (a page's first load, failed where it rejects or has not settled within PAGE_LOAD_TIMEOUT_MS, 3 s, and the page shown once it is answered)
 - HTML escape: esc()
 - Settings page error line: showSettingsError (`#settingsError`, shown with a catalog message or hidden)
 - Popup state retry: retryGetState (asks again for the state every interval, a set number of times, until a level is in hand)
@@ -133,7 +134,7 @@ flowchart LR
 - Gain overlay toggle (shown next to the player's volume bar, default OFF)
 - Saved Channels table (Video / Live in two columns. Under Auto it reads `Auto (saved gain)`, with a channel link, deletable)
 - Ships with the screen hidden until the load finishes and with the settings controls and the deletions (clear all, the × on a row) disabled
-- The first read takes the settings (sync) and the channels (local) in one load and loses to a newer change notification through a per-type revision
+- The first read takes the settings (sync) and the channels (local) in one load and loses to a newer change notification through a per-type revision. A load that has not settled within 3 s (`runPageLoad`) is shown as one that failed, and what it reads after that is not drawn
 - Real-time sync through storage.onChanged (renders the list the notification carried, as it is; settings from the sync area, channels from local). A settings change that arrives while a key or the pointer is held on the Target LUFS slider takes the target and leaves the slider and its label to the gesture, whose end writes its own value, or draws the target where it writes nothing (a key that moved nothing, a drag let go of on the value it began on, a press a blur ended)
 
 ## i18n
