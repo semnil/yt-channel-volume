@@ -56,13 +56,14 @@ listener returns, and a second one is dropped rather than delivered or thrown.
 - `content.js:1205` true becomes false ×1 — return true;
 - `content.js:1211` true becomes false ×1 — return true;
 - `content.js:1217` true becomes false ×1 — return true;
-- `content.js:1221` true becomes false ×1 — return true;
-- `content.js:1225` true becomes false ×1 — return true;
-- `content.js:1254` true becomes false ×1 — return true;
-- `content.js:1258` true becomes false ×1 — return true;
-- `content.js:1263` true becomes false ×1 — return true;
-- `content.js:1280` true becomes false ×1 — return true;
-- `content.js:1305` true becomes false ×1 — return true;
+- `content.js:1223` true becomes false ×1 — return true;
+- `content.js:1227` true becomes false ×1 — return true;
+- `content.js:1231` true becomes false ×1 — return true;
+- `content.js:1260` true becomes false ×1 — return true;
+- `content.js:1264` true becomes false ×1 — return true;
+- `content.js:1269` true becomes false ×1 — return true;
+- `content.js:1286` true becomes false ×1 — return true;
+- `content.js:1311` true becomes false ×1 — return true;
 
 The level in hand taken as Auto's when Auto is turned on with a level known.
 Where no live level is in hand (`readLiveLkfs` null) the level known is the
@@ -73,7 +74,7 @@ navigation clears both, and turning Auto on sets Auto's from the one in hand.
 level set, and every way that level is set also sets the rise. Taking the
 branch then writes values nothing reads differently.
 
-- `content.js:1319` a guard is always taken ×1 — if (live) {
+- `content.js:1325` a guard is always taken ×1 — if (live) {
 
 ## popup.js
 

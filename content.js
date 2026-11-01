@@ -1216,6 +1216,12 @@
         sendResponse({ ok: false, reason: 'state moved' });
         return true;
       }
+      // The popup sends the target it computed the button's gain with. Where
+      // the tab holds another one, nothing is applied or saved.
+      if (msg.targetLufs !== targetLufs) {
+        sendResponse({ ok: false, reason: 'target moved' });
+        return true;
+      }
       if (isCurrentAutoApplyEnabled()) {
         sendResponse({ ok: false, reason: 'auto apply enabled' });
         return true;

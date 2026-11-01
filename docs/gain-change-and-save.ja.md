@@ -260,9 +260,11 @@ sequenceDiagram
   participant G as GainNode
   participant W as background.js
   V->>P: applyBtn を押す
-  P->>C: applyLoudness、appliesTo は currentAppliesTo
+  P->>C: applyLoudness、appliesTo は currentAppliesTo、targetLufs は currentTargetLufs
   alt appliesTo が違う、または URL の動画についてチャンネルが名指されていない
     C-->>P: ok false、state moved
+  else targetLufs が content.js の持つ targetLufs と違う
+    C-->>P: ok false、target moved
   else その種別の Auto が ON
     C-->>P: ok false、auto apply enabled
   else loudnessDb もライブのレベルも無い、またはチャンネル ID が無い
@@ -292,6 +294,7 @@ sequenceDiagram
 - ボタンが押せるのは、その種別の Auto が OFF で、Loudness が表示されていて、チャンネルが見つかっているとき。ボタンの文字は `applyToChannelWithValue` (「$VALUE$ をチャンネルに適用」) に提案ゲインを入れ、後ろに種別の名前をかっこ付きで足したもの。
 - `autoApply` はその時点の Auto の状態で、ここまでで Auto が ON なら断っているので OFF になる。その種別のチャンネル個別のフラグが `false` で書かれ、チャンネルはその種別について全チャンネル共通の既定値に従わなくなる。
 - 手元のライブのレベル (`readLiveLkfs`) は `loudnessDb` より先に使う。そのゲインは鳴らしたままの値で、印を付けずに保存する。
+- ポップアップは、ボタンの値を計算したときの Target (`currentTargetLufs`) を送る。それが `content.js` の持つ `targetLufs` と違えば、`content.js` は適用を `target moved` として断る。ポップアップがボタンを描いた後に、設定ページで Target が保存されたときがこれにあたる。ポップアップが読み直した状態で、`content.js` の持つ Target で Suggested とボタンを描く。
 - 返事がどうであっても、ポップアップは `getState` を聞いて描き直す。返事が `ok` でないときと送信が失敗したときは、スライダーの保存と同じく、ゲインを保存できなかった知らせを立てる (前の節を参照)。
 
 図のもと: `popup.js` の `updateApplyBtn`、`applyBtn` の `click` の受け取り側。`core/common.js` の `createSaveNotice`。`content.js` の `handleMessage` (`applyLoudness`)、`calcGainFromLiveLevel`、`calcGainFromLoudness`、`calcStoredGainFromLoudness`、`saveLiveChannelGain`、`saveManualChannelGain`、`restoreGainAfterFailedSave`。

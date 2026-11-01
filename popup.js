@@ -233,7 +233,7 @@
 
   applyBtn.addEventListener('click', () => {
     const answered = saveNotice.send();
-    sendMsg({ type: 'applyLoudness', appliesTo: currentAppliesTo }).catch(() => null).then(resp => {
+    sendMsg({ type: 'applyLoudness', appliesTo: currentAppliesTo, targetLufs: currentTargetLufs }).catch(() => null).then(resp => {
       // Whether it went through or not, what is on screen came from before the
       // gesture and is read again; one that did not is said so.
       answered(resp);

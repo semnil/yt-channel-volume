@@ -260,9 +260,11 @@ sequenceDiagram
   participant G as GainNode
   participant W as background.js
   V->>P: click on applyBtn
-  P->>C: applyLoudness, appliesTo currentAppliesTo
+  P->>C: applyLoudness, appliesTo currentAppliesTo, targetLufs currentTargetLufs
   alt appliesTo differs, or no channel is named for the URL's video
     C-->>P: ok false, state moved
+  else targetLufs differs from the targetLufs content.js holds
+    C-->>P: ok false, target moved
   else Auto on for the type
     C-->>P: ok false, auto apply enabled
   else no loudnessDb and no live level, or no channel id
@@ -292,6 +294,7 @@ sequenceDiagram
 - The button is enabled where Auto is off for the type, a Loudness is shown and a channel is detected. Its label is `applyToChannelWithValue` ("Apply $VALUE$ to channel") with the suggested gain, followed by the type label in parentheses.
 - `autoApply` is the Auto state at that moment, which is off because the handler has refused Auto on before this point. The channel's flag for the type is written as `false`, so the channel stops following the all-channel default for that type.
 - The live level in hand (`readLiveLkfs`) goes before `loudnessDb`. Its gain is stored as played, without the mark.
+- The popup sends the target it computed the button's value with (`currentTargetLufs`), and `content.js` refuses the Apply with `target moved` when that is not the `targetLufs` it holds: a target saved in the settings page after the popup drew the button. The state the popup reads again draws Suggested and the button with the target `content.js` holds.
 - Whatever the answer, the popup asks `getState` and redraws. An answer that is not `ok`, and a send that rejects, raise the notice that the gain is not saved, as for the slider's save (see the previous section).
 
 Drawn from: `popup.js` `updateApplyBtn`, the `applyBtn` `click` listener; `core/common.js` `createSaveNotice`; `content.js` `handleMessage` (`applyLoudness`), `calcGainFromLiveLevel`, `calcGainFromLoudness`, `calcStoredGainFromLoudness`, `saveLiveChannelGain`, `saveManualChannelGain`, `restoreGainAfterFailedSave`.

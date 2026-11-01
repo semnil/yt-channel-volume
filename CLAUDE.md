@@ -121,7 +121,7 @@ flowchart LR
 - Loudness / Suggested / Current display (read-only). The Loudness is the live level where there is one, and Suggested is worked out from it
 - Fallback badge on Current while Auto is on and no LUFS was detected (the value is the saved gain itself)
 - LIVE badge, shown only while a live stream is playing
-- "Apply to channel" button (computes the gain from loudnessDb and saves it per type)
+- "Apply to channel" button (computes the gain from loudnessDb and saves it per type). It carries the target the button's value was computed with, and content.js refuses it with `target moved` where it holds another (one saved in the settings page after the popup drew the button)
 - A save (the slider's release, a preset, "Apply to channel") answered with anything but ok, or not answered at all, shows `gainSaveFailed` in the Apply button's hint and reads the state again; the notice stands until a save lands or the popup shows another channel or type
 - Per-channel × Video/Live "Auto-apply LUFS" toggle, showing only the type being watched
 - Manual Volume: slider (0–600%) + presets. Disabled while Auto is on and LUFS was detected; used for fallback adjustment when no LUFS was detected. Every gesture carries the `appliesTo` of the state the popup was drawn from

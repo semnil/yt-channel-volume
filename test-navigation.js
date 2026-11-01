@@ -801,10 +801,12 @@ function makePopup({ tabUrl = 'https://www.youtube.com/watch?v=abc', answer = nu
 }
 
 // A gesture as the popup makes one: it carries the state the popup was drawn
-// from, which content.js hands out with every answer.
+// from, which content.js hands out with every answer, and an Apply carries the
+// target that state names.
 async function popupGesture(msg) {
   const state = await simulateRuntimeMessage({ type: 'getState' });
-  return simulateRuntimeMessage({ appliesTo: state?.appliesTo, ...msg });
+  const target = msg.type === 'applyLoudness' ? { targetLufs: state?.targetLufs } : {};
+  return simulateRuntimeMessage({ appliesTo: state?.appliesTo, ...target, ...msg });
 }
 
 // ── Tests ────────────────────────────────────────────────────────────
@@ -6516,6 +6518,53 @@ async function runTests() {
     assert(now?.ok === true, `the Apply made against this state goes through — got ${JSON.stringify(now)}`);
     assert(Math.abs(mockStorage['channelVolumes']['UCnew'].gainVideo - ytcv.calcGainFromLoudness(-2)) < 0.001,
       `and saves the gain the measurement asks for (${mockStorage['channelVolumes']['UCnew'].gainVideo})`);
+  }
+
+  section('Popup: an Apply made with a target the tab no longer holds saves nothing, and the popup shows the new one');
+  {
+    mockStorage['channelVolumes'] = { UCtarget: { name: 'Target Ch', gainVideo: 0.5, url: '' } };
+    setURL('/watch', 'targetVid');
+    ytcv._set('currentChannel', { id: 'UCtarget', name: 'Target Ch', url: '' });
+    ytcv._set('currentChannelVideoId', ytcv.getUrlVideoId());
+    ytcv._set('currentVideoType', 'video');
+    ytcv._set('currentLoudnessDb', -6);
+    ytcv._set('currentBaseLoudnessDb', -6);
+    ytcv._set('currentLoudnessVideoId', 'targetVid');
+    ytcv._set('currentLiveLkfs', null);
+    ytcv._set('readLiveLkfs', null);
+    ytcv._set('currentAutoApplyLoudnessVideo', false);
+    ytcv._set('currentGain', 0.5);
+    ytcv._set('targetLufs', -18);
+    ytcv._set('storageMigrated', true);
+    const popup = makePopup({ tabUrl: 'https://www.youtube.com/watch?v=targetVid' });
+    await popup.ready();
+    const atOld = popup.node('suggestedVol').textContent;
+
+    // The tab takes a new target before the popup hears of it.
+    ytcv._set('targetLufs', -14);
+    popup.asked.length = 0;
+    await popup.fire('applyBtn', 'click');
+    await tick();
+    const sent = popup.asked.find((m) => m.type === 'applyLoudness');
+    assert(sent?.targetLufs === -18,
+      `Apply carries the target the button's gain was computed with (${JSON.stringify(sent)})`);
+    assert(mockStorage['channelVolumes'].UCtarget.gainVideo === 0.5,
+      `nothing is saved (${JSON.stringify(mockStorage['channelVolumes'].UCtarget)})`);
+    assert(ytcv.state.currentGain === 0.5, `and the level is not moved (${ytcv.state.currentGain})`);
+    assert(popup.node('applyHint').textContent === 'gainSaveFailed'
+      && popup.asked.filter((m) => m.type === 'getState').length === 1,
+      `the popup says so and reads the state again (${popup.node('applyHint').textContent} / ${JSON.stringify(popup.asked.map((m) => m.type))})`);
+    assert(popup.node('suggestedVol').textContent !== atOld,
+      `and shows the gain for the new target (${atOld} / ${popup.node('suggestedVol').textContent})`);
+
+    // Made with the target the tab holds, it saves.
+    popup.asked.length = 0;
+    await popup.fire('applyBtn', 'click');
+    await tick();
+    assert(popup.asked.find((m) => m.type === 'applyLoudness')?.targetLufs === -14
+      && Math.abs(mockStorage['channelVolumes'].UCtarget.gainVideo - ytcv.calcGainFromLoudness(-6)) < 0.001,
+      `an Apply with the target in hand saves its gain (${JSON.stringify(mockStorage['channelVolumes'].UCtarget)})`);
+    ytcv._set('targetLufs', -18);
   }
 
   section('Popup: a video changing on its own is a new state to be told about');
