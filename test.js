@@ -93,29 +93,6 @@ section('msg');
   globalThis.chrome = outer;
 }
 
-section('holdPopupSlider: what this popup gives it no use for');
-{
-  // The popup passes no cancel and reads no held state; core/common.js has
-  // both for a sibling's popup. Called here on a slider of its own, so the
-  // lines this suite runs through are the ones the popup's slider runs.
-  const outer = globalThis.window;
-  const on = (target) => (type, fn) => { (target.listeners[type] ||= []).push(fn); };
-  const slider = { value: '100', listeners: {} };
-  slider.addEventListener = on(slider);
-  globalThis.window = { listeners: {} };
-  globalThis.window.addEventListener = on(globalThis.window);
-  let cancels = 0;
-  const held = holdPopupSlider(slider, {
-    begin() {}, draw() {}, canPreview: () => false, preview() {}, save() {}, cancel: () => { cancels++; }
-  });
-  const fire = (type) => { for (const fn of slider.listeners[type] || []) fn({ target: slider, button: 0 }); };
-  fire('pointerdown');
-  assert(held() === true, 'a press is held');
-  fire('pointercancel');
-  assert(held() === false && cancels === 1, `a cancel lets go of it and is told (${cancels})`);
-  globalThis.window = outer;
-}
-
 section('setChannelGain — expanding only what is legacy');
 {
   // The expansion exists for the single-gain form. An entry that already holds

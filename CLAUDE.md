@@ -300,7 +300,8 @@ node tools/mutation/sweep.mjs --verify
 # The coverage report CI uploads, made locally (<dir> is any empty directory)
 NODE_V8_COVERAGE=<dir> node test.js
 NODE_V8_COVERAGE=<dir> node test-navigation.js
-node tools/coverage/v8-to-lcov.mjs <dir> coverage.lcov $(python3 -B pack.py --list | grep '\.js$')
+# (core/ is left out: channel-volume-core's own suite covers the shared code)
+node tools/coverage/v8-to-lcov.mjs <dir> coverage.lcov $(python3 -B pack.py --list | grep '\.js$' | grep -v '^core/')
 
 # Compare the shared files with the commit core.json locks (fetches it from GitHub)
 bash tools/check-shared.sh

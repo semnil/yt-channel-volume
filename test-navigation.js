@@ -6887,10 +6887,6 @@ async function runTests() {
     assert(early.node('volumeValue').textContent === formatGainText(1.5, 'dB'),
       `a unit changed during the first read is the one drawn (${early.node('volumeValue').textContent})`);
 
-    // core/common.js reads a storage that tells no changes as well; the
-    // popup's always does, so the function is called here on one of its own.
-    const quiet = { sync: { get: async () => ({}) }, local: { get: async () => ({}) } };
-    assert(await followDisplayUnit(() => {}, quiet)() === '%', 'a storage with no change events reads the unit');
   }
 
   section('Popup: it asks its own tab every second, and draws no message sent to it');
