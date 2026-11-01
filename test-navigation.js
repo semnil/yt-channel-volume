@@ -699,10 +699,14 @@ function makePopup({ tabUrl = 'https://www.youtube.com/watch?v=abc', answer = nu
     return button;
   });
   const windowListeners = {};
+  const storageListeners = [];
   const popupSandbox = {
     window: { addEventListener: (type, fn) => (windowListeners[type] ||= []).push(fn) },
     console: { log() {}, warn() {}, error() {} },
     Promise, Math, JSON, Date, Object, Array, Number, String, Boolean, isNaN, parseFloat, parseInt,
+    // The popup reads its tab's host name, which the content script's URL
+    // stand-in above has not got.
+    URL: require('node:url').URL,
     setTimeout: (fn) => { popupTimers.push(fn); return popupTimers.length; },
     clearTimeout() {},
     requestAnimationFrame: (fn) => fn(),
@@ -735,10 +739,13 @@ function makePopup({ tabUrl = 'https://www.youtube.com/watch?v=abc', answer = nu
         openOptionsPage() {},
         onMessage: { addListener: (fn) => broadcastListeners.push(fn) }
       },
-      storage: { sync: { get: async () => {
-        if (failSettingsRead) throw new Error('the settings read failed');
-        return { [SETTINGS_KEY]: { displayUnit } };
-      } } }
+      storage: {
+        onChanged: { addListener: (fn) => storageListeners.push(fn) },
+        sync: { get: async () => {
+          if (failSettingsRead) throw new Error('the settings read failed');
+          return { [SETTINGS_KEY]: { displayUnit } };
+        } }
+      }
     }
   };
   popupSandbox.globalThis = popupSandbox;
@@ -785,6 +792,11 @@ function makePopup({ tabUrl = 'https://www.youtube.com/watch?v=abc', answer = nu
       const button = presets[index];
       if (button.disabled) { await tick(); return; }
       for (const fn of button.listeners[type] || []) await fn({ target: button });
+      await tick();
+    },
+    // A storage change as Chrome fires it, in the area named.
+    async fireStorage(changes, area) {
+      for (const fn of storageListeners) fn(changes, area);
       await tick();
     },
     // A message as it arrives at the popup, from a tab of the case's choosing.
@@ -6806,18 +6818,35 @@ async function runTests() {
 
   section('Popup: which screen it opens on');
   {
-    const elsewhere = makePopup({ tabUrl: 'https://example.com/' });
-    await elsewhere.settled();
-    assert(elsewhere.node('main').style.display === 'none'
-      && elsewhere.node('notYt').style.display === '',
-      `a tab that is not YouTube gets its own screen (${elsewhere.node('notYt').style.display})`);
-    assert(elsewhere.asked.length === 0,
-      `and nothing is asked of it (${JSON.stringify(elsewhere.asked)})`);
+    // What the popup shows: the status line's text where it stands in for the
+    // screen, or the screen.
+    const screen = (popup) => (!popup.node('statusLine').classList.contains('hidden') && popup.node('main').classList.contains('hidden')
+      ? popup.node('statusLine').textContent
+      : (popup.node('main').classList.contains('hidden') ? 'neither' : 'main'));
+
+    // A tab that is not YouTube, by its host name alone.
+    for (const url of ['https://example.com/', 'https://example.com/?next=https://www.youtube.com/watch?v=abc', 'https://youtube.com.example.com/watch?v=abc']) {
+      const elsewhere = makePopup({ tabUrl: url });
+      await elsewhere.settled();
+      assert(screen(elsewhere) === 'openOnYoutube',
+        `a tab that is not on YouTube gets the openOnYoutube line (${url}: ${screen(elsewhere)})`);
+      assert(elsewhere.asked.length === 0,
+        `and nothing is asked of it (${url}: ${JSON.stringify(elsewhere.asked)})`);
+    }
+    const mobile = makePopup({ tabUrl: 'https://m.youtube.com/watch?v=abc', answer: async () => ({ isWatchPage: false }) });
+    await mobile.settled();
+    assert(mobile.asked.length > 0, `a page on a subdomain of YouTube is asked (${JSON.stringify(mobile.asked.map((m) => m.type))})`);
+
+    // A tab whose URL the popup cannot read.
+    const unreadUrl = makePopup({ tabUrl: '' });
+    await unreadUrl.settled();
+    assert(screen(unreadUrl) === 'openOnYoutube' && unreadUrl.asked.length === 0,
+      `a tab whose URL cannot be read gets the openOnYoutube line and is asked nothing (${screen(unreadUrl)})`);
 
     const noTab = makePopup({ tabUrl: null });
     await noTab.settled();
-    assert(noTab.node('notYt').style.display === '',
-      'so does a window with no active tab');
+    assert(screen(noTab) === 'openOnYoutube',
+      `so does a window with no active tab (${screen(noTab)})`);
 
     // A gesture made on a screen that never found a tab has nowhere to go.
     const noTabGesture = makePopup({ tabUrl: null });
@@ -6830,22 +6859,70 @@ async function runTests() {
 
     const notWatch = makePopup({ answer: async () => ({ isWatchPage: false }) });
     await notWatch.settled();
-    assert(notWatch.node('main').style.display === 'none'
-      && notWatch.node('notWatch').style.display === '',
-      `a page that is not a watch page gets its own (${notWatch.node('notWatch').style.display})`);
+    assert(screen(notWatch) === 'openOnVideoPage',
+      `a page that is not a watch page gets its own line (${screen(notWatch)})`);
 
     const gone = makePopup({ answer: async () => { throw new Error('Receiving end does not exist'); } });
     await gone.settled();
-    assert(gone.node('main').style.display === 'none'
-      && gone.node('reloadNeeded').style.display === '',
-      `a page that cannot answer is asked to be reloaded (${gone.node('reloadNeeded').style.display})`);
+    assert(screen(gone) === 'reloadPageNeeded',
+      `a page that cannot answer is asked to be reloaded (${screen(gone)})`);
 
     // So is a popup that cannot read the settings: it asks no tab anything.
     const unread = makePopup({ failSettingsRead: true });
     await unread.settled();
-    assert(unread.node('main').style.display === 'none'
-      && unread.node('reloadNeeded').style.display === '' && unread.attempts.length === 0,
-      `a popup that cannot read the settings asks to be reloaded, and asks the tab nothing (${JSON.stringify(unread.attempts)})`);
+    assert(screen(unread) === 'reloadPageNeeded' && unread.attempts.length === 0,
+      `a popup that cannot read the settings asks to be reloaded, and asks the tab nothing (${screen(unread)} / ${JSON.stringify(unread.attempts)})`);
+
+    // A watch page shows the screen.
+    const watch = makePopup({ answer: async () => ({
+      isWatchPage: true, channel: { id: 'UCscreen', name: 'Screen Ch', url: '' }, appliesTo: 'UCscreen|video|screenVid',
+      loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0, targetLufs: -18, videoType: 'video'
+    }) });
+    await watch.ready();
+    assert(screen(watch) === 'main', `a watch page shows the screen (${screen(watch)})`);
+
+    // The line is announced as a status, as popup.html declares it.
+    const html = fs.readFileSync('./popup.html', 'utf8');
+    assert(/<div id="statusLine" class="status-msg hidden" role="status"><\/div>/.test(html)
+      && /\.hidden \{ display: none; \}/.test(html),
+      'popup.html has the one status line, hidden until it is shown');
+  }
+
+  section('Popup: the display unit is followed while the popup is open');
+  {
+    const popup = makePopup({ answer: async () => ({
+      isWatchPage: true, channel: { id: 'UCunit', name: 'Unit Ch', url: '' }, appliesTo: 'UCunit|video|unitVid',
+      loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.5, targetLufs: -18, videoType: 'video',
+      autoApplyLoudnessVideo: false, autoApplyLoudnessLive: false
+    }) });
+    await popup.ready();
+    const shown = () => popup.node('volumeValue').textContent;
+    assert(shown() === '150%', `the unit read at open draws the gain (${shown()})`);
+    await popup.fireStorage({ [SETTINGS_KEY]: { newValue: { displayUnit: 'dB' } } }, 'sync');
+    assert(shown() === formatGainText(1.5, 'dB'), `a unit changed in sync redraws it (${shown()})`);
+    await popup.fireStorage({ [SETTINGS_KEY]: { newValue: { displayUnit: '%' } } }, 'local');
+    assert(shown() === formatGainText(1.5, 'dB'), `a change in local leaves it (${shown()})`);
+    await popup.fireStorage({ [SETTINGS_KEY]: { newValue: {} } }, 'sync');
+    assert(shown() === '150%', `and settings with no unit go back to % (${shown()})`);
+    await popup.fireStorage({ [SETTINGS_KEY]: { newValue: { displayUnit: 'dB' } } }, 'sync');
+    await popup.fireStorage({ [SETTINGS_KEY]: { oldValue: { displayUnit: 'dB' } } }, 'sync');
+    assert(shown() === '150%', `so do settings taken out of sync (${shown()})`);
+
+    // A change that comes while the first read is out stands over it.
+    const early = makePopup({ answer: async () => ({
+      isWatchPage: true, channel: { id: 'UCunit2', name: 'Unit Ch 2', url: '' }, appliesTo: 'UCunit2|video|unitVid2',
+      loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.5, targetLufs: -18, videoType: 'video',
+      autoApplyLoudnessVideo: false, autoApplyLoudnessLive: false
+    }) });
+    early.fireStorage({ [SETTINGS_KEY]: { newValue: { displayUnit: 'dB' } } }, 'sync');
+    await early.ready();
+    assert(early.node('volumeValue').textContent === formatGainText(1.5, 'dB'),
+      `a unit changed during the first read is the one drawn (${early.node('volumeValue').textContent})`);
+
+    // core/common.js reads a storage that tells no changes as well; the
+    // popup's always does, so the function is called here on one of its own.
+    const quiet = { sync: { get: async () => ({}) }, local: { get: async () => ({}) } };
+    assert(await followDisplayUnit(() => {}, quiet)() === '%', 'a storage with no change events reads the unit');
   }
 
   section('Popup: a broadcast from its own tab only');
@@ -7172,9 +7249,8 @@ async function runTests() {
     await silent.settled();
     assert(silent.node('channelName').textContent === '',
       `an answer of nothing draws nothing (${silent.node('channelName').textContent})`);
-    assert(silent.node('reloadNeeded').style.display === undefined
-      && silent.node('notWatch').style.display === undefined
-      && silent.node('main').style.display === undefined,
+    assert(!silent.node('main').classList.contains('hidden')
+      && silent.node('statusLine').textContent === '',
       'and sends the popup to no other screen');
   }
 
