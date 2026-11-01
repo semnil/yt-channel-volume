@@ -136,15 +136,10 @@
     }
     autoApplyLoudnessVideo = !!state.autoApplyLoudnessVideo;
     autoApplyLoudnessLive = !!state.autoApplyLoudnessLive;
-    if (!autoUpdatePending) {
-      autoApplyVideoToggle.checked = autoApplyLoudnessVideo;
-      autoApplyLiveToggle.checked = autoApplyLoudnessLive;
-    }
     const isLive = currentVideoType === 'live';
     autoVideoControl.style.display = isLive ? 'none' : '';
     autoLiveControl.style.display = isLive ? '' : 'none';
-    autoApplyVideoToggle.disabled = autoUpdatePending || !currentChannel.id || isLive;
-    autoApplyLiveToggle.disabled = autoUpdatePending || !currentChannel.id || !isLive;
+    drawAutoToggles();
 
     if (state.targetLufs !== undefined) {
       currentTargetLufs = state.targetLufs;
@@ -257,12 +252,21 @@
     });
   });
 
-  function resyncFromContent(toggle, videoType) {
+  // Both Auto toggles, from the Auto state, channel and type the popup holds.
+  // While a toggle's save is out, they keep what was clicked and are out of use.
+  function drawAutoToggles() {
+    if (!autoUpdatePending) {
+      autoApplyVideoToggle.checked = autoApplyLoudnessVideo;
+      autoApplyLiveToggle.checked = autoApplyLoudnessLive;
+    }
+    const isLive = currentVideoType === 'live';
+    autoApplyVideoToggle.disabled = autoUpdatePending || !currentChannel.id || isLive;
+    autoApplyLiveToggle.disabled = autoUpdatePending || !currentChannel.id || !isLive;
+  }
+
+  function resyncFromContent() {
     const putBack = () => {
-      toggle.checked = videoType === 'live'
-        ? autoApplyLoudnessLive
-        : autoApplyLoudnessVideo;
-      toggle.disabled = !currentChannel.id || currentVideoType !== videoType;
+      drawAutoToggles();
       refreshDisplay();
     };
     sendMsg({ type: 'getState' }).then(state => {
@@ -300,7 +304,7 @@
         autoErrorOwner = owner;
         autoErrorEl.style.display = '';
       }
-      resyncFromContent(toggle, videoType);
+      resyncFromContent();
     });
   }
 

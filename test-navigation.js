@@ -11232,6 +11232,46 @@ async function runTests() {
         `nor is it said when the state asked for after it is not answered (${popup.node('autoError').style.display})`);
     }
 
+    for (const [from, to] of [['video', 'live'], ['live', 'video']]) {
+      // The type changed while the save was out, the save failed and the
+      // state asked for afterwards was not answered: the toggle on screen is
+      // drawn from the state the popup holds and can be used again.
+      let release = null;
+      let stateFails = false;
+      const shown = {
+        isWatchPage: true, channel: { id: 'UCautoA', name: 'Auto A', url: '' }, appliesTo: `UCautoA|${from}|autoAVid`,
+        loudnessDb: null, contentLufs: null, gain: 1.0, targetLufs: -18, videoType: from,
+        autoApplyLoudnessVideo: false, autoApplyLoudnessLive: false
+      };
+      const popup = makePopup({ answer: async (m) => {
+        if (m.type === 'setAutoApplyLoudness') {
+          await new Promise((resolve) => { release = resolve; });
+          return { ok: false, reason: 'request failed' };
+        }
+        if (stateFails) throw new Error('Could not establish connection. Receiving end does not exist.');
+        return JSON.parse(JSON.stringify(shown));
+      } });
+      await popup.ready();
+      const idOf = (type) => (type === 'live' ? 'autoApplyLiveToggle' : 'autoApplyVideoToggle');
+      const toggleOf = (type) => popup.node(idOf(type));
+      toggleOf(from).checked = true;
+      const toggling = popup.fire(idOf(from), 'change');
+      for (let turn = 0; turn < 10 && !release; turn++) await tick();
+      Object.assign(shown, {
+        channel: { id: 'UCautoB', name: 'Auto B', url: '' }, appliesTo: `UCautoB|${to}|autoBVid`, videoType: to,
+        autoApplyLoudnessVideo: true, autoApplyLoudnessLive: true
+      });
+      await popup.deliver({ type: 'stateChanged', ...shown });
+      stateFails = true;
+      release();
+      await toggling;
+      for (let turn = 0; turn < 6; turn++) await tick();
+      assert(toggleOf(to).checked === true && toggleOf(to).disabled === false,
+        `${from} to ${to}: the toggle on screen shows the state held and can be used (${toggleOf(to).checked} / ${toggleOf(to).disabled})`);
+      assert(toggleOf(from).disabled === true,
+        `${from} to ${to}: and the one for the type left cannot (${toggleOf(from).disabled})`);
+    }
+
     section('Popup: on a stream, the Live toggle waits for its own save as well');
     {
       let release = null;
