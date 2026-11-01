@@ -759,6 +759,8 @@
       : 1.0;
     applyGainToAudio(clamped);
     currentGain = clamped;
+    // A gain put in force is in the state the popup is answered with.
+    heldPopupState = null;
     updateGainOverlay();
     return clamped;
   }
@@ -929,13 +931,14 @@
   }
 
   // While the gain a bridge message's level resolves to is being worked out,
-  // the popup's ask is answered with the state from before the first such
-  // message, so the popup never draws the new level beside the gain from
-  // before it.
+  // the popup's ask is answered with the state from before the message, so
+  // the popup never draws the new level beside the gain from before it. A
+  // gain put in force meanwhile (commitGain) ends the hold.
   let heldPopupState = null;
   let popupStateHolds = 0;
   function holdPopupStateWhile(stateBefore, applying) {
-    if (popupStateHolds++ === 0) heldPopupState = stateBefore;
+    popupStateHolds++;
+    if (heldPopupState === null) heldPopupState = stateBefore;
     return applying.finally(() => {
       if (--popupStateHolds === 0) heldPopupState = null;
     });

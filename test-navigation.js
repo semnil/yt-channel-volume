@@ -8994,6 +8994,89 @@ async function runTests() {
       `and the level does reach the state the popup asks for (${JSON.stringify(answered.map((s) => [s.loudnessDb, s.gain]))})`);
   }
 
+  section('Popup: a gain the slider plays while a level waits for its gain is the one it is answered with');
+  {
+    // The level's apply waits on the channel's stored gain; the viewer
+    // previews a gain meanwhile. The popup's ask is answered with that gain,
+    // not with the one from before the level.
+    mockStorage['channelVolumes'] = { UCheld: { name: 'Held Ch', gainVideo: 0.5 } };
+    setURL('/watch', 'heldVid');
+    mockVideoEl = { id: 'held-video' };
+    mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCheld' };
+    ytcv._set('storageMigrated', true);
+    ytcv._set('storageSettled', true);
+    ytcv._set('_lastVideoId', 'heldVid');
+    ytcv._set('appliedVideoId', 'heldVid');
+    ytcv._set('currentChannel', { id: 'UCheld', name: 'Held Ch', url: '' });
+    ytcv._set('currentChannelVideoId', 'heldVid');
+    ytcv._set('currentLoudnessDb', null);
+    ytcv._set('currentLoudnessVideoId', 'heldVid');
+    ytcv._set('currentVideoType', 'video');
+    ytcv._set('currentAutoApplyLoudnessVideo', false);
+    ytcv._set('currentGain', 0.5);
+    const realGet = chrome.storage.local.get;
+    let releaseRead = null;
+    chrome.storage.local.get = (key) => (key === 'channelVolumes' && !releaseRead
+      ? new Promise((resolve) => { releaseRead = () => resolve(realGet(key)); })
+      : realGet(key));
+    simulateBridgeMessage({ loudnessDb: -6, isLiveContent: false, videoId: 'heldVid', channelId: 'UCheld' });
+    for (let turn = 0; turn < 10 && !releaseRead; turn++) await Promise.resolve();
+    const preview = await popupGesture({ type: 'setGainLive', gain: 2.0 });
+    const during = await simulateRuntimeMessage({ type: 'getState' });
+    chrome.storage.local.get = realGet;
+    if (releaseRead) releaseRead();
+    for (let turn = 0; turn < 6; turn++) await tick();
+    assert(releaseRead !== null && preview?.ok === true && during?.gain === 2.0,
+      `the ask during the wait is answered with the gain the preview plays (${JSON.stringify(preview)} / ${during?.gain})`);
+    await popupGesture({ type: 'setGain', gain: 2.0 });
+    await tick();
+    assert(mockStorage['channelVolumes'].UCheld.gainVideo === 2.0,
+      `and the release saves it (${mockStorage['channelVolumes'].UCheld.gainVideo})`);
+
+    // A wait that ends on the gain already playing lets the hold go as well:
+    // the ask after it is answered with the new level.
+    setURL('/watch', 'heldVid2');
+    ytcv._set('_lastVideoId', 'heldVid2');
+    ytcv._set('appliedVideoId', 'heldVid2');
+    ytcv._set('currentChannelVideoId', 'heldVid2');
+    ytcv._set('currentLoudnessDb', null);
+    ytcv._set('currentLoudnessVideoId', 'heldVid2');
+    ytcv._set('currentGain', 2.0);
+    let releaseSame = null;
+    chrome.storage.local.get = (key) => (key === 'channelVolumes' && !releaseSame
+      ? new Promise((resolve) => { releaseSame = () => resolve(realGet(key)); })
+      : realGet(key));
+    simulateBridgeMessage({ loudnessDb: -9, isLiveContent: false, videoId: 'heldVid2', channelId: 'UCheld' });
+    for (let turn = 0; turn < 10 && !releaseSame; turn++) await Promise.resolve();
+    const whileHeld = await simulateRuntimeMessage({ type: 'getState' });
+    chrome.storage.local.get = realGet;
+    if (releaseSame) releaseSame();
+    for (let turn = 0; turn < 6; turn++) await tick();
+    const afterHeld = await simulateRuntimeMessage({ type: 'getState' });
+    assert(releaseSame !== null && whileHeld?.loudnessDb === null && afterHeld?.loudnessDb === -9 && afterHeld?.gain === 2.0,
+      `the ask during the wait has the level from before, and the one after it the new level (${whileHeld?.loudnessDb} / ${afterHeld?.loudnessDb} / ${afterHeld?.gain})`);
+
+    // So does a wait whose read fails, which puts no gain in force.
+    setURL('/watch', 'heldVid3');
+    ytcv._set('_lastVideoId', 'heldVid3');
+    ytcv._set('appliedVideoId', 'heldVid3');
+    ytcv._set('currentChannelVideoId', 'heldVid3');
+    ytcv._set('currentLoudnessDb', null);
+    ytcv._set('currentLoudnessVideoId', 'heldVid3');
+    let failRead = null;
+    chrome.storage.local.get = (key) => (key === 'channelVolumes' && !failRead
+      ? new Promise((_, reject) => { failRead = () => reject(new Error('the read failed')); })
+      : realGet(key));
+    simulateBridgeMessage({ loudnessDb: -12, isLiveContent: false, videoId: 'heldVid3', channelId: 'UCheld' });
+    for (let turn = 0; turn < 10 && !failRead; turn++) await Promise.resolve();
+    chrome.storage.local.get = realGet;
+    if (failRead) failRead();
+    for (let turn = 0; turn < 6; turn++) await tick();
+    const afterFailed = await simulateRuntimeMessage({ type: 'getState' });
+    assert(failRead !== null && afterFailed?.loudnessDb === -12,
+      `and the ask after a failed read has the new level (${afterFailed?.loudnessDb})`);
+  }
+
   // ── A live stream's own level, followed while it is on air ───────────
   {
     const LIVE_CH = 'UCliveFollow';
