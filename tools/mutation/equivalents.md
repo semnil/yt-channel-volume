@@ -87,6 +87,15 @@ there.
 
 - `popup.js:277` a guard is always taken ×1 — if (state) {
 
+A preset's save without a channel id. The presets are disabled in every draw
+that holds no channel id, and the page stays hidden (`body.initializing`, or
+the status line in place of the screen) until a draw: sampled every 20 ms in
+Chrome 156 from the popup's opening on a watch page, opened at once and after
+2 s, and on a page that is not one, no sample showed a preset that could be
+clicked with no channel shown (2225 of them showed one with the channel).
+
+- `popup.js:356` a guard is always taken ×1 — if (currentChannel.id) {
+
 ## page-bridge.js
 
 The player-response captures. Without the first check the capture holds
