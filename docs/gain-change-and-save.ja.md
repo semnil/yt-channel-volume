@@ -59,7 +59,7 @@
 
 ### 適用ゲインが変わる場所: `commitGain`
 
-`commitGain(value)` は `Number(value)` を取り、有限の数でなければ 1.0 にし、0 から 6 に切りそろえて `applyGainToAudio` を呼ぶ。そのあとで `currentGain` に入れ、`updateGainOverlay` と `notifyPopup` を呼ぶ。`applyGainToAudio` は、音声のつながりがまだ無いうちはゲイン 1.0 のためにつながりを作らない。それ以外では `ensureAudioChain` がページの `<video>` に向けてつながりを作り (要素が変わっていれば作り直す)、値を `gainNode.gain.value` に入れる。`ensureAudioChain` が例外を投げたとき (別のところがすでにつないだ要素を `createMediaElementSource` が断ったとき) は、`commitGain` はそこで止まる。`currentGain`、ゲイン表示、ポップアップは、鳴っていたゲインのままになる。`notifyPopup` は、状態が前回送ったものと違うときに `stateChanged` を送る。
+`commitGain(value)` は `Number(value)` を取り、有限の数でなければ 1.0 にし、0 から 6 に切りそろえて `applyGainToAudio` を呼ぶ。そのあとで `currentGain` に入れ、`updateGainOverlay` を呼ぶ。`applyGainToAudio` は、音声のつながりがまだ無いうちはゲイン 1.0 のためにつながりを作らない。それ以外では `ensureAudioChain` がページの `<video>` に向けてつながりを作り (要素が変わっていれば作り直す)、値を `gainNode.gain.value` に入れる。`ensureAudioChain` が例外を投げたとき (別のところがすでにつないだ要素を `createMediaElementSource` が断ったとき) は、`commitGain` はそこで止まる。`currentGain`、ゲイン表示、ポップアップは、鳴っていたゲインのままになる。
 
 `commitGain` を呼ぶのは、`applyPreferredGain` と `applyAutomaticLoudnessGain` (ライブのゲインは、`liveGainToPlay` でゲインを出す `commitLiveGain` を通す)、`chrome.storage.onChanged` の受け取り側、`handleMessage` の `setGainLive` / `setGain` / `applyLoudness` / `setAutoApplyLoudness` の分岐。
 
@@ -379,26 +379,25 @@ sequenceDiagram
   B-->>C: ブリッジの返事、ブリッジの節のとおりに処理
   C->>C: await applyPreferredGain()
   C-->>P: getState()
-  opt 返事に Loudness が無い
-    loop Loudness が表示されない間、500 ms おきに 8 回まで
-      P->>C: getState
-      C-->>P: 状態、updateUI で描き直す
-    end
+  loop ポップアップを開いている間、1 秒ごと (pollTabState)
+    P->>C: getState
+    C-->>P: 状態、聞いた後にポップアップが自分でゲインを描いていなければ showState で描く
   end
   loop ポップアップが配信中のライブかライブのレベルを表示している間、1 秒ごと
     P->>C: askLiveLevel
     C->>B: postMessage __yt_channel_volume_live_ask__
     B-->>C: 動画と、音量の行が今示すレベルを持つ __yt_channel_volume_live__
-    Note over C: URL の動画の有限のレベルなら readLiveLkfs に入れ、notifyPopup()
+    Note over C: URL の動画の有限のレベルなら readLiveLkfs に入れ、次の getState で描かれる
   end
 ```
 
 - 情報が古いとは、チャンネル ID が無いか、URL の動画 ID が `_lastVideoId` と違うこと。`triggerApply()` は「SPA 内の移動と、その他の適用のきっかけ」で説明する。
 - `requestLoudnessWithRetry(4, 250)` は問い合わせを送り、次のブリッジのメッセージが来たら終わる。来ないまま 250 ms たつと、レベルを持っていれば終わり、持っていなければもう一度聞く。最大 4 回。
-- ポップアップ自身の読み込み (`getState`、`retryGetState`、`askLiveLevel`) は何も書き込まない。ポップアップのために読んだライブのレベルは手元のレベルにだけなる: Auto のレベルと、Auto が鳴らして保存するものは、ブリッジの完全な返事を待つ。この流れで起きる保存は、`triggerApply()`、ブリッジの返事の処理、`applyPreferredGain()` によるもの。
+- ブリッジのメッセージのレベルに対するゲインを保存値の経路 (`applyPreferredGain`) で求めている間、content.js はポップアップの `getState` に、最初のそのメッセージより前の状態で答える (`holdPopupStateWhile`)。このため、ポップアップが新しいレベルと前のゲインを並べて描くことはない。ポップアップが自分でゲインを描く前 (スライダーの操作、プリセット) に聞いた答えは描かない。保存を断られた後や Auto の切り替えの後に読み直した状態も、その場合は描かない。
+- ポップアップ自身の読み込み (`getState`、`askLiveLevel`) は何も書き込まない。ポップアップのために読んだライブのレベルは手元のレベルにだけなる: Auto のレベルと、Auto が鳴らして保存するものは、ブリッジの完全な返事を待つ。この流れで起きる保存は、`triggerApply()`、ブリッジの返事の処理、`applyPreferredGain()` によるもの。
 - 失敗すると `reportFailure('forceDetect failed')` のあとで `{ ok: false, reason: 'request failed' }` を返す。
 
-図のもと: `popup.js` の `init`、`retryGetState`、`askLiveLevelLater`。`page-bridge.js` の `__yt_channel_volume_live_ask__` の受け取り側。`content.js` の `handleMessage` (`forceDetect`、`askLiveLevel`)、`__yt_channel_volume_live__` の受け取り側、`sendDetectedState`、`requestLoudnessWithRetry`、`triggerApply`、`applyPreferredGain`、`getState`。
+図のもと: `popup.js` の `init`、`askTab`、`showState`、`askLiveLevelLater`。`core/common.js` の `pollTabState`。`page-bridge.js` の `__yt_channel_volume_live_ask__` の受け取り側。`content.js` の `handleMessage` (`forceDetect`、`askLiveLevel`)、`__yt_channel_volume_live__` の受け取り側、`sendDetectedState`、`requestLoudnessWithRetry`、`triggerApply`、`applyPreferredGain`、`getState`。
 
 ## `page-bridge.js` から届く音量レベル
 
@@ -664,7 +663,7 @@ sequenceDiagram
   S-->>O: sync の storage.onChanged、applySettings と renderChannels
   S-->>C: sync の autoLoudnessSettings の storage.onChanged
   C->>C: takeSettings() で targetLufs、2 つの既定値、showGainOverlay を置き換え、storageRevision と settingsRevision を 1 増やす
-  C->>C: applyPreferredGain()、そのあと updateGainOverlay() と notifyPopup()
+  C->>C: applyPreferredGain()、そのあと updateGainOverlay()
   opt 取り込み後で、その種別の Auto が ON で、レベルがあり、目標値か全チャンネル共通の既定値が変わった
     C->>W: applyPreferredGain か evaluateLiveSave から store:saveChannelGain (頼まれていない書き込み)
   end

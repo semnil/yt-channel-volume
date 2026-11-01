@@ -59,7 +59,7 @@ Every reader takes the settings through `readSettings()`: sync first, then the c
 
 ### Where the applied gain changes: `commitGain`
 
-`commitGain(value)` takes `Number(value)`, turns a non-finite value into 1.0, clamps it to 0 to 6, and calls `applyGainToAudio`; then it sets `currentGain` and calls `updateGainOverlay` and `notifyPopup`. `applyGainToAudio` builds no audio chain for a gain of 1.0 while none exists; otherwise `ensureAudioChain` builds the chain for the page's `<video>` (again when the element has changed) and the value goes to `gainNode.gain.value`. When `ensureAudioChain` throws (`createMediaElementSource` refuses an element another context has already connected), `commitGain` stops there: `currentGain`, the overlay and the popup keep the gain that was playing. `notifyPopup` sends `stateChanged` when the state differs from the last state it sent.
+`commitGain(value)` takes `Number(value)`, turns a non-finite value into 1.0, clamps it to 0 to 6, and calls `applyGainToAudio`; then it sets `currentGain` and calls `updateGainOverlay`. `applyGainToAudio` builds no audio chain for a gain of 1.0 while none exists; otherwise `ensureAudioChain` builds the chain for the page's `<video>` (again when the element has changed) and the value goes to `gainNode.gain.value`. When `ensureAudioChain` throws (`createMediaElementSource` refuses an element another context has already connected), `commitGain` stops there: `currentGain`, the overlay and the popup keep the gain that was playing.
 
 `commitGain` is called from `applyPreferredGain` and `applyAutomaticLoudnessGain` (a live gain through `commitLiveGain`, which works it out with `liveGainToPlay`), the `chrome.storage.onChanged` listener, and the `setGainLive`, `setGain`, `applyLoudness` and `setAutoApplyLoudness` branches of `handleMessage`.
 
@@ -379,26 +379,25 @@ sequenceDiagram
   B-->>C: bridge answer, handled as in the bridge section
   C->>C: await applyPreferredGain()
   C-->>P: getState()
-  opt the answer shows no Loudness
-    loop up to 8 times, 500 ms apart, while no Loudness is shown
-      P->>C: getState
-      C-->>P: state, drawn by updateUI
-    end
+  loop every 1 s while the popup is open (pollTabState)
+    P->>C: getState
+    C-->>P: state, drawn by showState unless the popup drew a gain of its own since it asked
   end
   loop every 1 s while the popup shows a stream on air or a live level
     P->>C: askLiveLevel
     C->>B: postMessage __yt_channel_volume_live_ask__
     B-->>C: __yt_channel_volume_live__ with the video and the level the volume line names now
-    Note over C: a finite level for the URL's video becomes readLiveLkfs, then notifyPopup()
+    Note over C: a finite level for the URL's video becomes readLiveLkfs, drawn at the next getState
   end
 ```
 
 - Stale means there is no channel id, or the URL's video id differs from `_lastVideoId`. `triggerApply()` is described in "SPA navigation and the other apply triggers".
 - `requestLoudnessWithRetry(4, 250)` posts a request and resolves at the next bridge message. When 250 ms pass without one, it resolves if a level is held and otherwise asks again, 4 times at most.
-- The popup's own reads (`getState`, `retryGetState`, `askLiveLevel`) write nothing. A live level read for the popup becomes the level in hand only: Auto's level, and what Auto plays and stores, wait for the bridge's full answer. The saves on this path are those of `triggerApply()`, of the bridge answer's handling and of `applyPreferredGain()`.
+- While the gain a bridge message's level resolves to is being worked out on the saved-gain path (`applyPreferredGain`), content.js answers the popup's `getState` with the state from before the first such message (`holdPopupStateWhile`), so the popup never draws the new level beside the gain from before it. An answer to an ask the popup made before it drew a gain of its own (a slider move, a preset) is not drawn, and neither is the state it reads again after a refused save or a toggle in that case.
+- The popup's own reads (`getState`, `askLiveLevel`) write nothing. A live level read for the popup becomes the level in hand only: Auto's level, and what Auto plays and stores, wait for the bridge's full answer. The saves on this path are those of `triggerApply()`, of the bridge answer's handling and of `applyPreferredGain()`.
 - A failure answers `{ ok: false, reason: 'request failed' }` after `reportFailure('forceDetect failed')`.
 
-Drawn from: `popup.js` `init`, `retryGetState`, `askLiveLevelLater`; `page-bridge.js` the `__yt_channel_volume_live_ask__` listener; `content.js` `handleMessage` (`forceDetect`, `askLiveLevel`), the `__yt_channel_volume_live__` listener, `sendDetectedState`, `requestLoudnessWithRetry`, `triggerApply`, `applyPreferredGain`, `getState`.
+Drawn from: `popup.js` `init`, `askTab`, `showState`, `askLiveLevelLater`; `core/common.js` `pollTabState`; `page-bridge.js` the `__yt_channel_volume_live_ask__` listener; `content.js` `handleMessage` (`forceDetect`, `askLiveLevel`), the `__yt_channel_volume_live__` listener, `sendDetectedState`, `requestLoudnessWithRetry`, `triggerApply`, `applyPreferredGain`, `getState`.
 
 ## Loudness from `page-bridge.js`
 
@@ -664,7 +663,7 @@ sequenceDiagram
   S-->>O: storage.onChanged in sync, applySettings and renderChannels
   S-->>C: storage.onChanged in sync for autoLoudnessSettings
   C->>C: takeSettings(): targetLufs, the two defaults and showGainOverlay replaced, storageRevision and settingsRevision plus 1
-  C->>C: applyPreferredGain(), then updateGainOverlay() and notifyPopup()
+  C->>C: applyPreferredGain(), then updateGainOverlay()
   opt Auto on for the type with a level, after the fold, and the target or an all-channel default changed
     C->>W: store:saveChannelGain from applyPreferredGain or evaluateLiveSave (unasked)
   end

@@ -241,6 +241,9 @@
     // already changed. It must not mutate channel, loudness, or gain state.
     if (!isBridgeMessageForCurrentVideo(bridgeVideoId)) return;
 
+    // What the popup was answered with before this message, for the wait
+    // below.
+    const stateBefore = getState();
     // A script in the page's own world can post this message too. Each field is
     // taken only where it is of the type the bridge sends.
     const db = event.data.loudnessDb;
@@ -326,10 +329,8 @@
     // Applying Auto's gain throws where the audio chain cannot be built; the
     // follow and the waiters below run either way.
     try {
-      if (applyAutomaticLoudnessGain(source)) {
-        notifyPopup();
-      } else {
-        applyPreferredGain(source, { fromMessage: true }).then(notifyPopup)
+      if (!applyAutomaticLoudnessGain(source)) {
+        holdPopupStateWhile(stateBefore, applyPreferredGain(source, { fromMessage: true }))
           .catch(err => reportFailure('apply failed', err));
       }
     } catch (err) {
@@ -358,7 +359,6 @@
     if (!isBridgeMessageForCurrentVideo(videoId)) return;
     if (!Number.isFinite(event.data.liveLkfs)) return;
     readLiveLkfs = event.data.liveLkfs;
-    notifyPopup();
   });
 
   function requestLoudnessWithRetry(maxAttempts, intervalMs) {
@@ -760,7 +760,6 @@
     applyGainToAudio(clamped);
     currentGain = clamped;
     updateGainOverlay();
-    notifyPopup();
     return clamped;
   }
 
@@ -794,7 +793,7 @@
 
   function endIdlePreview() {
     endPreview();
-    applyPreferredGain().then(notifyPopup)
+    applyPreferredGain()
       .catch(err => reportFailure('apply failed', err));
   }
 
@@ -898,13 +897,11 @@
     // navigation-time fallback.
     await applyPreferredGain();
     appliedVideoId = _lastVideoId;
-    notifyPopup();
 
     // Fetch loudness + videoType + channelId. Auto mode applies the calculated
     // per-video gain; otherwise the saved channel/type gain remains in use.
     requestLoudnessWithRetry(10, 500).then(async () => {
       await applyPreferredGain();
-      notifyPopup();
     }).catch(err => reportFailure('apply failed', err));
   }
 
@@ -931,6 +928,19 @@
     return msg.appliesTo !== currentGestureState() || !channelNamedForUrlVideo();
   }
 
+  // While the gain a bridge message's level resolves to is being worked out,
+  // the popup's ask is answered with the state from before the first such
+  // message, so the popup never draws the new level beside the gain from
+  // before it.
+  let heldPopupState = null;
+  let popupStateHolds = 0;
+  function holdPopupStateWhile(stateBefore, applying) {
+    if (popupStateHolds++ === 0) heldPopupState = stateBefore;
+    return applying.finally(() => {
+      if (--popupStateHolds === 0) heldPopupState = null;
+    });
+  }
+
   function getState() {
     // A live level is already an absolute one, and goes before the response's.
     const contentLufs = readLiveLkfs !== null
@@ -950,19 +960,6 @@
       isLiveNow: currentIsLiveNow,
       isWatchPage: isWatchPage()
     };
-  }
-
-  let _lastNotifiedState = '';
-  function notifyPopup() {
-    if (!isContextValid()) return;
-    const state = getState();
-    // The state a gesture would be made against is part of the key: a video
-    // changing under the popup moves nothing else it shows, and the popup has
-    // to be given the state that replaced it or its next gesture is refused.
-    const key = state.appliesTo + '|' + state.loudnessDb + '|' + state.liveLkfs + '|' + state.gain + '|' + state.channel.id + '|' + state.channel.name + '|' + state.videoType + '|' + state.isLiveNow + '|' + state.autoApplyLoudnessVideo + '|' + state.autoApplyLoudnessLive;
-    if (key === _lastNotifiedState) return;
-    _lastNotifiedState = key;
-    chrome.runtime.sendMessage({ type: 'stateChanged', ...state }).catch(() => {});
   }
 
   // ── Navigation handling (YouTube SPA) ──────────────────────────────
@@ -1040,7 +1037,7 @@
   // is made then.
   document.addEventListener('play', (event) => {
     if (!isWatchPage() || event.target !== document.querySelector('video.html5-main-video, video')) return;
-    applyPreferredGain('play').then(notifyPopup)
+    applyPreferredGain('play')
       .catch(err => reportFailure('apply failed', err));
   }, true);
 
@@ -1106,7 +1103,6 @@
           .then(result => (result === STORAGE_MOVED ? applyPreferredGain('apply', { stores }) : result))
           .then(() => {
             updateGainOverlay();
-            notifyPopup();
           }).catch(err => reportFailure('apply failed', err));
         return;
       }
@@ -1121,7 +1117,7 @@
         foldInFlight = null;
         storageRevision++;
         if (!changes[CHANNEL_VOLUMES_KEY]) {
-          applyPreferredGain().then(notifyPopup)
+          applyPreferredGain()
             .catch(err => reportFailure('apply failed', err));
         }
       }
@@ -1142,9 +1138,6 @@
         syncLiveFollow();
         const currentAutoApply = isCurrentAutoApplyEnabled();
         const currentTypeAutoApplyChanged = previousAutoApply !== currentAutoApply;
-        const anyAutoApplyChanged =
-          previousAutoApplyVideo !== currentAutoApplyLoudnessVideo ||
-          previousAutoApplyLive !== currentAutoApplyLoudnessLive;
         const stored = entry ? getChannelGain(entry, currentVideoType) : 1.0;
         // This tab's live level goes before a gain another tab stored.
         let gain;
@@ -1153,15 +1146,11 @@
         } else if (currentAutoApply && currentLoudnessDb !== null && currentLiveLkfs === null) {
           gain = calcGainFromLoudness(currentLoudnessDb);
         } else gain = stored != null ? storedGainToPlaying(entry, currentVideoType, stored) : stored;
-        if (gain == null && !currentTypeAutoApplyChanged) {
-          if (anyAutoApplyChanged) notifyPopup();
-          return;
-        }
+        if (gain == null && !currentTypeAutoApplyChanged) return;
         const nextGain = gain ?? 1.0;
         if (nextGain !== currentGain) {
           commitGainFromElsewhere(nextGain);
         }
-        notifyPopup();
       }
     });
   }
@@ -1207,7 +1196,7 @@
 
   function handleMessage(msg, sendResponse) {
     if (msg.type === 'getState') {
-      sendResponse(getState());
+      sendResponse(heldPopupState ?? getState());
       return true;
     }
 
@@ -1252,7 +1241,6 @@
         ? saveLiveChannelGain(currentChannel.id, currentChannel.name, gain, currentVideoType, currentChannel.url, isCurrentAutoApplyEnabled(currentVideoType))
         : saveManualChannelGain(currentChannel.id, currentChannel.name, calcStoredGainFromLoudness(), currentVideoType, currentChannel.url);
       saved.then(() => {
-        notifyPopup();
         sendResponse({ ok: true, gain });
       }).catch(err => {
         reportFailure('applyLoudness failed', err);
@@ -1311,7 +1299,6 @@
       fillCurrentChannelNameFromDomFallback();
       commitGain(gain);
       saveManualChannelGain(currentChannel.id, currentChannel.name, playingGainToStored(currentGain), currentVideoType, currentChannel.url).then(() => {
-        notifyPopup();
         sendResponse({ ok: true });
       }).catch(err => {
         reportFailure('setGain failed', err);
@@ -1372,7 +1359,6 @@
       };
       written.then(async () => {
         await applyPreferredGain();
-        notifyPopup();
         settle({ ok: true, ...getState() });
       }).catch(err => {
         reportFailure('setAutoApplyLoudness failed', err);
@@ -1495,7 +1481,6 @@
       applyPreferredGain,
       evaluateLiveSave,
       syncLiveFollow,
-      notifyPopup,
       // Setters for test setup
       _set(key, val) {
         switch (key) {
