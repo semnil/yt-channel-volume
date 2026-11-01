@@ -17,6 +17,7 @@
   const autoLiveControl = document.getElementById('autoLiveControl');
   const autoApplyVideoToggle = document.getElementById('autoApplyVideoToggle');
   const autoApplyLiveToggle = document.getElementById('autoApplyLiveToggle');
+  const autoErrorEl = document.getElementById('autoError');
   const volumeSlider = document.getElementById('volumeSlider');
   const presetButtons = document.querySelectorAll('.presets button');
   const volumeValueEl = document.getElementById('volumeValue');
@@ -60,6 +61,10 @@
   // channel or type.
   const saveNotice = createSaveNotice();
   const ownerKey = () => (currentChannel.id ? currentChannel.id + '|' + currentVideoType : '');
+  // An Auto toggle's save that is still out. Until it is answered, the toggles,
+  // the manual controls and Apply are out of use: a gain saved then would pin
+  // the Auto state from before the toggle.
+  let autoUpdatePending = false;
 
   function fmtGain(gain) { return formatGain(gain, displayUnit); }
 
@@ -93,8 +98,8 @@
       : autoApplyLoudnessVideo;
     fallbackBadge.style.display = autoApplyCurrentType && !hasLoudness ? '' : 'none';
     const manualGainLocked = isManualGainLocked(autoApplyCurrentType, hasLoudness);
-    volumeSlider.disabled = manualGainLocked;
-    presetButtons.forEach(btn => { btn.disabled = manualGainLocked; });
+    volumeSlider.disabled = manualGainLocked || autoUpdatePending;
+    presetButtons.forEach(btn => { btn.disabled = manualGainLocked || autoUpdatePending; });
 
     volumeSlider.value = gainToPercent(lastGain);
     volumeValueEl.textContent = formatGainText(lastGain, displayUnit);
@@ -124,13 +129,15 @@
     saveNotice.showOwner(ownerKey());
     autoApplyLoudnessVideo = !!state.autoApplyLoudnessVideo;
     autoApplyLoudnessLive = !!state.autoApplyLoudnessLive;
-    autoApplyVideoToggle.checked = autoApplyLoudnessVideo;
-    autoApplyLiveToggle.checked = autoApplyLoudnessLive;
+    if (!autoUpdatePending) {
+      autoApplyVideoToggle.checked = autoApplyLoudnessVideo;
+      autoApplyLiveToggle.checked = autoApplyLoudnessLive;
+    }
     const isLive = currentVideoType === 'live';
     autoVideoControl.style.display = isLive ? 'none' : '';
     autoLiveControl.style.display = isLive ? '' : 'none';
-    autoApplyVideoToggle.disabled = !currentChannel.id || isLive;
-    autoApplyLiveToggle.disabled = !currentChannel.id || !isLive;
+    autoApplyVideoToggle.disabled = autoUpdatePending || !currentChannel.id || isLive;
+    autoApplyLiveToggle.disabled = autoUpdatePending || !currentChannel.id || !isLive;
 
     if (state.targetLufs !== undefined) {
       currentTargetLufs = state.targetLufs;
@@ -176,6 +183,7 @@
     // The save failure is the viewer's own last action, so it takes the hint's
     // place.
     saveNotice.draw(applyHint);
+    if (autoUpdatePending) applyBtn.disabled = true;
   }
 
   // ── Send messages to content script ────────────────────────────────
@@ -243,40 +251,43 @@
   });
 
   function resyncFromContent(toggle, videoType) {
+    const putBack = () => {
+      toggle.checked = videoType === 'live'
+        ? autoApplyLoudnessLive
+        : autoApplyLoudnessVideo;
+      toggle.disabled = !currentChannel.id || currentVideoType !== videoType;
+      refreshDisplay();
+    };
     sendMsg({ type: 'getState' }).then(state => {
       if (state) {
         updateUI(state);
         return;
       }
-      toggle.checked = videoType === 'live'
-        ? autoApplyLoudnessLive
-        : autoApplyLoudnessVideo;
-      toggle.disabled = !currentChannel.id || currentVideoType !== videoType;
-    }).catch(() => {
-      toggle.checked = videoType === 'live'
-        ? autoApplyLoudnessLive
-        : autoApplyLoudnessVideo;
-      toggle.disabled = !currentChannel.id || currentVideoType !== videoType;
-    });
+      putBack();
+    }).catch(putBack);
   }
 
   function handleAutoApplyChange(toggle, videoType) {
-    if (!currentChannel.id || videoType !== currentVideoType) return;
+    if (autoUpdatePending || !currentChannel.id || videoType !== currentVideoType) return;
     const enabled = toggle.checked;
+    autoUpdatePending = true;
+    autoErrorEl.style.display = 'none';
     toggle.disabled = true;
+    refreshDisplay();
     sendMsg({
       type: 'setAutoApplyLoudness',
       appliesTo: currentAppliesTo,
       enabled
-    }).then(resp => {
+    }).catch(() => null).then(resp => {
+      autoUpdatePending = false;
       if (resp?.ok) {
         updateUI(resp);
-      } else {
-        // The write may have landed before the failure, so show what the page
-        // holds rather than assuming the toggle never moved.
-        resyncFromContent(toggle, videoType);
+        return;
       }
-    }).catch(() => {
+      // The write may have landed before the failure, so show what the page
+      // holds rather than assuming the toggle never moved, and say it was not
+      // saved.
+      autoErrorEl.style.display = '';
       resyncFromContent(toggle, videoType);
     });
   }

@@ -123,7 +123,7 @@ flowchart LR
 - LIVE badge, shown only while a live stream is playing
 - "Apply to channel" button (computes the gain from loudnessDb and saves it per type). It carries the target the button's value was computed with, and content.js refuses it with `target moved` where it holds another (one saved in the settings page after the popup drew the button)
 - A save (the slider's release, a preset, "Apply to channel") answered with anything but ok, or not answered at all, shows `gainSaveFailed` in the Apply button's hint and reads the state again; the notice stands until a save lands or the popup shows another channel or type
-- Per-channel × Video/Live "Auto-apply LUFS" toggle, showing only the type being watched
+- Per-channel × Video/Live "Auto-apply LUFS" toggle, showing only the type being watched. While its save is out, the toggles, the manual controls and Apply are disabled, and content.js refuses a gain gesture or another toggle with `auto update pending` (a manual save made then would pin the Auto state from before the toggle, after it). A toggle not saved shows `autoSaveFailed` under the label
 - Manual Volume: slider (0–600%) + presets. Disabled while Auto is on and LUFS was detected; used for fallback adjustment when no LUFS was detected. Every gesture carries the `appliesTo` of the state the popup was drawn from
 - UI hidden on pages other than watch
 - retryGetState: polling fallback while the loudness has not arrived

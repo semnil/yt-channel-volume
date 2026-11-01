@@ -140,6 +140,13 @@ body.initializing *::after { transition: none !important; }
   font-weight: 600;
   color: #ccc;
 }
+.auto-copy { min-width: 0; }
+.auto-error {
+  margin-top: 2px;
+  color: #ff6b9d;
+  font-size: 9px;
+  line-height: 1.25;
+}
 .auto-toggles {
   display: flex;
   align-items: center;
@@ -345,7 +352,10 @@ body.initializing *::after { transition: none !important; }
   </div>
 
   <div class="auto-section">
-    <div id="autoApplyLabel" class="auto-label" data-i18n="autoApplyLoudness">autoApplyLoudness</div>
+    <div class="auto-copy">
+      <div id="autoApplyLabel" class="auto-label" data-i18n="autoApplyLoudness">autoApplyLoudness</div>
+      <div id="autoError" class="auto-error" style="display:none" role="status" data-i18n="autoSaveFailed">autoSaveFailed</div>
+    </div>
     <div class="auto-toggles">
       <label id="autoVideoControl" class="toggle-switch">
         <input type="checkbox" id="autoApplyVideoToggle" aria-labelledby="autoApplyLabel" disabled>

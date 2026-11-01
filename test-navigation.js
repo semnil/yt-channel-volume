@@ -6567,6 +6567,59 @@ async function runTests() {
     ytcv._set('targetLufs', -18);
   }
 
+  section('Popup: a manual save sent while turning Auto on is still out does not turn it off');
+  {
+    mockStorage['channelVolumes'] = { UCpending: { name: 'Pending Ch', gainVideo: 0.5, url: '', autoApplyLoudnessVideo: false } };
+    setURL('/watch', 'pendingVid');
+    ytcv._set('currentChannel', { id: 'UCpending', name: 'Pending Ch', url: '' });
+    ytcv._set('currentChannelVideoId', ytcv.getUrlVideoId());
+    ytcv._set('currentVideoType', 'video');
+    ytcv._set('currentLoudnessDb', -6);
+    ytcv._set('currentBaseLoudnessDb', -6);
+    ytcv._set('currentLoudnessVideoId', 'pendingVid');
+    ytcv._set('currentLiveLkfs', null);
+    ytcv._set('readLiveLkfs', null);
+    ytcv._set('currentAutoApplyLoudnessVideo', false);
+    ytcv._set('currentGain', 0.5);
+    ytcv._set('storageMigrated', true);
+    // Every write is held until the case lets it go, in the order it was made.
+    const setBefore = chrome.storage.local.set;
+    const held = [];
+    chrome.storage.local.set = (obj) => new Promise((resolve, reject) => {
+      held.push(() => setBefore(obj).then(resolve, reject));
+    });
+    const turnedOn = popupGesture({ type: 'setAutoApplyLoudness', enabled: true });
+    for (let turn = 0; turn < 10 && held.length === 0; turn++) await tick();
+    const manual = popupGesture({ type: 'setGain', gain: 0.3 });
+    // Every other gesture the popup can send is refused as well while the
+    // toggle's write is out, and moves nothing. Their answers are read once the
+    // writes are let go, so one that went ahead and wrote answers then.
+    const gainBefore = ytcv.state.currentGain;
+    const others = Promise.all([
+      popupGesture({ type: 'setGainLive', gain: 0.4 }),
+      popupGesture({ type: 'applyLoudness' }),
+      popupGesture({ type: 'setAutoApplyLoudness', enabled: false })
+    ]);
+    for (let turn = 0; turn < 10; turn++) await tick();
+    const gainWhileOut = ytcv.state.currentGain;
+    chrome.storage.local.set = setBefore;
+    while (held.length) { await held.shift()(); await tick(); }
+    const [onAnswer, manualAnswer, otherAnswers] = await Promise.all([turnedOn, manual, others]);
+    await tick();
+    assert(otherAnswers.every((answer) => answer?.ok === false && answer?.reason === 'auto update pending')
+      && gainWhileOut === gainBefore,
+      `a preview, an Apply and another toggle are refused while it is out (${JSON.stringify(otherAnswers)} / ${gainWhileOut})`);
+    assert(onAnswer?.ok === true && mockStorage['channelVolumes'].UCpending.autoApplyLoudnessVideo === true,
+      `Auto stays on (${JSON.stringify(onAnswer?.ok)} / ${JSON.stringify(manualAnswer)} / ${JSON.stringify(mockStorage['channelVolumes'].UCpending)})`);
+    assert(manualAnswer?.ok === false && manualAnswer?.reason === 'auto update pending',
+      `the manual save is refused while the toggle's write is out (${JSON.stringify(manualAnswer)})`);
+    // Once the toggle's write has settled, the gestures are taken again.
+    const off = await popupGesture({ type: 'setAutoApplyLoudness', enabled: false });
+    const after = await popupGesture({ type: 'setGain', gain: 0.3 });
+    assert(off?.ok === true && after?.ok === true && mockStorage['channelVolumes'].UCpending.gainVideo === 0.3,
+      `and a save after it is taken (${JSON.stringify(off)} / ${JSON.stringify(after)})`);
+  }
+
   section('Popup: a video changing on its own is a new state to be told about');
   {
     setURL('/watch', 'tokenVidA');
@@ -11024,6 +11077,91 @@ async function runTests() {
       await end();
       for (let turn = 0; turn < 4; turn++) await tick();
       assert(hint() === 'gainSaveFailed', `${by}: one begun on the channel shown is said not to have landed (${hint()})`);
+    }
+
+    section('Popup: while an Auto toggle is out, the manual controls and Apply wait, and a toggle not saved is said so');
+    {
+      let release = null;
+      let toggleAnswer = { ok: false, reason: 'request failed' };
+      const shown = {
+        isWatchPage: true, channel: { id: 'UCtoggle', name: 'Toggle Ch', url: '' }, appliesTo: 'UCtoggle|video|toggleVid',
+        loudnessDb: null, contentLufs: null, gain: 1.0, targetLufs: -18, videoType: 'video',
+        autoApplyLoudnessVideo: false, autoApplyLoudnessLive: false
+      };
+      const popup = makePopup({ answer: async (m) => {
+        if (m.type === 'setAutoApplyLoudness') {
+          await new Promise((resolve) => { release = resolve; });
+          return toggleAnswer;
+        }
+        return JSON.parse(JSON.stringify(shown));
+      } });
+      await popup.ready();
+      const controls = () => [popup.node('volumeSlider').disabled, ...popup.presets.map((b) => b.disabled), popup.node('applyBtn').disabled];
+      assert(!popup.node('volumeSlider').disabled && popup.presets.every((b) => !b.disabled),
+        `the manual controls are in use before (${JSON.stringify(controls())})`);
+      popup.node('autoApplyVideoToggle').checked = true;
+      const toggling = popup.fire('autoApplyVideoToggle', 'change');
+      for (let turn = 0; turn < 10 && !release; turn++) await tick();
+      assert(controls().every(Boolean) && popup.node('autoApplyVideoToggle').disabled,
+        `while it is out, the slider, the presets, Apply and the toggle are out of use (${JSON.stringify(controls())})`);
+      // A state that arrives meanwhile leaves the toggle where the viewer put it.
+      await popup.deliver({ type: 'stateChanged', ...shown });
+      assert(popup.node('autoApplyVideoToggle').checked === true && popup.node('volumeSlider').disabled,
+        `a state arriving meanwhile leaves the toggle and the lock (${popup.node('autoApplyVideoToggle').checked})`);
+      release();
+      await toggling;
+      for (let turn = 0; turn < 6; turn++) await tick();
+      assert(popup.node('autoError').style.display === '' && popup.node('autoApplyVideoToggle').checked === false,
+        `a toggle not saved is said so, and drawn as the tab has it (${popup.node('autoError').style.display} / ${popup.node('autoApplyVideoToggle').checked})`);
+      assert(!popup.node('volumeSlider').disabled && popup.presets.every((b) => !b.disabled),
+        `and the manual controls are back in use (${JSON.stringify(controls())})`);
+
+      // A toggle that is saved takes the line down.
+      toggleAnswer = { ok: true, ...shown, autoApplyLoudnessVideo: true };
+      release = null;
+      popup.node('autoApplyVideoToggle').checked = true;
+      const saving = popup.fire('autoApplyVideoToggle', 'change');
+      for (let turn = 0; turn < 10 && !release; turn++) await tick();
+      assert(popup.node('autoError').style.display === 'none', 'the line goes as the next toggle goes out');
+      release();
+      await saving;
+      for (let turn = 0; turn < 6; turn++) await tick();
+      assert(popup.node('autoError').style.display === 'none' && popup.node('autoApplyVideoToggle').checked === true,
+        `a saved toggle leaves no line (${popup.node('autoError').style.display})`);
+    }
+
+    section('Popup: on a stream, the Live toggle waits for its own save as well');
+    {
+      let release = null;
+      const shown = {
+        isWatchPage: true, channel: { id: 'UCtoggleLive', name: 'Toggle Live', url: '' }, appliesTo: 'UCtoggleLive|live|toggleLiveVid',
+        loudnessDb: null, contentLufs: null, gain: 1.0, targetLufs: -18, videoType: 'live',
+        autoApplyLoudnessVideo: false, autoApplyLoudnessLive: false
+      };
+      const popup = makePopup({ answer: async (m) => {
+        if (m.type === 'setAutoApplyLoudness') {
+          await new Promise((resolve) => { release = resolve; });
+          return { ok: true, ...shown, autoApplyLoudnessLive: true };
+        }
+        return JSON.parse(JSON.stringify(shown));
+      } });
+      await popup.ready();
+      assert(!popup.node('autoApplyLiveToggle').disabled, 'the Live toggle is in use on a stream');
+      popup.node('autoApplyLiveToggle').checked = true;
+      const toggling = popup.fire('autoApplyLiveToggle', 'change');
+      for (let turn = 0; turn < 10 && !release; turn++) await tick();
+      await popup.deliver({ type: 'stateChanged', ...shown });
+      assert(popup.node('autoApplyLiveToggle').disabled && popup.node('volumeSlider').disabled,
+        `while its save is out, the Live toggle and the slider are out of use (${popup.node('autoApplyLiveToggle').disabled})`);
+      // The handler stands behind the disabling: a change that reaches it
+      // while the save is out sends nothing.
+      const toggles = () => popup.asked.filter((m) => m.type === 'setAutoApplyLoudness').length;
+      for (const fn of popup.node('autoApplyLiveToggle').listeners.change || []) await fn({ target: popup.node('autoApplyLiveToggle') });
+      assert(toggles() === 1, `a second change while it is out sends nothing (${toggles()})`);
+      release();
+      await toggling;
+      for (let turn = 0; turn < 6; turn++) await tick();
+      assert(!popup.node('autoApplyLiveToggle').disabled, 'and back in use once it is answered');
     }
 
     section('Sliders: a gesture begins on the primary button alone');

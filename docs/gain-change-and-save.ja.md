@@ -173,6 +173,8 @@ sequenceDiagram
     P->>C: setGainLive、appliesTo は sliderAppliesTo、gain
     alt appliesTo が違う、または URL の動画についてチャンネルが名指されていない
       C-->>P: ok false、state moved
+    else Auto のトグルの書き込みがまだ終わっていない
+      C-->>P: ok false、auto update pending
     else その種別の Auto が ON で、レベルを持っている
       C-->>P: ok false、auto apply controls current gain
     else 受け付ける
@@ -218,11 +220,11 @@ sequenceDiagram
   alt appliesTo が違う、または URL の動画についてチャンネルが名指されていない
     C->>C: restoreGainAfterFailedSave() が applyPreferredGain() を動かす
     C-->>P: ok false、state moved
-  else その種別の Auto が ON で、レベルを持っている
+  else Auto のトグルの書き込みがまだ終わっていない、またはその種別の Auto が ON で、レベルを持っている
     opt この setGain の前に試し聞きがあった
       C->>C: restoreGainAfterFailedSave() が applyPreferredGain() を動かす
     end
-    C-->>P: ok false、auto apply controls current gain
+    C-->>P: ok false、auto update pending か auto apply controls current gain
   else 受け付ける
     C->>G: commitGain(gain)
     C->>W: store:saveChannelGain、currentGain を版の比率で割った値、autoApply は今の Auto の状態、baseLoudnessDb が分かれば heldAgainstPlain
@@ -265,6 +267,8 @@ sequenceDiagram
     C-->>P: ok false、state moved
   else targetLufs が content.js の持つ targetLufs と違う
     C-->>P: ok false、target moved
+  else Auto のトグルの書き込みがまだ終わっていない
+    C-->>P: ok false、auto update pending
   else その種別の Auto が ON
     C-->>P: ok false、auto apply enabled
   else loudnessDb もライブのレベルも無い、またはチャンネル ID が無い
@@ -309,11 +313,14 @@ sequenceDiagram
   participant G as GainNode
   participant W as background.js
   V->>P: 見ている種別の LUFS 自動適用トグルを切り替える
-  Note over P: 返事が来るまでトグルを操作できなくする
+  Note over P: autoUpdatePending。返事が来るまでトグル・スライダー・プリセット・適用を操作できなくする
   P->>C: setAutoApplyLoudness、appliesTo、enabled
   alt appliesTo が違う、または URL の動画についてチャンネルが名指されていない
     C-->>P: ok false、state moved
+  else 別のトグルの書き込みがまだ終わっていない
+    C-->>P: ok false、auto update pending
   else 受け付ける
+    Note over C: ポップアップに答えるまで autoMutationPending
     alt ON にして、手元にライブのレベルがある
       Note over C: Auto のレベルに手元のレベルを入れ、上がった量は持たない (liveLevelRise を null)
       C->>G: commitGain(calcLiveGain(liveLkfs))、そのまま
@@ -338,6 +345,7 @@ sequenceDiagram
     end
   end
   opt 返事が ok でない、または送れなかった
+    Note over P: ラベルの下に autoSaveFailed
     P->>C: getState
     C-->>P: 状態、updateUI で描き直す
   end
@@ -348,8 +356,10 @@ sequenceDiagram
 - この処理は `currentAutoApplyLoudnessVideo` / `currentAutoApplyLoudnessLive` を自分では変えない。書き込みのあとの `applyPreferredGain()` と `chrome.storage.onChanged` の受け取り側が、保存内容から決め直す。書き込みについての変更の知らせが、その `applyPreferredGain()` が読んでいる間に届くと、`storageRevision` が動いているので、その適用は何もせずに戻る。そのときまでに受け取り側が新しい中身から Auto を決め直し、計算したゲインを設定している (「他のタブ: `content.js` の `chrome.storage.onChanged`」を参照)。
 - ライブの書き込みのあと、`liveSaveBaseline` があるので、同じ動画・同じ種別での次の `evaluateLiveSave` はこのゲインと比べ、同じゲインを二度保存しない。ゲインはそのまま鳴らす。続く `applyPreferredGain()` はレベルを `liveGainToPlay` に通して鳴らし、`liveRaiseFrom` を入れるので、そのあとの追従はそこから制限がかかる。
 - `getState` も失敗したときは、ポップアップは最後に描いた状態からトグルを元に戻す。
+- トグルの書き込みが終わっていない間 (`autoMutationPending`。書き込みを始めてからポップアップに答えるまで)、`content.js` は `setGainLive`・`setGain`・`applyLoudness`・別の `setAutoApplyLoudness` を `auto update pending` で断る。受け付けた試し聞きのあとの `setGain` は、先に保存されたゲインに戻す (`restoreGainAfterFailedSave`)。手動の保存はタブが持つ Auto の状態をチャンネルのフラグとして書くので、トグルの書き込みが終わる前に来ると、切り替える前の状態を書き、トグルの書き込みのあとに着いて Auto を元に戻してしまう。ポップアップも同じ間、トグル・スライダー・プリセット・適用を操作できなくし (`autoUpdatePending`)、その間に届いた状態ではトグルを視聴者が動かした位置のままにする。
+- 返事が `ok` でないとき、または送信が失敗したときは、次にトグルを送るまでラベルの下に `autoSaveFailed` (「LUFS 自動適用の設定を保存できませんでした。もう一度お試しください」) を出す。
 
-図のもと: `popup.js` の `handleAutoApplyChange`、`resyncFromContent`。`content.js` の `handleMessage` (`setAutoApplyLoudness`)、`saveLiveChannelGain`、`saveChannelGain`、`saveChannelAutoApply`、`applyPreferredGain`、`restoreGainAfterFailedSave`。
+図のもと: `popup.js` の `handleAutoApplyChange`、`resyncFromContent`、`refreshDisplay`、`updateApplyBtn`。`content.js` の `handleMessage` (`setAutoApplyLoudness`)、`saveLiveChannelGain`、`saveChannelGain`、`saveChannelAutoApply`、`applyPreferredGain`、`restoreGainAfterFailedSave`。
 
 ## ポップアップを開いたとき: `forceDetect`
 
@@ -706,7 +716,7 @@ sequenceDiagram
 |---|---|---|---|
 | ポップアップのスライダーの `input` | 変わる (試し聞き) | されない | `popup.js` の `volumeSlider` の `input` の受け取り側。`content.js` の `handleMessage` (`setGainLive`)、`commitGain` |
 | ポップアップのスライダーの `change` (キーなら `keyup`)、プリセットボタン | 変わる | される: Auto の状態をチャンネル個別のフラグにして `saveChannelGain` | `handleMessage` (`setGain`)、`saveManualChannelGain` |
-| `setGain` が `state moved` で断られた、または試し聞きのあとに `auto apply controls current gain` で断られた | `applyPreferredGain` が決める値に戻る | されない | `restoreGainAfterFailedSave` |
+| `setGain` が `state moved` で断られた、または試し聞きのあとに `auto update pending` か `auto apply controls current gain` で断られた | `applyPreferredGain` が決める値に戻る | されない | `restoreGainAfterFailedSave` |
 | スライダーの試し聞きが続いている間に、ほかから来たゲイン | 操作が終わるまで変わらない | その出来事の行と同じ | `commitGainFromElsewhere` |
 | `setGain` の無いまま終わった試し聞き | `applyPreferredGain` が決める値に戻る | ブリッジの返事の行と同じ | `endIdlePreview` |
 | `loudnessDb` での「チャンネルに適用」 | 変わる | される: `calcGain(baseLoudnessDb)`、フラグ `false`、基準が分かれば印 | `handleMessage` (`applyLoudness`)、`saveManualChannelGain` |
