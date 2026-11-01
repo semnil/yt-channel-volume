@@ -646,7 +646,7 @@ const playerResponse = (over = {}) => ({
 // popup.js in this repository before — it was read as text and matched against
 // regular expressions — so every branch of it, and every message it builds,
 // was reached by nobody.
-function makePopup({ tabUrl = 'https://www.youtube.com/watch?v=abc', answer = null, displayUnit = '%' } = {}) {
+function makePopup({ tabUrl = 'https://www.youtube.com/watch?v=abc', answer = null, displayUnit = '%', failSettingsRead = false } = {}) {
   const nodes = new Map();
   const popupTimers = [];
   const asked = [];
@@ -730,7 +730,10 @@ function makePopup({ tabUrl = 'https://www.youtube.com/watch?v=abc', answer = nu
         openOptionsPage() {},
         onMessage: { addListener: (fn) => broadcastListeners.push(fn) }
       },
-      storage: { sync: { get: async () => ({ [SETTINGS_KEY]: { displayUnit } }) } }
+      storage: { sync: { get: async () => {
+        if (failSettingsRead) throw new Error('the settings read failed');
+        return { [SETTINGS_KEY]: { displayUnit } };
+      } } }
     }
   };
   popupSandbox.globalThis = popupSandbox;
@@ -764,7 +767,8 @@ function makePopup({ tabUrl = 'https://www.youtube.com/watch?v=abc', answer = nu
     // so what protects a gesture is the disabling, not a guard in the handler.
     async fire(id, type, event = {}) {
       if (node(id).disabled) { await tick(); return; }
-      for (const fn of node(id).listeners[type] || []) await fn({ target: node(id), ...event });
+      // A pointer event carries the primary button unless the case names another.
+      for (const fn of node(id).listeners[type] || []) await fn({ target: node(id), button: 0, ...event });
       await tick();
     },
     // The popup's own window losing focus.
@@ -6725,6 +6729,13 @@ async function runTests() {
     assert(gone.node('main').style.display === 'none'
       && gone.node('reloadNeeded').style.display === '',
       `a page that cannot answer is asked to be reloaded (${gone.node('reloadNeeded').style.display})`);
+
+    // So is a popup that cannot read the settings: it asks no tab anything.
+    const unread = makePopup({ failSettingsRead: true });
+    await unread.settled();
+    assert(unread.node('main').style.display === 'none'
+      && unread.node('reloadNeeded').style.display === '' && unread.attempts.length === 0,
+      `a popup that cannot read the settings asks to be reloaded, and asks the tab nothing (${JSON.stringify(unread.attempts)})`);
   }
 
   section('Popup: a broadcast from its own tab only');
@@ -7858,6 +7869,8 @@ async function runTests() {
     failStorageGet = false,
     failStorageSet = false,
     failMutation = '',
+    // A write whose answer is held until the case lets it go.
+    holdMutation = '',
     deferStorageGet = false
   } = {}) {
     // The two areas the page reads, apart as Chrome keeps them: the settings
@@ -7872,6 +7885,7 @@ async function runTests() {
     const errors = [];
     const confirms = [];
     const alerts = [];
+    let releaseMutation = null;
     let confirmAnswer = true;
     const storageListeners = [];
     const pendingReads = [];
@@ -8036,6 +8050,9 @@ async function runTests() {
             if (failMutation && message.type === failMutation) {
               return { ok: false, reason: 'store refused' };
             }
+            if (holdMutation && message.type === holdMutation) {
+              await new Promise((resolve) => { releaseMutation = resolve; });
+            }
             // The settings writes run as the worker runs them, against the
             // areas this page reads.
             const settingsWrites = vm.runInContext('SETTINGS_WRITES', sandbox);
@@ -8065,6 +8082,12 @@ async function runTests() {
     return {
       node, body, unitButtons, i18nNodes, sent, errors, confirms, alerts, stored, synced,
       answerConfirm(answer) { confirmAnswer = answer; },
+      // Lets the held write answer.
+      async releaseMutation() {
+        assert(!!releaseMutation, 'a write is held');
+        releaseMutation?.();
+        await settle();
+      },
       listMarkup() { return markupWithin(node('channelList')); },
       deleteButton(id) {
         node('channelList').querySelectorAll('.ch-del');
@@ -8085,7 +8108,8 @@ async function runTests() {
         await settle();
       },
       async fire(id, type, event = {}) {
-        for (const fn of node(id).listeners[type] || []) await fn({ target: node(id), ...event });
+        // A pointer event carries the primary button unless the case names another.
+        for (const fn of node(id).listeners[type] || []) await fn({ target: node(id), button: 0, ...event });
         await settle();
       },
       async clickUnit(unit) {
@@ -8346,6 +8370,20 @@ async function runTests() {
       'and the table is redrawn under the new default');
     assert(options.node('defaultAutoVideoToggle').disabled === false,
       'and the toggle is handed back');
+  }
+
+  {
+    // The toggle is out of use while its save is out.
+    const options = makeOptions({ holdMutation: 'store:saveSetting' });
+    await options.settle();
+    options.node('defaultAutoLiveToggle').checked = true;
+    const changed = options.fire('defaultAutoLiveToggle', 'change');
+    await options.settle();
+    assert(options.node('defaultAutoLiveToggle').disabled === true, 'the toggle is out of use while its save is out');
+    await options.releaseMutation();
+    await changed;
+    assert(options.node('defaultAutoLiveToggle').disabled === false && options.synced[SETTINGS_KEY].autoApplyLoudnessLiveDefault === true,
+      'and handed back once it lands');
   }
 
   {
@@ -8623,15 +8661,20 @@ async function runTests() {
   {
     // The gain the page shows is the one it saved. A save that did not happen
     // leaves the toggle where the stored value stands, not where the click did.
-    const options = makeOptions({ failStorageSet: true });
+    const options = makeOptions({ failStorageSet: true, channels: { UC1: { name: 'Alpha', gainVideo: 2 } } });
     await options.settle();
 
     options.node('defaultAutoVideoToggle').checked = true;
     await options.fire('defaultAutoVideoToggle', 'change');
     assert(options.node('defaultAutoVideoToggle').checked === false,
       'a video default that could not be saved goes back');
+    assert(!options.listMarkup().includes('labelAuto'),
+      `and the table stays under the default the settings hold (${options.listMarkup().slice(0, 160)})`);
     assert(options.node('defaultAutoVideoToggle').disabled === false,
       'and the toggle is handed back either way');
+    assert(!options.node('settingsError').classList.contains('hidden')
+      && options.node('settingsError').textContent === 'settingsSaveFailed',
+      `and the page says the setting was not saved (${options.node('settingsError').textContent})`);
 
     options.node('defaultAutoLiveToggle').checked = true;
     await options.fire('defaultAutoLiveToggle', 'change');
@@ -10787,6 +10830,32 @@ async function runTests() {
       await popup.fire('volumeSlider', 'pointerup');
       assert(popup.asked.filter((m) => m.type === 'setGain' && m.gain === 2.0).length === 1,
         `a drag after it saves at its release (${JSON.stringify(popup.asked)})`);
+    }
+
+    section('Sliders: a gesture begins on the primary button alone');
+    for (const button of [1, 2]) {
+      // Another button moves no value and its release goes to the window, so
+      // the press holds nothing.
+      const options = makeOptions({ settings: { targetLufs: -18 } });
+      await options.settle();
+      await options.fire('targetSlider', 'pointerdown', { button });
+      await options.fireStorage({ [SETTINGS_KEY]: { newValue: { targetLufs: -24 } } }, 'sync');
+      assert(options.node('targetValue').textContent === '-24 LUFS',
+        `a press with button ${button} on Target LUFS leaves it to a change from elsewhere (${options.node('targetValue').textContent})`);
+
+      const popup = makePopup({ answer: async (m) => (m.type === 'setGain' || m.type === 'setGainLive' ? { ok: true } : {
+        isWatchPage: true, channel: { id: 'UCbtn', name: 'Button Ch', url: '' }, appliesTo: 'UCbtn|video|btnVid',
+        loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0, targetLufs: -18, videoType: 'video',
+        autoApplyLoudnessVideo: false, autoApplyLoudnessLive: false
+      }) });
+      await popup.ready();
+      await popup.fire('volumeSlider', 'pointerdown', { button });
+      await popup.blurWindow();
+      popup.node('volumeSlider').value = '160';
+      await popup.fire('volumeSlider', 'input');
+      await popup.fire('volumeSlider', 'change');
+      assert(popup.asked.some((m) => m.type === 'setGain'),
+        `a press with button ${button} on the popup's slider leaves it answering after a blur (${JSON.stringify(popup.asked.map((m) => m.type))})`);
     }
 
     section('Settings page: a key held on Target LUFS writes once');

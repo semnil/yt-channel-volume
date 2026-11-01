@@ -87,8 +87,8 @@ The retry's call. `hasLoudness` is set from the same response the check reads,
 and `retryGetState` (`core/common.js`) asks nothing while its `done()` — here
 `hasLoudness` — holds.
 
-- `popup.js:440` === becomes !== ×1 — ===
-- `popup.js:440` a guard is always taken ×1 — if (resp.contentLufs === null || resp.contentLufs === undefined) {
+- `popup.js:454` === becomes !== ×1 — ===
+- `popup.js:454` a guard is always taken ×1 — if (resp.contentLufs === null || resp.contentLufs === undefined) {
 
 ## page-bridge.js
 
@@ -112,3 +112,11 @@ stored setting, or a level or volume line of `null`.
 - `page-bridge.js:94` a guard is dropped ×1 — if (!player || typeof player.getStatsForNerds !== 'function') return nul
 - `page-bridge.js:423` && becomes || ×1 — &&
 - `page-bridge.js:423` a guard is always taken ×1 — if (moviePlayer && typeof moviePlayer.getStatsForNerds === 'function') {
+
+## options.js
+
+`saveSettingOrRestore`'s answer to a write made before the load landed. Only
+the all-channel Auto toggles read the answer, and they ship disabled until the
+load lands; the load then draws the stored defaults over whatever a toggle took.
+
+- `options.js:108` false becomes true ×1 — return false;

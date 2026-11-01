@@ -103,11 +103,13 @@
   // so the page goes back to what storage holds and says that it did. Where
   // the settings cannot be read back either, nothing goes back, and the line
   // asks for a reload.
+  // Answers whether the write landed.
   async function saveSettingOrRestore(key, value) {
-    if (!settingsLoaded) return;
+    if (!settingsLoaded) return false;
     try {
       await saveSetting(key, value);
       showSettingsError(false);
+      return true;
     } catch (err) {
       const revision = settingsRevision;
       let shown = 'settingsSaveFailed';
@@ -121,6 +123,7 @@
       }
       showSettingsError(true, shown);
       console.error('[YTCV] setting not saved', err);
+      return false;
     }
   }
 
@@ -233,7 +236,10 @@
   let targetGestureEnded = false;
   const targetKeys = createSliderKeys();
 
-  targetSlider.addEventListener('pointerdown', () => {
+  // Only the primary button drags the slider; another button moves no value,
+  // and its release goes to the window, so it begins no gesture.
+  targetSlider.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0) return;
     targetPointerHeld = true;
     targetPointerStart = Number(targetSlider.value);
     targetGestureEnded = false;
@@ -295,35 +301,26 @@
   targetSlider.addEventListener('blur', endTargetGestureOnBlur);
   window.addEventListener('blur', endTargetGestureOnBlur);
 
-  defaultAutoVideoToggle.addEventListener('change', async () => {
-    const previous = defaultAutoApplyVideo;
-    const enabled = defaultAutoVideoToggle.checked;
-    defaultAutoVideoToggle.disabled = true;
-    try {
-      await saveSetting('autoApplyLoudnessVideoDefault', enabled);
-      defaultAutoApplyVideo = enabled;
-      renderChannels(channelVolumes);
-    } catch (_) {
-      defaultAutoVideoToggle.checked = previous;
-    } finally {
-      defaultAutoVideoToggle.disabled = false;
-    }
-  });
-
-  defaultAutoLiveToggle.addEventListener('change', async () => {
-    const previous = defaultAutoApplyLive;
-    const enabled = defaultAutoLiveToggle.checked;
-    defaultAutoLiveToggle.disabled = true;
-    try {
-      await saveSetting('autoApplyLoudnessLiveDefault', enabled);
-      defaultAutoApplyLive = enabled;
-      renderChannels(channelVolumes);
-    } catch (_) {
-      defaultAutoLiveToggle.checked = previous;
-    } finally {
-      defaultAutoLiveToggle.disabled = false;
-    }
-  });
+  // A default is taken out of use while its save is out, and the table follows
+  // it once the save lands. A save that does not land puts the toggle back to
+  // what the settings hold and says so.
+  for (const [toggle, field, take] of [
+    [defaultAutoVideoToggle, 'autoApplyLoudnessVideoDefault', (enabled) => { defaultAutoApplyVideo = enabled; }],
+    [defaultAutoLiveToggle, 'autoApplyLoudnessLiveDefault', (enabled) => { defaultAutoApplyLive = enabled; }]
+  ]) {
+    toggle.addEventListener('change', async () => {
+      const enabled = toggle.checked;
+      toggle.disabled = true;
+      try {
+        if (await saveSettingOrRestore(field, enabled)) {
+          take(enabled);
+          renderChannels(channelVolumes);
+        }
+      } finally {
+        toggle.disabled = false;
+      }
+    });
+  }
 
   overlayToggle.addEventListener('change', () => {
     saveSettingOrRestore('showGainOverlay', overlayToggle.checked);
