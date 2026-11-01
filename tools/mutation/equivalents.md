@@ -32,41 +32,41 @@ message handler starts the evaluation without reading what it hands back, so
 which text it carries changes nothing the handler does: the gain applied, the
 write sent and the follow set are the same either way.
 
-- `content.js:328` === becomes !== ×1 — ===
+- `content.js:305` === becomes !== ×1 — ===
 
 `ensureAudioChain`'s check before the teardown. The disconnect it guards is
 inside a `try`, so a null source is caught, and the assignment below runs either
 way.
 
-- `content.js:724` a guard is always taken ×1 — if (sourceNode) {
+- `content.js:663` a guard is always taken ×1 — if (sourceNode) {
 
 
 The navigation observer's watch-page check. `triggerApply` opens with the same
 one.
 
-- `content.js:1061` a guard is dropped ×1 — if (!isWatchPage()) return;
+- `content.js:1000` a guard is dropped ×1 — if (!isWatchPage()) return;
 
 `respondOnce`'s guard against a second answer, and `return true` after a
 synchronous `sendResponse`. Both were measured against Chrome rather than
 reasoned about: a response sent inside the listener is delivered whatever the
 listener returns, and a second one is dropped rather than delivered or thrown.
 
-- `content.js:1182` a guard is dropped ×1 — if (answered) return;
-- `content.js:1196` true becomes false ×1 — return true;
+- `content.js:1120` a guard is dropped ×1 — if (answered) return;
+- `content.js:1134` true becomes false ×1 — return true;
+- `content.js:1141` true becomes false ×1 — return true;
+- `content.js:1147` true becomes false ×1 — return true;
+- `content.js:1153` true becomes false ×1 — return true;
+- `content.js:1159` true becomes false ×1 — return true;
+- `content.js:1163` true becomes false ×1 — return true;
+- `content.js:1167` true becomes false ×1 — return true;
+- `content.js:1171` true becomes false ×1 — return true;
+- `content.js:1199` true becomes false ×1 — return true;
 - `content.js:1203` true becomes false ×1 — return true;
-- `content.js:1209` true becomes false ×1 — return true;
-- `content.js:1215` true becomes false ×1 — return true;
-- `content.js:1221` true becomes false ×1 — return true;
-- `content.js:1225` true becomes false ×1 — return true;
-- `content.js:1229` true becomes false ×1 — return true;
-- `content.js:1233` true becomes false ×1 — return true;
-- `content.js:1261` true becomes false ×1 — return true;
-- `content.js:1265` true becomes false ×1 — return true;
-- `content.js:1269` true becomes false ×1 — return true;
-- `content.js:1274` true becomes false ×1 — return true;
-- `content.js:1293` true becomes false ×1 — return true;
-- `content.js:1317` true becomes false ×1 — return true;
-- `content.js:1321` true becomes false ×1 — return true;
+- `content.js:1207` true becomes false ×1 — return true;
+- `content.js:1212` true becomes false ×1 — return true;
+- `content.js:1231` true becomes false ×1 — return true;
+- `content.js:1255` true becomes false ×1 — return true;
+- `content.js:1259` true becomes false ×1 — return true;
 
 The level in hand taken as Auto's when Auto is turned on with a level known.
 Where no live level is in hand (`readLiveLkfs` null) the level known is the
@@ -77,7 +77,7 @@ navigation clears both, and turning Auto on sets Auto's from the one in hand.
 level set, and every way that level is set also sets the rise. Taking the
 branch then writes values nothing reads differently.
 
-- `content.js:1335` a guard is always taken ×1 — if (live) {
+- `content.js:1273` a guard is always taken ×1 — if (live) {
 
 ## popup.js
 

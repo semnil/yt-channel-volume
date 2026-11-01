@@ -47,7 +47,7 @@ Every reader takes the settings through `readSettings()`: sync first, then the c
 - **loudnessDb**: the level of the rendition being played, in dB (decibels) against YouTube's loudness target. **baseLoudnessDb**: the level of the plain rendition the response's `audioConfig` describes.
 - **DRC**: Dynamic Range Compression. The player's Stable Volume setting plays a rendition of its own (an adaptive format with `isDrc`).
 - **Live level** (`liveLkfs`): the `live.` level that the player's volume line names on a stream on air, an absolute level in LKFS. `content.js` holds two: Auto's level (`currentLiveLkfs`), which only the bridge's full answer sets, and which Auto plays and stores; and the level in hand (`readLiveLkfs`), which the full answer and the popup's once-a-second read set. The popup, the manual lock, "Apply to channel" and turning Auto on use the level in hand.
-- **Live gain to play** (`liveGainToPlay()`): the gain Auto plays for a live level. Where the level rose `LIVE_RISE_DB` (1 dB) or more over the one the bridge named before it for the same video (`liveLevelRise`), the gain is worked out as if the level were `LIVE_RISE_AHEAD_DB` (3 dB) louder (the rise cut). The first live gain for a video in the page (`liveRaiseFrom` naming no video or another) goes no higher than `LIVE_START_CAP_DB` (3 dB) over the entry's live gain (`storedLiveGain`), where that is above 0 and the video plays as live (the start cap). After it, a gain at or below `currentGain` plays at once, and one above it plays no higher than `currentGain` raised by `LIVE_RAISE_DB` (1.5 dB) for every `LIVE_RAISE_PERIOD_MS` (30 s) since a live level last set the gain (the raise limit). `liveRaiseFrom` = `{ videoId, at }` holds that time: a bridge message naming no live level sets `at` to null, so the next live gain is not raised above the gain playing and the count starts from it, and a Target LUFS change sets it to -Infinity, so the next live gain plays as it stands. A gain over a `currentGain` of 0 plays as it stands. `liveRaiseFrom` is read and set only while the channel in hand is named for the URL's video (`channelNamedForUrlVideo()`, the check `gestureStateMoved` makes too), and the bridge naming a channel other than the one in hand drops it, so a live gain played before the channel is named starts no count, and the first live gain once a channel is named for a video goes through the start cap.
+- **Live gain to play** (`calcGainFromLiveLevel()`): the gain Auto plays for a live level, `calcLiveGain(currentLiveLkfs, targetLufs)`, the gain the level asks for. It plays at once, above or below `currentGain`.
 - **Target LUFS**: `targetLufs` in `autoLoudnessSettings`, -18 by default.
 - **Auto**: the "Auto-apply LUFS" setting. `resolveAutoApplySetting` decides it per type: the channel's own flag, then the legacy flag, then (before the fold has landed) "a stored gain without a flag means off", then the all-channel default.
 - **Auto gain**: `calcGain(loudnessDb, targetLufs)` = 10^((targetLufs - effectiveLufs) / 20), where `effectiveLufs` is -14 for a `loudnessDb` above 0 and -14 + `loudnessDb` otherwise. **Live gain**: `calcLiveGain(liveLkfs, targetLufs)` = 10^((targetLufs - liveLkfs) / 20). Both are clamped to 0 to 6, and a non-finite result is 1.0.
@@ -61,7 +61,7 @@ Every reader takes the settings through `readSettings()`: sync first, then the c
 
 `commitGain(value)` takes `Number(value)`, turns a non-finite value into 1.0, clamps it to 0 to 6, and calls `applyGainToAudio`; then it sets `currentGain` and calls `updateGainOverlay`. `applyGainToAudio` builds no audio chain for a gain of 1.0 while none exists; otherwise `ensureAudioChain` builds the chain for the page's `<video>` (again when the element has changed) and the value goes to `gainNode.gain.value`. When `ensureAudioChain` throws (`createMediaElementSource` refuses an element another context has already connected), `commitGain` stops there: `currentGain`, the overlay and the popup keep the gain that was playing.
 
-`commitGain` is called from `applyPreferredGain` and `applyAutomaticLoudnessGain` (a live gain through `commitLiveGain`, which works it out with `liveGainToPlay`), the `chrome.storage.onChanged` listener, and the `setGainLive`, `setGain`, `applyLoudness` and `setAutoApplyLoudness` branches of `handleMessage`.
+`commitGain` is called from `applyPreferredGain` and `applyAutomaticLoudnessGain` (a live gain through `commitLiveGain`, which works it out with `calcGainFromLiveLevel`), the `chrome.storage.onChanged` listener, and the `setGainLive`, `setGain`, `applyLoudness` and `setAutoApplyLoudness` branches of `handleMessage`.
 
 ## Common path of a channel write
 
@@ -132,7 +132,7 @@ sequenceDiagram
   else state unchanged
     C->>C: setCurrentAutoApplyFromEntry(entry), syncLiveFollow()
     alt Auto on for the type and a live level is held
-      C->>G: commitLiveGain(), commitGain(liveGainToPlay())
+      C->>G: commitLiveGain(), commitGain(calcGainFromLiveLevel())
       C->>C: await evaluateLiveSave(source)
     else Auto on for the type and loudnessDb is held
       C->>G: commitGain(calcGain(loudnessDb))
@@ -151,11 +151,10 @@ sequenceDiagram
 - The read is dropped when anything it was taken for has moved: another navigation, a bridge answer that changed the channel or the type, or a change notification (`storageRevision` goes up on every `channelVolumes` or `autoLoudnessSettings` change notification, and when `unifiedGains` from another context is taken in).
 - Auto's own save sends no `autoApply`, so the channel keeps following the all-channel default. It sends `heldAgainstPlain: true` when `baseLoudnessDb` is known. A save whose map comes out unchanged is not set by the worker (see "Common path of a channel write").
 - Nothing is saved before the legacy fold has landed (`storageMigrated` false), nor by a tab whose `<video>` is paused or muted (`isVideoPlaying()`; a volume of 0 or a gain of 0 still counts as playing). An apply a bridge message starts (`fromMessage`) saves nothing either before the first apply after a change of URL has run for the URL's video (`appliedVideoId`). The gain is still applied.
-- `setCurrentAutoApplyFromEntry` also takes the entry's live gain (`storedLiveGain`), which the start cap is measured from.
 - While a slider preview holds (see "Popup: slider drag (`input`)"), the gain in the diagram is held back rather than committed, and the rest runs.
 - When the entry read rejects or the audio chain cannot be built, the apply stops there. Each caller that starts it without waiting for it (the bridge message, the retry after a navigation, and the `autoLoudnessSettings` and `unifiedGains` change notifications) logs the failure with `reportFailure('apply failed')`, as `triggerApply` does for the navigation's own apply.
 
-Drawn from: `content.js` `applyPreferredGain`, `loadChannelEntry`, `setCurrentAutoApplyFromEntry`, `resolveAutoApplyForType`, `commitLiveGain`, `liveGainToPlay`, `storedGainToPlaying`, `calcStoredGainFromLoudness`, `calcGainFromLiveLevel`, `evaluateLiveSave`, `nameUnaskedWrite`; `utils.js` `getChannelGain`, `isGainHeldAgainstPlain`, `renditionGainRatio`, `calcGain`, `calcLiveGain`.
+Drawn from: `content.js` `applyPreferredGain`, `loadChannelEntry`, `setCurrentAutoApplyFromEntry`, `resolveAutoApplyForType`, `commitLiveGain`, `storedGainToPlaying`, `calcStoredGainFromLoudness`, `calcGainFromLiveLevel`, `evaluateLiveSave`, `nameUnaskedWrite`; `utils.js` `getChannelGain`, `isGainHeldAgainstPlain`, `renditionGainRatio`, `calcGain`, `calcLiveGain`.
 
 ## Popup: slider drag (`input`)
 
@@ -193,7 +192,7 @@ sequenceDiagram
 - The gesture is `holdPopupSlider` in `core/common.js`. An `input` or a `change` that arrives with no gesture in progress takes the copy of `currentAppliesTo` itself. Every `input` of one drag carries that same copy.
 - "Manual Volume" (the slider and the presets) is disabled in the popup while Auto is on for the type and a Loudness is shown, and `content.js` refuses the same state.
 - Each `input` event sends one `setGainLive`. There is no debounce.
-- While a preview lasts and `currentGestureState()` still equals its `appliesTo`, a gain from anywhere else is held back rather than applied: `applyPreferredGain`, `applyAutomaticLoudnessGain` and the `channelVolumes` change listener commit through `commitGainFromElsewhere`, and a live gain through `commitLiveGain`, which leave the gain as it is and set it again on the element the page plays now, so a player rebuilt under the preview is connected at the preview's gain. `commitLiveGain` returns before working a live gain out, so a bridge message leaves `liveRaiseFrom` where it was; the listener works one out with `liveGainToPlay` and holds it back, so another tab's write moves `liveRaiseFrom` on from the gain the preview plays. What else they do (the state they take in, Auto's own save, the live save decision) goes on. A preview whose state has moved holds nothing back.
+- While a preview lasts and `currentGestureState()` still equals its `appliesTo`, a gain from anywhere else is held back rather than applied: `applyPreferredGain`, `applyAutomaticLoudnessGain` and the `channelVolumes` change listener commit through `commitGainFromElsewhere`, and a live gain through `commitLiveGain`, which leave the gain as it is and set it again on the element the page plays now, so a player rebuilt under the preview is connected at the preview's gain. What else they do (the state they take in, Auto's own save, the live save decision) goes on. A preview whose state has moved holds nothing back.
 - While the pointer stays held on the slider after a preview the popup has not saved, the popup sends that preview again every `PREVIEW_KEEP_ALIVE_MS` (1000 ms), and each one the tab accepts starts its wait again. The sending stops when the pointer is let go of, when the preview is saved, and with the popup closed.
 - The preview ends when `setGain` arrives (see the next section), or when `PREVIEW_IDLE_MS` (2000 ms) pass after the last accepted `setGainLive`. Ended that way, `applyPreferredGain()` applies what storage holds then, and the popup is notified.
 
@@ -322,7 +321,7 @@ sequenceDiagram
   else accepted
     Note over C: autoMutationPending until the popup is answered
     alt turned on and a live level is in hand
-      Note over C: Auto's level takes the level in hand, with no rise (liveLevelRise null)
+      Note over C: Auto's level takes the level in hand
       C->>G: commitGain(calcLiveGain(liveLkfs)), as it stands
       C->>W: store:saveChannelGain, that gain, autoApply true, heldAgainstPlain false
       Note over C: once the write lands, liveSaveBaseline is this video, this type and this gain
@@ -354,7 +353,7 @@ sequenceDiagram
 - The popup shows the toggle of the type being watched and sends only for that type and only with a channel id.
 - Turned on with a level known, the gain Auto plays is applied at once and stored with the flag in one write. Turned off, or turned on with no level, only the flag is written and the stored gain is left as it is.
 - The handler does not set `currentAutoApplyLoudnessVideo` / `currentAutoApplyLoudnessLive` itself. `applyPreferredGain()` after the write and the `chrome.storage.onChanged` listener resolve them from the stored entry. When the write's change notification arrives while that `applyPreferredGain()` is reading, `storageRevision` has moved and that apply returns without applying; by then the listener has resolved Auto from the new entry and set the gain it computes (see "Other tabs: `chrome.storage.onChanged` in `content.js`").
-- After the live write, `liveSaveBaseline` makes the next `evaluateLiveSave` for the same video and type compare against this gain rather than store it again. The gain plays as it stands; the `applyPreferredGain()` that follows plays the level through `liveGainToPlay`, which sets `liveRaiseFrom`, so the follows after it are limited from there.
+- After the live write, `liveSaveBaseline` makes the next `evaluateLiveSave` for the same video and type compare against this gain rather than store it again. The gain plays as it stands, and the `applyPreferredGain()` that follows plays the same level's gain.
 - When `getState` also fails, the popup puts the toggle back from the state it last drew.
 - While the toggle's write is out (`autoMutationPending`, from the write's start until the popup is answered), `content.js` refuses `setGainLive`, `setGain`, `applyLoudness` and another `setAutoApplyLoudness` with `auto update pending`; a `setGain` after an accepted preview puts the stored gain back first (`restoreGainAfterFailedSave`). A manual save writes the Auto state the tab holds as the channel's flag, and made while the toggle's write is out it would write the state from before the toggle and land after it, turning Auto back. The popup keeps the toggles, the slider, the presets and Apply disabled for as long (`autoUpdatePending`), and a state that arrives meanwhile leaves the toggle where the viewer put it.
 - An answer that is not `ok`, or a send that rejects, shows `autoSaveFailed` ("Could not save the Auto-apply LUFS setting. Please try again.") under the label until the next toggle goes out.
@@ -430,12 +429,12 @@ sequenceDiagram
   alt videoId differs from the URL's video id
     Note over C: dropped, nothing changes
   else same video, or one of the ids is missing
-    Note over C: loudnessDb, baseLoudnessDb, liveLkfs, videoType, isLiveNow and the channel are updated, and another channel drops liveRaiseFrom
+    Note over C: loudnessDb, baseLoudnessDb, liveLkfs, videoType, isLiveNow and the channel are updated
     opt author with a UC channelId
       C->>W: store:adoptHandleEntry (unasked)
     end
     alt fold settled, Auto on, a live level held
-      C->>G: commitLiveGain(), commitGain(liveGainToPlay())
+      C->>G: commitLiveGain(), commitGain(calcGainFromLiveLevel())
       C->>C: evaluateLiveSave(source), not awaited
     else fold settled, Auto on, loudnessDb held
       C->>G: commitGain(calcGain(loudnessDb))
@@ -461,8 +460,8 @@ The bridge posts under these conditions:
 
 - A message for another video is dropped before anything changes (`isBridgeMessageForCurrentVideo`).
 - Each field is taken only in the type the bridge sends: `loudnessDb` and `liveLkfs` as finite numbers, `baseLoudnessDb` as a number, `isLiveContent` as a boolean, `author` as text, `channelId` in the UC form.
-- For a new video id, `loudnessDb` and `baseLoudnessDb` are set from the message, `null` where it carries none. For the same video they are replaced only when the message carries a finite `loudnessDb`. `liveLkfs` is replaced by every message, so a message without one takes it away; the level in hand (`readLiveLkfs`) is set to it as well. A message with a live level keeps it as `liveLevelBefore` for the video, and how far it rose over the one kept before for the same video, to 0.1 dB, as `liveLevelRise` (null for a message with no live level or for another video). A message without one sets `liveRaiseFrom`'s `at` to null.
-- The channel is taken when the message carries a finite `loudnessDb` or a boolean `isLiveContent`, with a UC `channelId`. When the id changes, both Auto states are set to off until `applyPreferredGain()` resolves them from storage, `liveRaiseFrom` is dropped, and the name comes from `author`, then the page, then the id.
+- For a new video id, `loudnessDb` and `baseLoudnessDb` are set from the message, `null` where it carries none. For the same video they are replaced only when the message carries a finite `loudnessDb`. `liveLkfs` is replaced by every message, so a message without one takes it away; the level in hand (`readLiveLkfs`) is set to it as well.
+- The channel is taken when the message carries a finite `loudnessDb` or a boolean `isLiveContent`, with a UC `channelId`. When the id changes, both Auto states are set to off until `applyPreferredGain()` resolves them from storage, and the name comes from `author`, then the page, then the id.
 - `applyAutomaticLoudnessGain` returns false while the legacy fold has not finished (`storageSettled` false), and the message goes to `applyPreferredGain()`, which waits for it.
 - While a slider preview holds (see "Popup: slider drag (`input`)"), the gains in the diagram are held back rather than committed.
 - When applying Auto's gain throws, the listener logs it with `reportFailure('apply failed')`, and `syncLiveFollow()` and the loudness waiters run after it as they do otherwise.
@@ -478,8 +477,8 @@ sequenceDiagram
   participant B as page-bridge.js
   participant G as GainNode
   participant W as background.js
-  Note over C: syncLiveFollow() keeps one 10 s timer while shouldFollowLive() holds
-  loop every 10 s while on a watch page, Auto on for the type, and isLiveNow or a live level
+  Note over C: syncLiveFollow() keeps one 1 s timer (AUTO_FOLLOW_INTERVAL_MS) while shouldFollowLive() holds
+  loop every 1 s while on a watch page, Auto on for the type, and isLiveNow or a live level
     C->>B: followLive() posts __yt_channel_volume_request__
     B-->>C: answer with source request
     C->>G: commitLiveGain() when the answer carries a live level
@@ -516,9 +515,9 @@ sequenceDiagram
 - `liveSaveBaseline` belongs to one video id and one type: `evaluateLiveSave` compares against it only when both match, since each type stores into a slot of its own. `applyVideoVolume` clears it when the video id changes, and the Auto toggle sets it when its live write lands.
 - The live save sends no `autoApply`, so it is Auto's own save and leaves the channel following the all-channel default. It is stored without the mark and plays as stored.
 - Like Auto's own save, it is made only by a tab whose `<video>` is neither paused nor muted (`isVideoPlaying()`); a volume of 0 or a gain of 0 still counts as playing. A decision of `not playing` leaves the baseline where it was, so the next evaluation in a tab that plays tries again.
-- The gain weighed and stored is the one the level asks for (`calcLiveGain(liveLkfs)`), not the one `liveGainToPlay` lets play. While the gain playing is under it (the start cap, the rise cut or the raise limit holding it), nothing is stored (`held under the level`) and the follow goes on; once the gain playing reaches it, it is stored. The manual controls stay locked as while any level is applied, and the popup's Current shows the gain playing beside Suggested, the gain the level asks for.
+- The gain weighed and stored is the one the level asks for (`calcLiveGain(liveLkfs)`), which is also the one Auto plays. While the gain playing is under it (a slider preview holding it), nothing is stored (`held under the level`) and the follow goes on; once the gain playing reaches it, it is stored. The manual controls stay locked as while any level is applied, and while Auto plays a live level the popup's Current and Suggested show the same gain.
 
-Drawn from: `content.js` `shouldFollowLive`, `syncLiveFollow`, `followLive`, `requestLoudness`, `applyAutomaticLoudnessGain`, `commitLiveGain`, `liveGainToPlay`, `evaluateLiveSave`, `saveLiveChannelGain`; `utils.js` `gainChangeDb`, `calcLiveGain`.
+Drawn from: `content.js` `shouldFollowLive`, `syncLiveFollow`, `followLive`, `requestLoudness`, `applyAutomaticLoudnessGain`, `commitLiveGain`, `calcGainFromLiveLevel`, `evaluateLiveSave`, `saveLiveChannelGain`; `utils.js` `gainChangeDb`, `calcLiveGain`.
 
 ## SPA navigation and the other apply triggers
 
@@ -620,7 +619,7 @@ sequenceDiagram
   opt this tab holds a channel id
     C->>C: resolve Auto from the channel's entry in newValue, syncLiveFollow()
     alt Auto on and this tab holds a live level
-      Note over C: gain is liveGainToPlay()
+      Note over C: gain is calcGainFromLiveLevel()
     else Auto on, loudnessDb is held, and no live level is held
       Note over C: gain is calcGain(loudnessDb)
     else the entry was removed
@@ -726,11 +725,11 @@ Drawn from: `options.js` `renderChannels` (the `.ch-del` click listener), the `c
 | Bridge answer, Auto on, live level | Yes | When `evaluateLiveSave` decides so | `applyAutomaticLoudnessGain`, `evaluateLiveSave` |
 | Bridge answer, Auto on, `loudnessDb` | Yes | Yes after the fold, in a tab whose video is playing (an unchanged map is not set) | `applyAutomaticLoudnessGain`, `isVideoPlaying` |
 | Bridge answer, Auto off or no level | Stored gain (times the ratio when marked) or 1.0 | No | `applyPreferredGain` |
-| Live gain held under the level's by the start cap, the rise cut or the raise limit | Yes, to the gain `liveGainToPlay` allows | No (`held under the level`) | `liveGainToPlay`, `evaluateLiveSave` |
+| Live gain held under the level's by a slider preview | No, the preview's gain plays | No (`held under the level`) | `commitLiveGain`, `evaluateLiveSave` |
 | Popup's live-level read (`askLiveLevel`, every 1 s) | No | No | `popup.js` `askLiveLevelLater`; `content.js` the `__yt_channel_volume_live__` listener |
 | Bridge answer with `author` and a UC `channelId` | No | Only when an `@handle` entry with that name is adopted | `message` listener, `CHANNEL_WRITES.adoptHandleEntry` |
 | Rendition change (`audio-change`), level named (`playing`) | As the bridge answer rows | As the bridge answer rows | `watchAudioChanges`, `followPlaying` |
-| Live follow timer (10 s) | As the bridge answer rows | As the bridge answer rows | `syncLiveFollow`, `followLive` |
+| Live follow timer (1 s) | As the bridge answer rows | As the bridge answer rows | `syncLiveFollow`, `followLive` |
 | SPA navigation, observer, `visibilitychange` | Yes | Auto's own save or the live save, with Auto on and a level, after the fold | `triggerApply`, `applyVideoVolume`, `applyPreferredGain` |
 | `play` of the page's `<video>` | Through `applyPreferredGain` | Auto's own save or the live save, with Auto on and a level, in a tab that is not muted | the `play` listener, `applyPreferredGain` |
 | Popup open | Through `applyPreferredGain` | As SPA navigation | `handleMessage` (`forceDetect`) |
@@ -750,7 +749,7 @@ The code does not decide the behaviour below. It was measured on 2026-10-25 with
 - **The change notice and the answer of one channel write** (see "Common path of a channel write"): with this repository's `background.js`, `onChanged` reached the content script before the answer to its `sendMessage` in 200 of 200 writes. The answer came 0.1 ms later at the median and 0.8 ms later at most.
 - **Keyboard on the popup slider** (see "Popup: slider release (`change`) and preset buttons"): on a range input with the slider's `min="0" max="600" step="5"`, a key press that moved the value fired one `input` and one `change` (an arrow key moves 5, PageUp / PageDown 60), and a press at either end fired neither. A held key fired one `change` for each repeat that moved the value. A mouse drag with 10 moves fired 10 `input` and 1 `change`. The popup sends one `setGainLive` for each `input`, and one `setGain` with its save at the `change` that ends a drag, or at the `keyup` that ends a press or a hold.
 - **A drag on Target LUFS that loses focus** (see "Options page: settings"): headed, 2026-10-30, Chrome 156.0.8078.76, with CDP mouse input (`Input.dispatchMouseEvent`) on the settings page. A drag during which the window lost focus fired its `input`s, then `change` at the value then, then the slider's `blur` and the window's `blur`; no `input` came after the blur and no `change` at the release, whether focus stayed away or came back (3 of 3 each). It wrote once, at the value it had at the blur. A real mouse held through an application switch was not driven.
-- **The live follow timer in a hidden tab** (see "Live stream: follow timer and live save decision"): a chained 30000 ms `setTimeout`, in the shape of the live follow timer, fired every 30.0 s in a visible tab and in a hidden tab playing sound (26 of 26 intervals at 30000–30004 ms, headless and headed). In a hidden tab with no sound (a background tab, or a tab in a minimized window when headed) it fired about every 31 s until 216–217 s after the tab was hidden, then about every 60 s: from 278 s headless, and from 319–324 s headed after one interval of 42–48 s. The live follow timer's own interval, `LIVE_FOLLOW_INTERVAL_MS`, is 10000 ms. A chained 10000 ms `setTimeout` (headless, 2026-10-29, Chrome 156.0.8078.48) fired every 10.0 s in a visible tab and in a hidden tab playing sound (78 of 78 intervals at 10000–10003 ms); in a hidden tab with no sound it fired about every 10 s for its first 7 ticks (10091–11039 ms, to 76 s after the tab was hidden), and about every 60 s from 133 s on (59968–60027 ms).
+- **The live follow timer in a hidden tab** (see "Live stream: follow timer and live save decision"): a chained 30000 ms `setTimeout`, in the shape of the live follow timer, fired every 30.0 s in a visible tab and in a hidden tab playing sound (26 of 26 intervals at 30000–30004 ms, headless and headed). In a hidden tab with no sound (a background tab, or a tab in a minimized window when headed) it fired about every 31 s until 216–217 s after the tab was hidden, then about every 60 s: from 278 s headless, and from 319–324 s headed after one interval of 42–48 s. The live follow timer's own interval, `AUTO_FOLLOW_INTERVAL_MS`, is 1000 ms. A chained 1000 ms `setTimeout` (headless, 2026-11-01, Chrome 156.0.8078.76) fired every 1.0 s in a visible tab and in a hidden tab playing sound (784 of 784 intervals at 1000–1004 ms in the hidden one); in a hidden tab with no sound it fired about every 2 s up to 60 s after the tab was hidden (1682–2027 ms), and about every 60 s from 129 s on (59991–60099 ms). A chained 10000 ms `setTimeout` (headless, 2026-10-29, Chrome 156.0.8078.48) fired every 10.0 s in a visible tab and in a hidden tab playing sound (78 of 78 intervals at 10000–10003 ms); in a hidden tab with no sound it fired about every 10 s for its first 7 ticks (10091–11039 ms, to 76 s after the tab was hidden), and about every 60 s from 133 s on (59968–60027 ms).
 - **Bridge answers on a fresh load** (see "Loudness from `page-bridge.js`" and "Startup: the legacy fold and the first apply"): over 6 fresh loads of ordinary videos, `content.js` registered its `message` listener 820–1232 ms after the load started, and an answer posted before that did not reach it: `define` 0 of 6, `playing` 0 of 3, `fetch` 12 of 18 (two loads lost all three, posted 13–107 ms before the listener). The `request` answers arrived 12 of 12.
 - **`/youtubei/v1/player` on a fresh load** (see "Loudness from `page-bridge.js`"): the page's own script passes `window.fetch` `Request` objects whose own `url` property reads `/youtubei/v1/player`, while the request itself is a `data:application/json` URL (50 of 50 checked). The bridge's hook reads `args[0].url` and takes them as `/player` calls. They do not appear as network requests.
 - **Answers on SPA navigation** (see "SPA navigation and the other apply triggers"): over 182 navigations made by clicking a related video, 180 made no `/youtubei/v1/player` call, and the 2 that did named a third video, so no `fetch` answer was posted for the video navigated to. The first apply, from the MutationObserver URL branch, had neither an early level nor an early channel in 182 of 182. The apply on `yt-navigate-finish` had an early level in 182 of 182 and an early channel in 151 of 182.

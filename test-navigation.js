@@ -243,11 +243,11 @@ globalThis.AudioContext = class {
   }
 };
 
-// The live follow asks content.js's page for a level every 10 s. Its timer is
-// held here rather than left to fire into whichever case is running ten
-// seconds later, and a case runs it when it means to. Every other delay passes
-// through as it is.
-const LIVE_FOLLOW_MS = 10000;
+// The live follow asks content.js's page for a level every second. Its timer
+// is held here rather than left to fire into whichever case is running a
+// second later, and a case runs it when it means to. It is told apart by the
+// function it runs, since other timers wait a second as well. Every other
+// delay passes through as it is.
 const heldLiveFollows = [];
 // The end of a slider preview that its input stopped coming for is held the
 // same way, so a preview a case leaves open ends when a case says so.
@@ -256,7 +256,7 @@ const heldPreviewEnds = [];
 const passedSetTimeout = globalThis.setTimeout;
 const passedClearTimeout = globalThis.clearTimeout;
 globalThis.setTimeout = (fn, ms, ...args) => {
-  const list = ms === LIVE_FOLLOW_MS ? heldLiveFollows : ms === PREVIEW_IDLE_MS ? heldPreviewEnds : null;
+  const list = fn?.name === 'followLive' ? heldLiveFollows : ms === PREVIEW_IDLE_MS ? heldPreviewEnds : null;
   if (!list) return passedSetTimeout(fn, ms, ...args);
   const held = { fn, ms };
   list.push(held);
@@ -9096,18 +9096,6 @@ async function runTests() {
     const settle = async () => { for (let turn = 0; turn < 3; turn++) await tick(); };
     const entryNow = () => mockStorage['channelVolumes'][LIVE_CH];
     const liveSaves = () => mockSentMessages.filter((m) => m?.type === 'store:saveChannelGain' && m.channelId === LIVE_CH);
-    // A live gain rises by no more than 1.5 dB for every 30 s since a live level
-    // last set it. A case that means the next level to play in full lets that
-    // time pass first; `ago` moves when that was by the milliseconds given.
-    const ago = (ms) => {
-      const from = ytcv.state.liveRaiseFrom;
-      if (from) ytcv._set('liveRaiseFrom', { ...from, at: from.at - ms });
-    };
-    const raiseInFull = () => ago(3600000);
-    // A level that rose 1 dB or more over the one named before it is taken 3 dB
-    // louder. A case about something else answers with no level before it.
-    const noRise = () => ytcv._set('liveLevelBefore', null);
-    const dbOver = (gain, base) => Math.round(20 * Math.log10(gain / base) * 100) / 100;
     // A tab on a stream, with the follow from any case before this one ended.
     const onAir = ({ type = 'live', isLiveNow = true, autoLive = true, autoVideo = false, entry = {} } = {}) => {
       ytcv._set('currentAutoApplyLoudnessVideo', false);
@@ -9130,16 +9118,11 @@ async function runTests() {
       ytcv._set('currentLoudnessDb', null);
       ytcv._set('currentBaseLoudnessDb', null);
       ytcv._set('liveSaveBaseline', null);
-      ytcv._set('liveRaiseFrom', null);
-      ytcv._set('liveLevelBefore', null);
-      ytcv._set('liveLevelRise', null);
       ytcv._set('currentVideoType', type);
       ytcv._set('currentVideoTypeDetected', true);
       ytcv._set('currentIsLiveNow', isLiveNow);
       ytcv._set('currentAutoApplyLoudnessLive', autoLive);
       ytcv._set('currentAutoApplyLoudnessVideo', autoVideo);
-      // What the start cap reads is taken from the entry with the Auto flags.
-      ytcv._set('storedLiveGain', typeof entry.gainLive === 'number' ? entry.gainLive : null);
       ytcv._set('defaultAutoApplyLoudnessLive', false);
       ytcv._set('defaultAutoApplyLoudnessVideo', false);
       ytcv._set('targetLufs', -18);
@@ -9164,8 +9147,6 @@ async function runTests() {
       assert(!close(ytcv.state.currentGain, calcGain(-10 - YT_REFERENCE_LUFS, -18)),
         `and not where YouTube's normalization would put it (${ytcv.state.currentGain})`);
       assert(ytcv.state.currentLiveLkfs === -10, `the level is held (${ytcv.state.currentLiveLkfs})`);
-
-      raiseInFull();
       liveAnswer(-24.8, { loudnessDb: -6, baseLoudnessDb: -6 });
       await settle();
       assert(close(ytcv.state.currentGain, liveGain(-24.8)),
@@ -9179,20 +9160,19 @@ async function runTests() {
       }
     }
 
-    section('Live level: followed every 10 s while it is on air');
+    section('Live level: followed every second while it is on air');
     {
       onAir({ entry: { autoApplyLoudnessLive: true } });
       liveAnswer(-24.8);
       await settle();
-      assert(heldLiveFollows.length === 1 && heldLiveFollows[0].ms === LIVE_FOLLOW_MS,
-        `one follow waits 10 s (${heldLiveFollows.map((t) => t.ms)})`);
+      assert(heldLiveFollows.length === 1 && heldLiveFollows[0].ms === 1000,
+        `one follow waits a second (${heldLiveFollows.map((t) => t.ms)})`);
 
       let next = -23.0;
       mockPostMessageHandler = (data) => {
         if (data?.type === '__yt_channel_volume_request__') liveAnswer(next);
       };
       mockPostMessages.length = 0;
-      noRise();
       const ran = await runLiveFollows();
       await settle();
       assert(ran === 1 && mockPostMessages.filter((m) => m?.type === '__yt_channel_volume_request__').length === 1,
@@ -9202,11 +9182,10 @@ async function runTests() {
       assert(heldLiveFollows.length === 1, `with the next follow set (${heldLiveFollows.length})`);
 
       next = -21.5;
-      noRise();
       await runLiveFollows();
       await settle();
       assert(close(ytcv.state.currentGain, liveGain(-21.5)) && heldLiveFollows.length === 1,
-        `and again 10 s on (${ytcv.state.currentGain} / ${heldLiveFollows.length})`);
+        `and again a second on (${ytcv.state.currentGain} / ${heldLiveFollows.length})`);
 
       // A follow the bridge does not answer still sets the next one.
       mockPostMessageHandler = null;
@@ -9214,48 +9193,34 @@ async function runTests() {
       assert(heldLiveFollows.length === 1, `an unanswered follow sets the next (${heldLiveFollows.length})`);
     }
 
-    section('Live level: a lower gain plays at once, a higher one rises 1.5 dB for every 30 s');
+    section('Live level: every live level plays the gain it asks for, higher or lower, at once');
     {
       onAir({ entry: { autoApplyLoudnessLive: true } });
       liveAnswer(-14);
       await settle();
       assert(close(ytcv.state.currentGain, liveGain(-14)),
         `the first live gain for the video plays as it stands (${ytcv.state.currentGain})`);
-
-      ago(10000);
       liveAnswer(-24);
       await settle();
-      const afterTen = ytcv.state.currentGain;
-      assert(dbOver(afterTen, liveGain(-14)) >= 0.5 && dbOver(afterTen, liveGain(-14)) < 0.51,
-        `10 s on, a gain 10 dB higher rises 0.5 dB (${dbOver(afterTen, liveGain(-14))})`);
-      ago(30000);
-      liveAnswer(-24);
-      await settle();
-      assert(dbOver(ytcv.state.currentGain, afterTen) >= 1.5 && dbOver(ytcv.state.currentGain, afterTen) < 1.51,
-        `30 s on, 1.5 dB more (${dbOver(ytcv.state.currentGain, afterTen)})`);
-      raiseInFull();
-      liveAnswer(-24);
-      await settle();
-      assert(close(ytcv.state.currentGain, liveGain(-24)), `given the time, it gets there (${ytcv.state.currentGain})`);
-
-      noRise();
+      assert(close(ytcv.state.currentGain, liveGain(-24)), `a gain 10 dB higher plays at once (${ytcv.state.currentGain})`);
       liveAnswer(-12);
       await settle();
       assert(close(ytcv.state.currentGain, liveGain(-12)), `a lower gain plays at once (${ytcv.state.currentGain})`);
       liveAnswer(-30);
       await settle();
-      assert(dbOver(ytcv.state.currentGain, liveGain(-12)) < 0.01,
-        `with no time since, a higher one does not rise (${dbOver(ytcv.state.currentGain, liveGain(-12))})`);
+      assert(close(ytcv.state.currentGain, liveGain(-30)), `and a higher one again (${ytcv.state.currentGain})`);
 
-      // Another tab storing a gain plays this tab's level under the same limit.
+      // Another tab storing a gain plays this tab's level, from whatever gain
+      // plays when the store lands.
       const entry = { name: 'Live Follow', url: LIVE_URL, gainLive: 0.9, autoApplyLoudnessLive: true };
       mockStorage['channelVolumes'] = { [LIVE_CH]: entry };
+      ytcv._set('currentGain', 0.5);
       simulateStorageChange({
         channelVolumes: { oldValue: { [LIVE_CH]: { ...entry, gainLive: 0.8 } }, newValue: { [LIVE_CH]: entry } }
       });
       await settle();
-      assert(dbOver(ytcv.state.currentGain, liveGain(-12)) < 0.01,
-        `nor does another tab's store raise it (${dbOver(ytcv.state.currentGain, liveGain(-12))})`);
+      assert(close(ytcv.state.currentGain, liveGain(-30)),
+        `another tab's store plays this tab's level (${ytcv.state.currentGain})`);
 
       // A target moved in the settings plays at once.
       simulateStorageChange({ autoLoudnessSettings: { newValue: { targetLufs: -14 } } });
@@ -9265,23 +9230,22 @@ async function runTests() {
       simulateStorageChange({ autoLoudnessSettings: { newValue: { targetLufs: -18 } } });
       await settle();
 
-      // No multiple raises a gain of 0, so a level over it plays as it stands.
+      // A level over a gain of 0 plays as it stands.
       ytcv._set('currentGain', 0);
-      noRise();
       liveAnswer(-24);
       await settle();
       assert(close(ytcv.state.currentGain, liveGain(-24)), `over a gain of 0 the level plays as it stands (${ytcv.state.currentGain})`);
 
       // Another video's first live gain plays as it stands.
-      setURL('/watch', 'liveRaiseVid2');
-      liveAnswer(-30, { videoId: 'liveRaiseVid2' });
+      setURL('/watch', 'liveFollowOtherVid');
+      liveAnswer(-30, { videoId: 'liveFollowOtherVid' });
       await settle();
       assert(close(ytcv.state.currentGain, liveGain(-30)),
         `another video's first live gain plays as it stands (${ytcv.state.currentGain})`);
       setURL('/watch', LIVE_VID);
     }
 
-    section('Live level: a settings change that leaves Target LUFS alone does not lift the gain');
+    section('Live level: a settings change that leaves Target LUFS alone leaves the gain');
     {
       const settings = (over) => simulateStorageChange({
         autoLoudnessSettings: { newValue: { targetLufs: -18, displayUnit: '%', showGainOverlay: false, ...over } }
@@ -9289,25 +9253,16 @@ async function runTests() {
       onAir({ entry: { autoApplyLoudnessLive: true, gainLive: 1.0 } });
       liveAnswer(-28);
       await settle();
-      const capped = ytcv.state.currentGain;
-      assert(close(dbOver(capped, 1.0), 3), `the first gain is capped (${dbOver(capped, 1.0)})`);
+      assert(close(ytcv.state.currentGain, liveGain(-28)) && close(entryNow().gainLive, liveGain(-28)),
+        `the first gain plays and is stored, 10 dB over the stored one (${ytcv.state.currentGain} / ${entryNow().gainLive})`);
       settings({ displayUnit: 'dB' });
       await settle();
-      assert(dbOver(ytcv.state.currentGain, capped) < 0.01,
-        `the display unit changed under the cap leaves it (${dbOver(ytcv.state.currentGain, capped)})`);
-      assert(entryNow().gainLive === 1.0, `and nothing is stored while the cap holds it (${entryNow().gainLive})`);
-
-      noRise();
-      liveAnswer(-14);
-      await settle();
-      ago(10000);
-      liveAnswer(-28);
-      await settle();
-      const rising = ytcv.state.currentGain;
+      assert(close(ytcv.state.currentGain, liveGain(-28)),
+        `the display unit changed leaves it (${ytcv.state.currentGain})`);
       settings({ displayUnit: 'dB', showGainOverlay: true });
       await settle();
-      assert(dbOver(ytcv.state.currentGain, rising) < 0.01,
-        `the gain overlay turned on while it rises leaves it (${dbOver(ytcv.state.currentGain, rising)})`);
+      assert(close(ytcv.state.currentGain, liveGain(-28)),
+        `so does the gain overlay turned on (${ytcv.state.currentGain})`);
 
       settings({ targetLufs: -16, displayUnit: 'dB', showGainOverlay: true });
       await settle();
@@ -9316,29 +9271,23 @@ async function runTests() {
       await settle();
     }
 
-    section('Live level: after a message with no live level, a rise counts again from the level coming back');
+    section('Live level: after a message with no live level, the level coming back plays at once');
     {
       onAir({ entry: { autoApplyLoudnessLive: true } });
       liveAnswer(-14);
       await settle();
       const stored = entryNow().gainLive;
-      ago(300000);
       liveAnswer(null);
       await settle();
       assert(close(stored, liveGain(-14)) && ytcv.state.currentGain === stored,
         `with no live level the stored gain plays (${stored} / ${ytcv.state.currentGain})`);
       liveAnswer(-24);
       await settle();
-      assert(dbOver(ytcv.state.currentGain, stored) < 0.01,
-        `the level coming back starts from the gain playing (${dbOver(ytcv.state.currentGain, stored)})`);
-      ago(30000);
-      liveAnswer(-24);
-      await settle();
-      assert(dbOver(ytcv.state.currentGain, stored) >= 1.5 && dbOver(ytcv.state.currentGain, stored) < 1.51,
-        `and 30 s on rises 1.5 dB (${dbOver(ytcv.state.currentGain, stored)})`);
+      assert(close(ytcv.state.currentGain, liveGain(-24)),
+        `the level coming back plays the gain it asks for (${ytcv.state.currentGain})`);
     }
 
-    section('Live level: turning Auto on plays the level at once, and a rise after it waits');
+    section('Live level: turning Auto on plays the level at once, and the next level plays at once too');
     {
       onAir({ autoLive: false, entry: { autoApplyLoudnessLive: false } });
       liveAnswer(-14);
@@ -9349,8 +9298,8 @@ async function runTests() {
         `the level in hand plays as it stands (${JSON.stringify(on?.ok)} / ${ytcv.state.currentGain})`);
       liveAnswer(-24);
       await settle();
-      assert(dbOver(ytcv.state.currentGain, liveGain(-14)) < 0.01,
-        `a higher gain right after does not rise (${dbOver(ytcv.state.currentGain, liveGain(-14))})`);
+      assert(close(ytcv.state.currentGain, liveGain(-24)),
+        `a higher gain right after plays at once (${ytcv.state.currentGain})`);
     }
 
     section('Live level: what the follow runs for, and what ends it');
@@ -9408,7 +9357,7 @@ async function runTests() {
     section('Live level: what is stored, and when');
     {
       // Auto inherited from the all-channel default, over a gain held against
-      // the plain rendition, under which the start cap leaves the first gain.
+      // the plain rendition.
       onAir({ autoLive: true, entry: { gainLive: 2.0, gainLivePlain: true } });
       ytcv._set('defaultAutoApplyLoudnessLive', true);
       liveAnswer(-24.8);
@@ -9431,7 +9380,6 @@ async function runTests() {
       await settle();
       assert(liveSaves().length === 2 && close(entryNow().gainLive, liveGain(-23.7)),
         `1.1 dB from the stored gain is stored, though 0.3 dB from the last (${liveSaves().length} / ${entryNow().gainLive})`);
-      raiseInFull();
       liveAnswer(-24.8);
       await settle();
       assert(liveSaves().length === 3 && close(entryNow().gainLive, liveGain(-24.8)),
@@ -9448,7 +9396,6 @@ async function runTests() {
       // A write that fails is tried again by the next evaluation.
       const setBefore = chrome.storage.local.set;
       chrome.storage.local.set = () => Promise.reject(new Error('storage write failed'));
-      noRise();
       liveAnswer(-21);
       await settle();
       assert(liveSaves().length === 5 && close(entryNow().gainLive, liveGain(-24.8, -20)),
@@ -9462,7 +9409,6 @@ async function runTests() {
 
       // Before the fold has landed nothing is stored.
       ytcv._set('storageMigrated', false);
-      noRise();
       liveAnswer(-17);
       await settle();
       assert(liveSaves().length === 6 && close(ytcv.state.currentGain, liveGain(-17, -20)),
@@ -9506,7 +9452,6 @@ async function runTests() {
       // A level lost falls back to the gain stored.
       ytcv._set('liveSaveBaseline', { videoId: LIVE_VID, videoType: 'live', gain: liveGain(-21, -20) });
       ytcv._set('currentLiveLkfs', -21);
-      raiseInFull();
       liveAnswer(-20.5);
       await settle();
       assert(close(ytcv.state.currentGain, liveGain(-20.5, -20)), `a level close by plays (${ytcv.state.currentGain})`);
@@ -9541,7 +9486,6 @@ async function runTests() {
       // under it as the arithmetic comes out.
       const exact = gainChangeDb(liveGain(-44.5, -30), liveGain(-45.5, -30));
       assert(exact < 1 && exact > 0.999, `the exact change falls just short of 1 dB (${exact})`);
-      noRise();
       liveAnswer(-44.5);
       await settle();
       assert(liveSaves().length === 2 && close(entryNow().gainLive, liveGain(-44.5, -30)),
@@ -9746,116 +9690,46 @@ async function runTests() {
         `this tab goes on playing its own level (${ytcv.state.currentGain})`);
     }
 
-    section('Start cap: the first live gain for a stream is held to 3 dB over the stored live gain, and rises from there');
+    section('Live level: a stream\'s first live gain plays the level, whatever gain is stored');
     {
-      // Stored 1.0 against -18: a live level of -28 would play 10 dB above it.
+      // Stored 1.0 against -18: a live level of -28 plays 10 dB above it.
       onAir({ entry: { autoApplyLoudnessLive: true, gainLive: 1.0 } });
       liveAnswer(-28);
       await settle();
-      assert(close(dbOver(ytcv.state.currentGain, 1.0), 3),
-        `the first gain plays 3 dB over the stored one (${dbOver(ytcv.state.currentGain, 1.0)})`);
-      const capped = await simulateRuntimeMessage({ type: 'getState' });
-      assert(capped?.liveLkfs === -28 && capped?.contentLufs === -28 && !('liveGateHolds' in capped),
-        `the level is shown as it is named (${capped?.liveLkfs} / ${capped?.contentLufs} / ${JSON.stringify(capped)})`);
-      assert(liveSaves().length === 0 && entryNow().gainLive === 1.0,
-        `nothing is stored while the cap holds it (${liveSaves().length} / ${JSON.stringify(entryNow())})`);
+      assert(close(ytcv.state.currentGain, liveGain(-28)),
+        `the first gain is the one the level asks for (${ytcv.state.currentGain})`);
+      const shown = await simulateRuntimeMessage({ type: 'getState' });
+      assert(shown?.liveLkfs === -28 && shown?.contentLufs === -28,
+        `the level is shown as it is named (${shown?.liveLkfs} / ${shown?.contentLufs})`);
+      assert(liveSaves().length === 1 && close(entryNow().gainLive, liveGain(-28)),
+        `and its gain is stored (${liveSaves().length} / ${JSON.stringify(entryNow())})`);
       assert(heldLiveFollows.length === 1, `and the stream is followed on (${heldLiveFollows.length})`);
       const preview = await popupGesture({ type: 'setGainLive', gain: 0.8 });
       assert(preview?.ok === false && preview?.reason === 'auto apply controls current gain',
         `the manual controls stay locked (${JSON.stringify(preview)})`);
 
-      ago(30000);
-      liveAnswer(-28);
-      await settle();
-      assert(close(dbOver(ytcv.state.currentGain, 1.0), 4.5) && liveSaves().length === 0,
-        `30 s on it has risen 1.5 dB more, and still nothing is stored (${dbOver(ytcv.state.currentGain, 1.0)} / ${liveSaves().length})`);
-      raiseInFull();
-      liveAnswer(-28);
-      await settle();
-      assert(close(ytcv.state.currentGain, liveGain(-28)) && liveSaves().length === 1
-        && close(entryNow().gainLive, liveGain(-28)) && !('liveGateOpenFor' in entryNow()),
-        `once it reaches the level, the level's gain is stored, naming no stream (${liveSaves().length} / ${JSON.stringify(entryNow())})`);
-
-      // Within the cap, the first gain plays as it stands.
-      onAir({ entry: { autoApplyLoudnessLive: true, gainLive: 1.0 } });
-      liveAnswer(-20);
-      await settle();
-      assert(close(ytcv.state.currentGain, liveGain(-20)), `2 dB over plays as it stands (${ytcv.state.currentGain})`);
-    }
-
-    section('Start cap: which first gains it holds');
-    {
-      // Nothing stored for live: nothing to hold the gain to.
-      onAir({ entry: { autoApplyLoudnessLive: true, gainVideo: 1.0 } });
-      liveAnswer(-40);
-      await settle();
-      assert(close(ytcv.state.currentGain, liveGain(-40)), `with no live gain stored the level plays (${ytcv.state.currentGain})`);
-
-      // A live gain stored at 0 holds nothing either.
-      onAir({ entry: { autoApplyLoudnessLive: true, gainLive: 0 } });
-      liveAnswer(-40);
-      await settle();
-      assert(close(ytcv.state.currentGain, liveGain(-40)), `with 0 stored the level plays (${ytcv.state.currentGain})`);
-
-      // A level played as a video is not held.
-      onAir({ type: 'video', autoVideo: true, entry: { autoApplyLoudnessVideo: true, gainLive: 1.0, gainVideo: 1.0 } });
-      liveAnswer(-40, { isLiveContent: false });
-      await settle();
-      assert(ytcv.state.currentVideoType === 'video' && close(ytcv.state.currentGain, liveGain(-40)),
-        `a video plays the level (${ytcv.state.currentVideoType} / ${ytcv.state.currentGain})`);
-
-      // A gain another tab stores later is no new start: the gain playing holds.
-      onAir({ entry: { autoApplyLoudnessLive: true, gainLive: 0.5 } });
-      liveAnswer(-24);
-      await settle();
-      const first = ytcv.state.currentGain;
-      assert(close(dbOver(first, 0.5), 3), `12 dB over 0.5 plays 3 dB over (${dbOver(first, 0.5)})`);
-      const after = { name: 'Live Follow', url: LIVE_URL, gainLive: 4, autoApplyLoudnessLive: true };
-      mockStorage['channelVolumes'] = { [LIVE_CH]: after };
-      simulateStorageChange({
-        channelVolumes: { oldValue: { [LIVE_CH]: { ...after, gainLive: 0.5 } }, newValue: { [LIVE_CH]: after } }
-      });
-      await settle();
-      assert(dbOver(ytcv.state.currentGain, first) < 0.01,
-        `another tab's store does not lift it (${dbOver(ytcv.state.currentGain, first)})`);
-
-      // Auto turned on in the popup plays the level in hand as it stands.
-      onAir({ entry: { autoApplyLoudnessLive: true, gainLive: 1.0 } });
-      liveAnswer(-40);
-      await settle();
-      const off = await popupGesture({ type: 'setAutoApplyLoudness', enabled: false });
-      await settle();
-      const on = await popupGesture({ type: 'setAutoApplyLoudness', enabled: true });
-      await settle();
-      assert(off?.ok === true && on?.ok === true && close(ytcv.state.currentGain, liveGain(-40)),
-        `turned off and on, the level plays as it stands (${JSON.stringify([off?.ok, on?.ok])} / ${ytcv.state.currentGain})`);
-      assert(close(entryNow().gainLive, liveGain(-40)) && entryNow().autoApplyLoudnessLive === true && !('liveGateOpenFor' in entryNow()),
-        `and is stored with the flag (${JSON.stringify(entryNow())})`);
-    }
-
-    section('Start cap: what is stored while it holds is what plays when the level goes');
-    {
-      // The level lost: the stored gain plays, and it is the one from before.
-      onAir({ entry: { autoApplyLoudnessLive: true, gainLive: 1.0 } });
-      liveAnswer(-28);
-      await settle();
+      // The level lost: the gain stored for it plays.
       liveAnswer(null);
       await settle();
-      assert(ytcv.state.currentGain === 1.0 && entryNow().gainLive === 1.0,
-        `with the level lost the stored gain from before plays (${ytcv.state.currentGain} / ${entryNow().gainLive})`);
+      assert(close(ytcv.state.currentGain, liveGain(-28)),
+        `with the level lost the stored gain plays (${ytcv.state.currentGain})`);
 
-      // The stream opened again: the cap is taken from that same stored gain.
-      onAir({ entry: { autoApplyLoudnessLive: true, gainLive: entryNow().gainLive } });
-      liveAnswer(-28);
-      await settle();
-      assert(close(dbOver(ytcv.state.currentGain, 1.0), 3), `opened again it is capped again (${dbOver(ytcv.state.currentGain, 1.0)})`);
+      // Nothing stored for live, 0 stored, and a level played as a video: the
+      // level plays.
+      for (const [what, over] of [
+        ['with no live gain stored', { entry: { autoApplyLoudnessLive: true, gainVideo: 1.0 } }],
+        ['with 0 stored', { entry: { autoApplyLoudnessLive: true, gainLive: 0 } }],
+        ['as a video', { type: 'video', autoVideo: true, entry: { autoApplyLoudnessVideo: true, gainLive: 1.0, gainVideo: 1.0 } }]
+      ]) {
+        onAir(over);
+        liveAnswer(-40, over.type === 'video' ? { isLiveContent: false } : {});
+        await settle();
+        assert(close(ytcv.state.currentGain, liveGain(-40)), `${what} the level plays (${ytcv.state.currentGain})`);
+      }
+    }
 
-      // Auto turned off: the stored gain from before plays.
-      const off = await popupGesture({ type: 'setAutoApplyLoudness', enabled: false });
-      await settle();
-      assert(off?.ok === true && ytcv.state.currentGain === 1.0, `with Auto off the stored gain from before plays (${ytcv.state.currentGain})`);
-
-      // An evaluation with the gain playing under the level's says so.
+    section('Live level: an evaluation with the gain playing under the level\'s stores nothing');
+    {
       onAir({ entry: { autoApplyLoudnessLive: true } });
       ytcv._set('currentLiveLkfs', -20);
       ytcv._set('currentGain', liveGain(-20) * 0.99);
@@ -9868,7 +9742,7 @@ async function runTests() {
         `the level's gain playing is stored (${JSON.stringify(reached)})`);
     }
 
-    section('Rise cut: a level 1 dB or more over the one named before it is taken 3 dB louder');
+    section('Live level: a level that rose over the one before plays as it is named');
     {
       onAir({ entry: { autoApplyLoudnessLive: true } });
       liveAnswer(-30);
@@ -9876,52 +9750,11 @@ async function runTests() {
       assert(close(ytcv.state.currentGain, liveGain(-30)), `the first level plays (${ytcv.state.currentGain})`);
       liveAnswer(-28.9);
       await settle();
-      assert(close(ytcv.state.currentGain, liveGain(-25.9)) && ytcv.state.liveLevelRise === 1.1,
-        `1.1 dB up plays as if 3 dB louder (${ytcv.state.currentGain} / ${ytcv.state.liveLevelRise})`);
-      assert(close(entryNow().gainLive, liveGain(-30)), `and nothing is stored while the cut holds it (${entryNow().gainLive})`);
-      liveAnswer(-28.9);
-      await settle();
-      assert(dbOver(ytcv.state.currentGain, liveGain(-25.9)) < 0.01,
-        `the same level again does not lift it with no time since (${dbOver(ytcv.state.currentGain, liveGain(-25.9))})`);
-      ago(60000);
-      liveAnswer(-28.9);
-      await settle();
       assert(close(ytcv.state.currentGain, liveGain(-28.9)) && close(entryNow().gainLive, liveGain(-28.9)),
-        `60 s on it is back at the level's gain, which is stored (${ytcv.state.currentGain} / ${entryNow().gainLive})`);
-
-      // The rise is taken to 0.1 dB before it is compared.
-      raiseInFull();
-      liveAnswer(-31.4);
+        `1.1 dB up plays the gain it asks for, which is stored (${ytcv.state.currentGain} / ${entryNow().gainLive})`);
+      liveAnswer(-18);
       await settle();
-      liveAnswer(-30.4);
-      await settle();
-      assert(close(ytcv.state.currentGain, liveGain(-27.4)), `1.0 dB up, taken to 0.1 dB, counts (${ytcv.state.currentGain})`);
-      raiseInFull();
-      liveAnswer(-31.3);
-      await settle();
-      raiseInFull();
-      liveAnswer(-30.4);
-      await settle();
-      assert(close(ytcv.state.currentGain, liveGain(-30.4)), `0.9 dB up does not (${ytcv.state.currentGain})`);
-
-      // Auto turned on plays the level in hand as it stands, however it rose.
-      onAir({ autoLive: false, entry: { autoApplyLoudnessLive: false } });
-      liveAnswer(-30);
-      await settle();
-      liveAnswer(-28.9);
-      await settle();
-      const on = await popupGesture({ type: 'setAutoApplyLoudness', enabled: true });
-      await settle();
-      assert(on?.ok === true && close(ytcv.state.currentGain, liveGain(-28.9)),
-        `turned on after a rise, the level plays as it stands (${JSON.stringify(on?.ok)} / ${ytcv.state.currentGain})`);
-
-      // A level named for another video is not what this one rose over.
-      setURL('/watch', 'liveRiseVid2');
-      liveAnswer(-25, { videoId: 'liveRiseVid2' });
-      await settle();
-      assert(ytcv.state.liveLevelRise === null && close(ytcv.state.currentGain, liveGain(-25)),
-        `another video's first level is no rise (${ytcv.state.liveLevelRise} / ${ytcv.state.currentGain})`);
-      setURL('/watch', LIVE_VID);
+      assert(close(ytcv.state.currentGain, liveGain(-18)), `10.9 dB up as well (${ytcv.state.currentGain})`);
     }
 
     section('Live level: read alone for the popup, it becomes the level in hand, and Auto\'s is left as it is');
@@ -10032,7 +9865,6 @@ async function runTests() {
         `the popup goes on being shown the level read (${shown.liveLkfs} / ${shown.contentLufs})`);
 
       // The next full answer naming that level is what Auto takes.
-      noRise();
       liveAnswer(-20);
       await settle();
       assert(ytcv.state.currentLiveLkfs === -20 && close(ytcv.state.currentGain, liveGain(-20))
@@ -10284,9 +10116,6 @@ async function runTests() {
       ytcv._set('currentLoudnessDb', loudnessDb);
       ytcv._set('currentBaseLoudnessDb', loudnessDb);
       ytcv._set('liveSaveBaseline', null);
-      ytcv._set('liveRaiseFrom', null);
-      ytcv._set('liveLevelBefore', null);
-      ytcv._set('liveLevelRise', null);
       ytcv._set('currentVideoType', 'video');
       ytcv._set('currentVideoTypeDetected', true);
       ytcv._set('defaultAutoApplyLoudnessLive', false);
@@ -10583,16 +10412,11 @@ async function runTests() {
         mockSentMessages.filter((m) => m?.type === 'store:saveChannelGain').length === 0,
         `a locked save with nothing previewed stores nothing (${JSON.stringify(mockSentMessages.filter((m) => m?.type?.startsWith('store:')))})`);
 
-      // A live level the bridge names while a preview holds works out no live
-      // gain. Another tab's write during it works one out, held back as any
-      // gain from elsewhere, so the raise count goes on from the gain the
-      // preview plays: once the gesture ends, the live gain rises from there
-      // by no more than the raise limit.
+      // A live level the bridge names while a preview holds is held back, and
+      // so is the live gain another tab's write works out during it. Once the
+      // gesture ends, the gain the level asks for plays.
       const liveEntry = { name: 'Transit', url: TT_URL, gainLive: 0.5, autoApplyLoudnessLive: true };
       await onVideo({ entry: liveEntry });
-      ytcv._set('liveRaiseFrom', null);
-      ytcv._set('liveLevelBefore', null);
-      ytcv._set('liveLevelRise', null);
       simulateBridgeMessage({ videoId: TT_VID, isLiveContent: true, isLiveNow: true, channelId: TT_CH });
       await settle();
       assert(ytcv.state.currentVideoType === 'live' && ytcv.state.currentGain === 0.5,
@@ -10600,22 +10424,19 @@ async function runTests() {
       await popupGesture({ type: 'setGainLive', gain: 3.0 });
       simulateBridgeMessage({ videoId: TT_VID, liveLkfs: -30, isLiveContent: true, isLiveNow: true, channelId: TT_CH });
       await settle();
-      assert(ytcv.state.currentGain === 3.0 && ytcv.state.liveRaiseFrom === null,
-        `the live level the bridge names is held back and no live gain is worked out (${ytcv.state.currentGain} / ${JSON.stringify(ytcv.state.liveRaiseFrom)})`);
+      assert(ytcv.state.currentGain === 3.0,
+        `the live level the bridge names is held back (${ytcv.state.currentGain})`);
       simulateStorageChange({ [CHANNEL_VOLUMES_KEY]: {
         oldValue: { [TT_CH]: liveEntry }, newValue: { [TT_CH]: { ...liveEntry, name: 'Transit Live' } }
       } });
       await settle();
-      const raisedFrom = ytcv.state.liveRaiseFrom;
-      assert(ytcv.state.currentGain === 3.0 && raisedFrom?.videoId === TT_VID && Number.isFinite(raisedFrom?.at),
-        `another tab's write works a live gain out, and the preview still plays (${ytcv.state.currentGain} / ${JSON.stringify(raisedFrom)})`);
+      assert(ytcv.state.currentGain === 3.0,
+        `another tab's write holds the preview too (${ytcv.state.currentGain})`);
       const lockedSave = await popupGesture({ type: 'setGain', gain: 3.0 });
       await settle();
       const levelGain = calcLiveGain(-30, -18);
-      const raiseLimit = 3.0 * Math.pow(10, 1.5 * (Date.now() - raisedFrom?.at) / 30000 / 20);
-      assert(lockedSave?.ok === false && ytcv.state.currentGain >= 3.0 &&
-        ytcv.state.currentGain <= raiseLimit && ytcv.state.currentGain < levelGain,
-        `the gesture's end raises the live gain from the preview's by no more than the raise limit (${JSON.stringify(lockedSave)} / ${ytcv.state.currentGain} of ${levelGain})`);
+      assert(lockedSave?.ok === false && Math.abs(ytcv.state.currentGain - levelGain) < 1e-9,
+        `the gesture's end plays the gain the level asks for (${JSON.stringify(lockedSave)} / ${ytcv.state.currentGain} of ${levelGain})`);
 
       // A preview whose state has moved holds nothing back.
       await onVideo();
@@ -10912,15 +10733,14 @@ async function runTests() {
       mockDOMElements = {};
     }
 
-    section('Start cap: the first live gain once a navigation names the channel is held by it');
+    section('Live level: the first live gain once a navigation names the channel plays the level');
     {
-      // Stream B stores 0.5 for live and follows Auto there. Its level of
-      // -19.6 asks for more than 3 dB over 0.5, so the cap holds the first
-      // gain to 0.5 at 3 dB over.
+      // Stream B stores 0.5 for live and follows Auto there; its level of
+      // -19.6 asks for more.
       const B_CH = 'UCstreamB';
       const B_VID = 'streamBVid';
       const B_ENTRY = { name: 'Stream B', url: 'https://www.youtube.com/channel/' + B_CH, gainLive: 0.5, autoApplyLoudnessLive: true };
-      const capped = 0.5 * Math.pow(10, 3 / 20);
+      const level = calcLiveGain(-19.6, -18);
       const close = (a, b) => typeof a === 'number' && Math.abs(a - b) < 1e-9;
       const toStreamB = () => {
         setURL('/watch', B_VID);
@@ -10932,13 +10752,6 @@ async function runTests() {
         isLiveContent: null, isLiveNow: false, channelId: '', author: '', liveLkfs, source: 'playing' });
       const streamBAnswer = (liveLkfs) => simulateBridgeMessage({ videoId: B_VID, loudnessDb: null, baseLoudnessDb: null,
         isLiveContent: true, isLiveNow: true, channelId: B_CH, author: 'Stream B', liveLkfs, source: 'request' });
-      const raiseFrom = () => JSON.stringify(ytcv.state.liveRaiseFrom);
-      // The first live gain once the channel is named is the cap's; the apply
-      // the navigation runs after the bridge answers can raise it from there by
-      // no more than the raise limit for the time since.
-      let since = 0;
-      const heldByCap = () => ytcv.state.currentGain >= capped - 1e-9 &&
-        ytcv.state.currentGain <= capped * Math.pow(10, 1.5 * (Date.now() - since) / 30000 / 20) + 1e-9;
 
       // A live level that reaches the tab after the URL moved and before the
       // channel is named for it, while the channel left follows Auto for the
@@ -10948,66 +10761,32 @@ async function runTests() {
       toStreamB();
       unnamedAnswer(-19.6);
       await settle();
-      assert(ytcv.state.liveRaiseFrom === null,
-        `a live gain played before the channel is named starts no raise count (${raiseFrom()})`);
-      since = Date.now();
       await ytcv.applyVideoVolume();
       streamBAnswer(-19.6);
       await settle();
-      assert(ytcv.state.currentChannel.id === B_CH && heldByCap(),
-        `the first live gain once B is named is held by B's start cap (${ytcv.state.currentGain} / ${capped})`);
+      assert(ytcv.state.currentChannel.id === B_CH && close(ytcv.state.currentGain, level),
+        `the first live gain once B is named is the level's (${ytcv.state.currentGain} / ${level})`);
 
       // From one stream to another: the unknown type keeps the stream left's
-      // live type, and its channel stores 3.0, a cap that holds nothing.
+      // live type.
       await onVideo({ entry: { gainLive: 3.0, autoApplyLoudnessLive: true } });
       mockStorage.channelVolumes[B_CH] = { ...B_ENTRY };
       simulateBridgeMessage({ videoId: TT_VID, loudnessDb: null, baseLoudnessDb: null, isLiveContent: true,
         isLiveNow: true, channelId: TT_CH, author: 'Transit', liveLkfs: -19.6, source: 'request' });
       await settle();
-      assert(ytcv.state.currentVideoType === 'live' && ytcv.state.liveRaiseFrom?.videoId === TT_VID,
-        `the stream left plays its live level (${ytcv.state.currentVideoType} / ${raiseFrom()})`);
+      assert(ytcv.state.currentVideoType === 'live' && close(ytcv.state.currentGain, level),
+        `the stream left plays its live level (${ytcv.state.currentVideoType} / ${ytcv.state.currentGain})`);
       toStreamB();
       unnamedAnswer(-19.6);
       await settle();
-      assert(ytcv.state.currentVideoType === 'live' && ytcv.state.liveRaiseFrom?.videoId !== B_VID,
-        `the level before B is named starts no count for B's stream (${ytcv.state.currentVideoType} / ${raiseFrom()})`);
-      since = Date.now();
       await ytcv.applyVideoVolume();
       streamBAnswer(-19.6);
       await settle();
-      assert(heldByCap(),
-        `B's first live gain is held by B's start cap (${ytcv.state.currentGain} / ${capped})`);
-
-      // A stream visited before in the page, after another channel's video in
-      // between: the count from that visit is gone with the channel.
-      await onVideo();
-      mockStorage.channelVolumes[B_CH] = { ...B_ENTRY };
-      toStreamB();
-      await ytcv.applyVideoVolume();
-      streamBAnswer(-19.6);
-      await settle();
-      streamBAnswer(null);
-      await settle();
-      assert(ytcv.state.liveRaiseFrom?.videoId === B_VID,
-        `the first visit counts from B's stream (${raiseFrom()})`);
-      setURL('/watch', TT_VID);
-      mockVideoEl = { id: 'transit-video-again' };
-      await ytcv.applyVideoVolume();
-      simulateBridgeMessage({ videoId: TT_VID, loudnessDb: -6, isLiveContent: false, channelId: TT_CH, author: 'Transit' });
-      await settle();
-      assert(ytcv.state.currentChannel.id === TT_CH && ytcv.state.liveRaiseFrom === null,
-        `another channel named drops the count (${raiseFrom()})`);
-      toStreamB();
-      since = Date.now();
-      await ytcv.applyVideoVolume();
-      streamBAnswer(-19.6);
-      await settle();
-      assert(heldByCap(),
-        `back on B's stream, its first live gain is held by the start cap again (${ytcv.state.currentGain} / ${capped})`);
+      assert(ytcv.state.currentVideoType === 'live' && close(ytcv.state.currentGain, level),
+        `B's first live gain is the level's (${ytcv.state.currentGain} / ${level})`);
 
       // From a channel's video to its own stream, the bridge naming the same
-      // channel for the stream before the navigation's apply: the level before
-      // that, played as a video, starts no count either.
+      // channel for the stream before the navigation's apply.
       const SAME_STREAM = 'transitStreamVid';
       await onVideo({ entry: { gainVideo: 0.5, autoApplyLoudnessVideo: true, gainLive: 0.5, autoApplyLoudnessLive: true } });
       setURL('/watch', SAME_STREAM);
@@ -11018,8 +10797,8 @@ async function runTests() {
       simulateBridgeMessage({ videoId: SAME_STREAM, loudnessDb: null, baseLoudnessDb: null, isLiveContent: true,
         isLiveNow: true, channelId: TT_CH, author: 'Transit', liveLkfs: -19.6, source: 'request' });
       await settle();
-      assert(ytcv.state.currentVideoType === 'live' && close(ytcv.state.currentGain, capped),
-        `the stream's first live gain once named is held by the start cap (${ytcv.state.currentGain} / ${capped})`);
+      assert(ytcv.state.currentVideoType === 'live' && close(ytcv.state.currentGain, level),
+        `the stream's first live gain once named is the level's (${ytcv.state.currentGain} / ${level})`);
       ytcv._set('currentLiveLkfs', null);
       ytcv._set('currentAutoApplyLoudnessLive', false);
       ytcv._set('currentIsLiveNow', false);
@@ -11055,8 +10834,8 @@ async function runTests() {
       await settle();
       liveAnswer({ liveLkfs: -18 });
       await settle();
-      assert(ytcv.state.liveLevelRise === 2 && Math.abs(ytcv.state.currentGain - calcLiveGain(-15, -18)) < 1e-9,
-        `the level it names rose over the one the URL's video named, and is taken 3 dB louder (${ytcv.state.liveLevelRise} / ${ytcv.state.currentGain})`);
+      assert(Math.abs(ytcv.state.currentGain - calcLiveGain(-18, -18)) < 1e-9,
+        `the level it names plays for the URL's video (${ytcv.state.currentLiveLkfs} / ${ytcv.state.currentGain})`);
       ytcv._set('currentLiveLkfs', null);
       ytcv._set('currentAutoApplyLoudnessLive', false);
       ytcv._set('currentIsLiveNow', false);

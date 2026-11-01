@@ -47,7 +47,7 @@
 - **loudnessDb**: 再生中の音声の版のレベル。YouTube の目標ラウドネスに対する dB (デシベル) の値。**baseLoudnessDb**: 応答データの `audioConfig` が表す、素の音声の版のレベル。
 - **DRC**: Dynamic Range Compression (音の大小の差を縮める処理)。プレイヤーの Stable Volume 設定は、専用の音声の版 (`isDrc` が付いた adaptive format) を鳴らす。
 - **ライブのレベル** (`liveLkfs`): 配信中のライブで、プレイヤーの音量の行が示す `live.` のレベル。LKFS の絶対値。`content.js` は 2 つ持つ: Auto のレベル (`currentLiveLkfs`) はブリッジの完全な返事だけが入れ、Auto が鳴らして保存する。手元のレベル (`readLiveLkfs`) は、完全な返事とポップアップの 1 秒ごとの読み取りが入れる。ポップアップ、手動操作の鍵、「チャンネルに適用」、Auto を ON にする操作は、手元のレベルを使う。
-- **ライブで鳴らすゲイン** (`liveGainToPlay()`): Auto がライブのレベルに対して鳴らすゲイン。同じ動画でブリッジが前に示したレベルより `LIVE_RISE_DB` (1 dB) 以上上がったレベル (`liveLevelRise`) は、`LIVE_RISE_AHEAD_DB` (3 dB) 大きいものとしてゲインを出す (上昇の先取り、rise cut)。ページの中でその動画に最初に鳴らすライブのゲイン (`liveRaiseFrom` が動画を示していないか、別の動画を示している) は、中身のライブのゲイン (`storedLiveGain`) が 0 より大きく、動画がライブとして鳴っているとき、それより `LIVE_START_CAP_DB` (3 dB) 大きいところまでに抑える (始まりの上限、start cap)。そのあとは、`currentGain` 以下のゲインはすぐに鳴らし、それより大きいゲインは、ライブのレベルが最後にゲインを決めてから `LIVE_RAISE_PERIOD_MS` (30 秒) あたり `LIVE_RAISE_DB` (1.5 dB) だけ `currentGain` を上げたところまでしか鳴らさない (上げる速さの制限、raise limit)。その時刻は `liveRaiseFrom` = `{ videoId, at }` が持つ。ライブのレベルを示さないブリッジのメッセージは `at` を null にするので、次のライブのゲインは鳴っているゲインより上げず、数えるのはそこから始まる。Target LUFS を変えると `at` を -Infinity にするので、次のライブのゲインはそのまま鳴らす。`currentGain` が 0 のときのゲインもそのまま鳴らす。`liveRaiseFrom` を読んだり入れたりするのは、手元のチャンネルが URL の動画について名指されている間だけで (`channelNamedForUrlVideo()`、`gestureStateMoved` も同じことを確かめる)、ブリッジが手元と違うチャンネルを名指すと捨てる。そのため、チャンネルが名指される前に鳴ったライブのゲインは数え始めず、動画についてチャンネルが名指された後の最初のライブのゲインは、始まりの上限を通る。
+- **ライブで鳴らすゲイン** (`calcGainFromLiveLevel()`): Auto がライブのレベルに対して鳴らすゲインで、レベルの求めるゲイン `calcLiveGain(currentLiveLkfs, targetLufs)`。`currentGain` より大きくても小さくても、すぐに鳴らす。
 - **Target LUFS**: `autoLoudnessSettings` の `targetLufs`。初期値は -18。
 - **Auto**: 「LUFS 自動適用」の設定。`resolveAutoApplySetting` が種別ごとに次の順で決める: チャンネル個別のフラグ、古い形式のフラグ、(旧形式の取り込みが終わる前は)「フラグの無い保存ゲインがあれば OFF」、全チャンネル共通の既定値。
 - **Auto のゲイン**: `calcGain(loudnessDb, targetLufs)` = 10^((targetLufs - effectiveLufs) / 20)。`effectiveLufs` は、`loudnessDb` が 0 より大きいとき -14、それ以外は -14 + `loudnessDb`。**ライブのゲイン**: `calcLiveGain(liveLkfs, targetLufs)` = 10^((targetLufs - liveLkfs) / 20)。どちらも 0 から 6 の範囲に切りそろえ、計算結果が有限の数でなければ 1.0 にする。
@@ -61,7 +61,7 @@
 
 `commitGain(value)` は `Number(value)` を取り、有限の数でなければ 1.0 にし、0 から 6 に切りそろえて `applyGainToAudio` を呼ぶ。そのあとで `currentGain` に入れ、`updateGainOverlay` を呼ぶ。`applyGainToAudio` は、音声のつながりがまだ無いうちはゲイン 1.0 のためにつながりを作らない。それ以外では `ensureAudioChain` がページの `<video>` に向けてつながりを作り (要素が変わっていれば作り直す)、値を `gainNode.gain.value` に入れる。`ensureAudioChain` が例外を投げたとき (別のところがすでにつないだ要素を `createMediaElementSource` が断ったとき) は、`commitGain` はそこで止まる。`currentGain`、ゲイン表示、ポップアップは、鳴っていたゲインのままになる。
 
-`commitGain` を呼ぶのは、`applyPreferredGain` と `applyAutomaticLoudnessGain` (ライブのゲインは、`liveGainToPlay` でゲインを出す `commitLiveGain` を通す)、`chrome.storage.onChanged` の受け取り側、`handleMessage` の `setGainLive` / `setGain` / `applyLoudness` / `setAutoApplyLoudness` の分岐。
+`commitGain` を呼ぶのは、`applyPreferredGain` と `applyAutomaticLoudnessGain` (ライブのゲインは、`calcGainFromLiveLevel` でゲインを出す `commitLiveGain` を通す)、`chrome.storage.onChanged` の受け取り側、`handleMessage` の `setGainLive` / `setGain` / `applyLoudness` / `setAutoApplyLoudness` の分岐。
 
 ## チャンネル書き込みの共通の流れ
 
@@ -132,7 +132,7 @@ sequenceDiagram
   else 状態は変わっていない
     C->>C: setCurrentAutoApplyFromEntry(entry)、syncLiveFollow()
     alt その種別の Auto が ON で、ライブのレベルを持っている
-      C->>G: commitLiveGain()、commitGain(liveGainToPlay())
+      C->>G: commitLiveGain()、commitGain(calcGainFromLiveLevel())
       C->>C: await evaluateLiveSave(source)
     else その種別の Auto が ON で、loudnessDb を持っている
       C->>G: commitGain(calcGain(loudnessDb))
@@ -151,11 +151,10 @@ sequenceDiagram
 - 読み込みのもとになった状態が動いたら、その読み込みの結果は捨てる。動く例: 別の動画への移動、チャンネルや種別を変えたブリッジの返事、保存内容が変わったという知らせ (`storageRevision` は `channelVolumes` か `autoLoudnessSettings` が変わったという知らせのたびに増え、他の場所の `unifiedGains` を取り入れたときにも増える)。
 - Auto 自身の保存は `autoApply` を送らないので、チャンネルは全チャンネル共通の既定値に従い続ける。`baseLoudnessDb` が分かっていれば `heldAgainstPlain: true` を送る。表が変わらない保存は、service worker が `set` しない (「チャンネル書き込みの共通の流れ」を参照)。
 - 旧形式の取り込みが成功するまで (`storageMigrated` が false の間) は保存しない。`<video>` が止まっているかミュートのタブも保存しない (`isVideoPlaying()`。音量 0 やゲイン 0 は再生中に数える)。ブリッジのメッセージが始めた適用 (`fromMessage`) は、URL が変わったあとの最初の適用が URL の動画について終わるまで (`appliedVideoId`) も保存しない。ゲインの適用はする。
-- `setCurrentAutoApplyFromEntry` は、中身のライブのゲイン (`storedLiveGain`) も取る。始まりの上限はこれをもとに測る。
 - スライダーの試し聞きが続いている間 (「ポップアップ: スライダーを動かしている間 (`input`)」を参照) は、図のゲインを入れずに取っておき、残りは動かす。
 - 項目の読み出しが reject したとき、または音声のつなぎを作れないときは、適用はそこで止まる。この関数を待たずに動かす呼び出し元 (ブリッジのメッセージ、移動の後の再試行、`autoLoudnessSettings` と `unifiedGains` が変わったという知らせ) は、その失敗を `reportFailure('apply failed')` で記録する。移動そのものの適用を `triggerApply` が記録するのと同じ。
 
-図のもと: `content.js` の `applyPreferredGain`、`loadChannelEntry`、`setCurrentAutoApplyFromEntry`、`resolveAutoApplyForType`、`commitLiveGain`、`liveGainToPlay`、`storedGainToPlaying`、`calcStoredGainFromLoudness`、`calcGainFromLiveLevel`、`evaluateLiveSave`、`nameUnaskedWrite`。`utils.js` の `getChannelGain`、`isGainHeldAgainstPlain`、`renditionGainRatio`、`calcGain`、`calcLiveGain`。
+図のもと: `content.js` の `applyPreferredGain`、`loadChannelEntry`、`setCurrentAutoApplyFromEntry`、`resolveAutoApplyForType`、`commitLiveGain`、`storedGainToPlaying`、`calcStoredGainFromLoudness`、`calcGainFromLiveLevel`、`evaluateLiveSave`、`nameUnaskedWrite`。`utils.js` の `getChannelGain`、`isGainHeldAgainstPlain`、`renditionGainRatio`、`calcGain`、`calcLiveGain`。
 
 ## ポップアップ: スライダーを動かしている間 (`input`)
 
@@ -193,7 +192,7 @@ sequenceDiagram
 - 操作は `core/common.js` の `holdPopupSlider`。操作の途中でないときに来た `input` か `change` は、それ自身が `currentAppliesTo` の写しを取る。1 回のドラッグの間の `input` は、すべて同じ写しを運ぶ。
 - 「Manual Volume」(スライダーとプリセット) は、その種別の Auto が ON で Loudness が表示されている間はポップアップ側で操作できなくなり、`content.js` も同じ状態を断る。
 - `input` イベント 1 回ごとに `setGainLive` を 1 回送る。debounce は無い。
-- 試し聞きが続いていて、`currentGestureState()` がまだその `appliesTo` と同じ間は、ほかから来たゲインをかけずに取っておく: `applyPreferredGain`、`applyAutomaticLoudnessGain`、`channelVolumes` の変更の受け取り側は `commitGainFromElsewhere` を通して (ライブのゲインは `commitLiveGain` を通して) ゲインを入れ、これらはゲインをそのままにして、ページが今鳴らしている要素にかけ直す。このため、試し聞きの間に作り直されたプレイヤーも、試し聞きのゲインでつながる。`commitLiveGain` はライブのゲインを出す前に戻るので、ブリッジのメッセージでは `liveRaiseFrom` はそのまま残る。受け取り側は `liveGainToPlay` でライブのゲインを出してから取っておくので、別のタブの保存が届くと、`liveRaiseFrom` は試し聞きのゲインを基準に進む。それぞれのほかの仕事 (受け取る状態、Auto 自身の保存、ライブの保存の判定) は続ける。状態が動いた試し聞きは、何も取っておかない。
+- 試し聞きが続いていて、`currentGestureState()` がまだその `appliesTo` と同じ間は、ほかから来たゲインをかけずに取っておく: `applyPreferredGain`、`applyAutomaticLoudnessGain`、`channelVolumes` の変更の受け取り側は `commitGainFromElsewhere` を通して (ライブのゲインは `commitLiveGain` を通して) ゲインを入れ、これらはゲインをそのままにして、ページが今鳴らしている要素にかけ直す。このため、試し聞きの間に作り直されたプレイヤーも、試し聞きのゲインでつながる。それぞれのほかの仕事 (受け取る状態、Auto 自身の保存、ライブの保存の判定) は続ける。状態が動いた試し聞きは、何も取っておかない。
 - ポップアップが保存していない試し聞きのあとでスライダーをポインターで押さえ続けている間は、ポップアップはその試し聞きを `PREVIEW_KEEP_ALIVE_MS` (1000 ms) ごとに送り直し、タブはそれを受け付けるたびに待ち直す。送り直しは、ポインターを離したとき、試し聞きを保存したとき、ポップアップを閉じたときに止まる。
 - 試し聞きは、`setGain` が来たとき (次の節を参照) か、最後に受け付けた `setGainLive` から `PREVIEW_IDLE_MS` (2000 ms) たったときに終わる。後者で終わると、`applyPreferredGain()` がその時点の保存内容をかけ、ポップアップに知らせる。
 
@@ -322,7 +321,7 @@ sequenceDiagram
   else 受け付ける
     Note over C: ポップアップに答えるまで autoMutationPending
     alt ON にして、手元にライブのレベルがある
-      Note over C: Auto のレベルに手元のレベルを入れ、上がった量は持たない (liveLevelRise を null)
+      Note over C: Auto のレベルに手元のレベルを入れる
       C->>G: commitGain(calcLiveGain(liveLkfs))、そのまま
       C->>W: store:saveChannelGain、そのゲイン、autoApply true、heldAgainstPlain false
       Note over C: 書き込みが成功したら、liveSaveBaseline をこの動画・この種別・このゲインにする
@@ -354,7 +353,7 @@ sequenceDiagram
 - ポップアップは見ている種別のトグルだけを表示し、その種別について、チャンネル ID があるときだけ送る。
 - レベルが分かっているときに ON にすると、Auto が鳴らすゲインをすぐに適用し、フラグと一緒に 1 回の書き込みで保存する。OFF にしたとき、またはレベルが無いまま ON にしたときは、フラグだけを書き、保存ゲインはそのまま残す。
 - この処理は `currentAutoApplyLoudnessVideo` / `currentAutoApplyLoudnessLive` を自分では変えない。書き込みのあとの `applyPreferredGain()` と `chrome.storage.onChanged` の受け取り側が、保存内容から決め直す。書き込みについての変更の知らせが、その `applyPreferredGain()` が読んでいる間に届くと、`storageRevision` が動いているので、その適用は何もせずに戻る。そのときまでに受け取り側が新しい中身から Auto を決め直し、計算したゲインを設定している (「他のタブ: `content.js` の `chrome.storage.onChanged`」を参照)。
-- ライブの書き込みのあと、`liveSaveBaseline` があるので、同じ動画・同じ種別での次の `evaluateLiveSave` はこのゲインと比べ、同じゲインを二度保存しない。ゲインはそのまま鳴らす。続く `applyPreferredGain()` はレベルを `liveGainToPlay` に通して鳴らし、`liveRaiseFrom` を入れるので、そのあとの追従はそこから制限がかかる。
+- ライブの書き込みのあと、`liveSaveBaseline` があるので、同じ動画・同じ種別での次の `evaluateLiveSave` はこのゲインと比べ、同じゲインを二度保存しない。ゲインはそのまま鳴らす。続く `applyPreferredGain()` も、同じレベルのゲインを鳴らす。
 - `getState` も失敗したときは、ポップアップは最後に描いた状態からトグルを元に戻す。
 - トグルの書き込みが終わっていない間 (`autoMutationPending`。書き込みを始めてからポップアップに答えるまで)、`content.js` は `setGainLive`・`setGain`・`applyLoudness`・別の `setAutoApplyLoudness` を `auto update pending` で断る。受け付けた試し聞きのあとの `setGain` は、先に保存されたゲインに戻す (`restoreGainAfterFailedSave`)。手動の保存はタブが持つ Auto の状態をチャンネルのフラグとして書くので、トグルの書き込みが終わる前に来ると、切り替える前の状態を書き、トグルの書き込みのあとに着いて Auto を元に戻してしまう。ポップアップも同じ間、トグル・スライダー・プリセット・適用を操作できなくし (`autoUpdatePending`)、その間に届いた状態ではトグルを視聴者が動かした位置のままにする。
 - 返事が `ok` でないとき、または送信が失敗したときは、次にトグルを送るまでラベルの下に `autoSaveFailed` (「LUFS 自動適用の設定を保存できませんでした。もう一度お試しください」) を出す。
@@ -430,12 +429,12 @@ sequenceDiagram
   alt videoId が URL の動画 ID と違う
     Note over C: 捨てる。何も変わらない
   else 同じ動画、またはどちらかの ID が無い
-    Note over C: loudnessDb、baseLoudnessDb、liveLkfs、videoType、isLiveNow、チャンネルを更新する。別のチャンネルなら liveRaiseFrom を捨てる
+    Note over C: loudnessDb、baseLoudnessDb、liveLkfs、videoType、isLiveNow、チャンネルを更新する
     opt author と UC の channelId がある
       C->>W: store:adoptHandleEntry (頼まれていない書き込み)
     end
     alt 取り込みが終わっていて、Auto が ON で、ライブのレベルを持っている
-      C->>G: commitLiveGain()、commitGain(liveGainToPlay())
+      C->>G: commitLiveGain()、commitGain(calcGainFromLiveLevel())
       C->>C: evaluateLiveSave(source)、終わるのを待たない
     else 取り込みが終わっていて、Auto が ON で、loudnessDb を持っている
       C->>G: commitGain(calcGain(loudnessDb))
@@ -461,8 +460,8 @@ sequenceDiagram
 
 - 別の動画のメッセージは、何かを変える前に捨てる (`isBridgeMessageForCurrentVideo`)。
 - 各項目は、ブリッジが送る型のときだけ受け取る: `loudnessDb` と `liveLkfs` は有限の数、`baseLoudnessDb` は数、`isLiveContent` は真偽値、`author` は文字列、`channelId` は UC 形式。
-- 新しい動画 ID なら、`loudnessDb` と `baseLoudnessDb` をメッセージから入れる (無ければ `null`)。同じ動画なら、メッセージに有限の `loudnessDb` があるときだけ置き換える。`liveLkfs` はメッセージのたびに置き換えるので、それが無いメッセージはライブのレベルを消す。手元のレベル (`readLiveLkfs`) にも同じ値を入れる。ライブのレベルがあるメッセージは、それをその動画の `liveLevelBefore` として持ち、同じ動画で前に持っていたものより上がった量を 0.1 dB に丸めて `liveLevelRise` に入れる (ライブのレベルが無いメッセージと、別の動画のメッセージでは null)。ライブのレベルが無いメッセージは、`liveRaiseFrom` の `at` を null にする。
-- チャンネルは、メッセージに有限の `loudnessDb` か真偽値の `isLiveContent` があり、UC の `channelId` があるときに受け取る。ID が変わると、`applyPreferredGain()` が保存内容から決め直すまで、両方の種別の Auto を OFF にしておき、`liveRaiseFrom` を捨てる。名前は `author`、無ければページ、それも無ければ ID から取る。
+- 新しい動画 ID なら、`loudnessDb` と `baseLoudnessDb` をメッセージから入れる (無ければ `null`)。同じ動画なら、メッセージに有限の `loudnessDb` があるときだけ置き換える。`liveLkfs` はメッセージのたびに置き換えるので、それが無いメッセージはライブのレベルを消す。手元のレベル (`readLiveLkfs`) にも同じ値を入れる。
+- チャンネルは、メッセージに有限の `loudnessDb` か真偽値の `isLiveContent` があり、UC の `channelId` があるときに受け取る。ID が変わると、`applyPreferredGain()` が保存内容から決め直すまで、両方の種別の Auto を OFF にしておく。名前は `author`、無ければページ、それも無ければ ID から取る。
 - 旧形式の取り込みが終わっていない間 (`storageSettled` が false) は `applyAutomaticLoudnessGain` が false を返し、メッセージは `applyPreferredGain()` に回る。こちらは取り込みが終わるのを待つ。
 - スライダーの試し聞きが続いている間 (「ポップアップ: スライダーを動かしている間 (`input`)」を参照) は、図のゲインを入れずに取っておく。
 - Auto のゲインをかけるところで例外が出たときは、受け取り側がそれを `reportFailure('apply failed')` で記録する。`syncLiveFollow()` とレベルの待ち手は、そのあとでいつもどおり動く。
@@ -478,8 +477,8 @@ sequenceDiagram
   participant B as page-bridge.js
   participant G as GainNode
   participant W as background.js
-  Note over C: shouldFollowLive() が true の間、syncLiveFollow() が 10 秒のタイマーを 1 つ持つ
-  loop 再生ページで、その種別の Auto が ON で、isLiveNow かライブのレベルがある間、10 秒ごと
+  Note over C: shouldFollowLive() が true の間、syncLiveFollow() が 1 秒のタイマー (AUTO_FOLLOW_INTERVAL_MS) を 1 つ持つ
+  loop 再生ページで、その種別の Auto が ON で、isLiveNow かライブのレベルがある間、1 秒ごと
     C->>B: followLive() が __yt_channel_volume_request__ を送る
     B-->>C: source request の返事
     C->>G: 返事にライブのレベルがあれば commitLiveGain()
@@ -516,9 +515,9 @@ sequenceDiagram
 - `liveSaveBaseline` は 1 つの動画 ID と 1 つの種別に結び付く。種別ごとに保存する枠が別なので、`evaluateLiveSave` は両方が同じときだけこれと比べる。`applyVideoVolume` は動画 ID が変わると消し、Auto トグルはライブの書き込みが成功すると設定する。
 - ライブの保存は `autoApply` を送らないので Auto 自身の保存になり、チャンネルは全チャンネル共通の既定値に従い続ける。印を付けずに保存し、保存された値のまま鳴らす。
 - Auto 自身の保存と同じく、`<video>` が止まっておらずミュートでもないタブだけが保存する (`isVideoPlaying()`)。音量 0 やゲイン 0 は再生中に数える。`not playing` の判定では基準をそのままにするので、再生しているタブの次の判定でもう一度試す。
-- 比べて保存するのは、レベルの求めるゲイン (`calcLiveGain(liveLkfs)`) で、`liveGainToPlay` が鳴らしたゲインではない。鳴っているゲインがそれより小さい間 (始まりの上限、上昇の先取り、上げる速さの制限のどれかが抑えている間) は何も保存せず (`held under the level`)、追従は続ける。鳴っているゲインがそこに届くと、それを保存する。手動の操作は、レベルを当てている間と同じく鍵がかかったままで、ポップアップの Current は鳴っているゲインを、Suggested はレベルの求めるゲインを並べて示す。
+- 比べて保存するのは、レベルの求めるゲイン (`calcLiveGain(liveLkfs)`) で、Auto が鳴らすゲインも同じもの。鳴っているゲインがそれより小さい間 (スライダーの試し聞きが抑えている間) は何も保存せず (`held under the level`)、追従は続ける。鳴っているゲインがそこに届くと、それを保存する。手動の操作は、レベルを当てている間と同じく鍵がかかったままで、Auto がライブのレベルを鳴らしている間、ポップアップの Current と Suggested は同じゲインを示す。
 
-図のもと: `content.js` の `shouldFollowLive`、`syncLiveFollow`、`followLive`、`requestLoudness`、`applyAutomaticLoudnessGain`、`commitLiveGain`、`liveGainToPlay`、`evaluateLiveSave`、`saveLiveChannelGain`。`utils.js` の `gainChangeDb`、`calcLiveGain`。
+図のもと: `content.js` の `shouldFollowLive`、`syncLiveFollow`、`followLive`、`requestLoudness`、`applyAutomaticLoudnessGain`、`commitLiveGain`、`calcGainFromLiveLevel`、`evaluateLiveSave`、`saveLiveChannelGain`。`utils.js` の `gainChangeDb`、`calcLiveGain`。
 
 ## SPA 内の移動と、その他の適用のきっかけ
 
@@ -620,7 +619,7 @@ sequenceDiagram
   opt このタブがチャンネル ID を持っている
     C->>C: newValue のそのチャンネルの中身から Auto を決め直す、syncLiveFollow()
     alt Auto が ON で、このタブがライブのレベルを持っている
-      Note over C: ゲインは liveGainToPlay()
+      Note over C: ゲインは calcGainFromLiveLevel()
     else Auto が ON で、loudnessDb を持ち、ライブのレベルを持っていない
       Note over C: ゲインは calcGain(loudnessDb)
     else そのチャンネルの中身が消された
@@ -726,11 +725,11 @@ sequenceDiagram
 | ブリッジの返事、Auto が ON、ライブのレベル | 変わる | `evaluateLiveSave` が決めたとき | `applyAutomaticLoudnessGain`、`evaluateLiveSave` |
 | ブリッジの返事、Auto が ON、`loudnessDb` | 変わる | 取り込み後に、動画が再生中のタブでされる (表が変わらなければ `set` しない) | `applyAutomaticLoudnessGain`、`isVideoPlaying` |
 | ブリッジの返事、Auto が OFF かレベルが無い | 保存ゲイン (印があれば比率を掛ける) か 1.0 | されない | `applyPreferredGain` |
-| 始まりの上限、上昇の先取り、上げる速さの制限で、レベルの求めるゲインより小さく抑えたライブのゲイン | 変わる (`liveGainToPlay` が許すゲインまで) | されない (`held under the level`) | `liveGainToPlay`、`evaluateLiveSave` |
+| スライダーの試し聞きで、レベルの求めるゲインより小さく抑えたライブのゲイン | 変わらない (試し聞きのゲインを鳴らす) | されない (`held under the level`) | `commitLiveGain`、`evaluateLiveSave` |
 | ポップアップのライブのレベルの読み取り (`askLiveLevel`、1 秒ごと) | 変わらない | されない | `popup.js` の `askLiveLevelLater`。`content.js` の `__yt_channel_volume_live__` の受け取り側 |
 | `author` と UC の `channelId` があるブリッジの返事 | 変わらない | その名前の `@handle` の中身を引き取るときだけ | `message` の受け取り側、`CHANNEL_WRITES.adoptHandleEntry` |
 | 音声の版の変更 (`audio-change`)、レベルが示された (`playing`) | ブリッジの返事の行と同じ | ブリッジの返事の行と同じ | `watchAudioChanges`、`followPlaying` |
-| ライブの追従タイマー (10 秒) | ブリッジの返事の行と同じ | ブリッジの返事の行と同じ | `syncLiveFollow`、`followLive` |
+| ライブの追従タイマー (1 秒) | ブリッジの返事の行と同じ | ブリッジの返事の行と同じ | `syncLiveFollow`、`followLive` |
 | SPA 内の移動、見張り、`visibilitychange` | 変わる | 取り込み後に Auto が ON でレベルがあれば、Auto 自身の保存かライブの保存 | `triggerApply`、`applyVideoVolume`、`applyPreferredGain` |
 | ページの `<video>` の `play` | `applyPreferredGain` による | Auto が ON でレベルがあり、ミュートでないタブでは、Auto 自身の保存かライブの保存 | `play` の受け取り側、`applyPreferredGain` |
 | ポップアップを開く | `applyPreferredGain` による | SPA 内の移動と同じ | `handleMessage` (`forceDetect`) |
@@ -750,7 +749,7 @@ sequenceDiagram
 - **1 回のチャンネル書き込みの知らせと返事** (「チャンネル書き込みの共通の流れ」を参照): このリポジトリの `background.js` では、200 回中 200 回、`onChanged` が `sendMessage` の返事より先に content script に届きました。返事が遅れた時間は、中央値で 0.1 ms、最大で 0.8 ms です。
 - **ポップアップのスライダーのキーボード操作** (「ポップアップ: スライダーを離したとき (`change`) とプリセットボタン」を参照): このスライダーと同じ `min="0" max="600" step="5"` の range 入力で、値が動くキーを 1 回押すと `input` と `change` が 1 回ずつ出ました (矢印キーで 5、PageUp / PageDown で 60 動きます)。端でキーを押すと、どちらも出ませんでした。キーを押し続けると、値が動いた繰り返しごとに `change` が 1 回出ました。マウスで 10 回動かすドラッグでは、`input` が 10 回、`change` が 1 回でした。ポップアップは `input` のたびに `setGainLive` を 1 回送り、ドラッグを終える `change` か、1 回の押下や押し続けを終える `keyup` で、保存を伴う `setGain` を 1 回送ります。
 - **フォーカスが外れた Target LUFS のドラッグ** (「設定画面: 設定の変更」を参照): 画面に出る Chrome 156.0.8078.76、2026-10-30、設定画面で CDP のマウス入力 (`Input.dispatchMouseEvent`) を使いました。途中でウィンドウのフォーカスが外れたドラッグでは、`input` が続いた後、その時点の値で `change` が出て、次にスライダーの `blur`、ウィンドウの `blur` が出ました。`blur` の後には `input` も、離したときの `change` も出ませんでした。フォーカスが外れたままでも、戻っても同じです (それぞれ 3 回中 3 回)。書いたのは 1 回で、`blur` の時点の値でした。本物のマウスを押したままアプリを切り替える操作は試していません。
-- **隠れたタブでのライブ追従タイマー** (「ライブ配信: 追従タイマーとライブ保存の判定」を参照): ライブ追従タイマーと同じ形の、30000 ms の `setTimeout` をつなげたタイマーは、見えているタブと、音が出ている隠れたタブでは 30.0 秒ごとに動きました (headless でも画面に出る Chrome でも、26 回の間隔のうち 26 回が 30000〜30004 ms)。音が出ていない隠れたタブ (後ろのタブ、または画面に出る Chrome で最小化したウィンドウのタブ) では、隠れてから 216〜217 秒までは約 31 秒ごと、その後は約 60 秒ごとになりました。headless では 278 秒から、画面に出る Chrome では 42〜48 秒の間隔を 1 回はさんで 319〜324 秒からです。ライブ追従タイマー自身の間隔 `LIVE_FOLLOW_INTERVAL_MS` は 10000 ms です。10000 ms の `setTimeout` をつなげたタイマー (headless、2026-10-29、Chrome 156.0.8078.48) は、見えているタブと、音が出ている隠れたタブでは 10.0 秒ごとに動きました (78 回の間隔のうち 78 回が 10000〜10003 ms)。音が出ていない隠れたタブでは、最初の 7 回は約 10 秒ごと (10091〜11039 ms、隠れてから 76 秒まで)、133 秒からは約 60 秒ごと (59968〜60027 ms) になりました。
+- **隠れたタブでのライブ追従タイマー** (「ライブ配信: 追従タイマーとライブ保存の判定」を参照): ライブ追従タイマーと同じ形の、30000 ms の `setTimeout` をつなげたタイマーは、見えているタブと、音が出ている隠れたタブでは 30.0 秒ごとに動きました (headless でも画面に出る Chrome でも、26 回の間隔のうち 26 回が 30000〜30004 ms)。音が出ていない隠れたタブ (後ろのタブ、または画面に出る Chrome で最小化したウィンドウのタブ) では、隠れてから 216〜217 秒までは約 31 秒ごと、その後は約 60 秒ごとになりました。headless では 278 秒から、画面に出る Chrome では 42〜48 秒の間隔を 1 回はさんで 319〜324 秒からです。ライブ追従タイマー自身の間隔 `AUTO_FOLLOW_INTERVAL_MS` は 1000 ms です。1000 ms の `setTimeout` をつなげたタイマー (headless、2026-11-01、Chrome 156.0.8078.76) は、見えているタブと、音が出ている隠れたタブでは 1.0 秒ごとに動きました (隠れたタブでは 784 回の間隔のうち 784 回が 1000〜1004 ms)。音が出ていない隠れたタブでは、隠れてから 60 秒までは約 2 秒ごと (1682〜2027 ms)、129 秒からは約 60 秒ごと (59991〜60099 ms) になりました。10000 ms の `setTimeout` をつなげたタイマー (headless、2026-10-29、Chrome 156.0.8078.48) は、見えているタブと、音が出ている隠れたタブでは 10.0 秒ごとに動きました (78 回の間隔のうち 78 回が 10000〜10003 ms)。音が出ていない隠れたタブでは、最初の 7 回は約 10 秒ごと (10091〜11039 ms、隠れてから 76 秒まで)、133 秒からは約 60 秒ごと (59968〜60027 ms) になりました。
 - **最初の読み込みでの bridge の返事** (「`page-bridge.js` から届く音量レベル」と「起動時: 旧形式の取り込みと最初の適用」を参照): 普通の動画を 6 回新しく読み込むと、`content.js` が `message` の受け取りを始めたのは読み込み開始から 820〜1232 ms 後で、それより前に出た返事は届きませんでした。`define` は 6 回中 0 回、`playing` は 3 回中 0 回、`fetch` は 18 回中 12 回でした (2 回の読み込みでは、受け取り開始の 13〜107 ms 前に 3 つとも出ていて、届きませんでした)。`request` の返事は 12 回中 12 回届きました。
 - **最初の読み込みでの `/youtubei/v1/player`** (「`page-bridge.js` から届く音量レベル」を参照): ページ自身のスクリプトは、自分の `url` プロパティが `/youtubei/v1/player` と読める `Request` を `window.fetch` に渡しますが、その中身は `data:application/json` の URL でした (調べた 50 個中 50 個)。bridge のフックは `args[0].url` を読むので、これを `/player` の呼び出しとして扱います。ネットワークの記録には出ません。
 - **SPA 内の移動での返事** (「SPA 内の移動と、その他の適用のきっかけ」を参照): 関連動画をクリックして 182 回移動したうち、180 回は `/youtubei/v1/player` を呼びませんでした。呼んだ 2 回も別の第 3 の動画を名指ししていたので、移動先の動画への `fetch` の返事は出ませんでした。MutationObserver の URL の分岐から動く最初の適用は、182 回中 182 回、先に届いたレベルもチャンネルも持っていませんでした。`yt-navigate-finish` での適用は、先に届いたレベルを 182 回中 182 回、チャンネルを 182 回中 151 回持っていました。
