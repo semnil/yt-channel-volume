@@ -652,6 +652,9 @@ function makePopup({ tabUrl = 'https://www.youtube.com/watch?v=abc', answer = nu
   const asked = [];
   const attempts = [];
   const broadcastListeners = [];
+  const popupIntervals = [];
+  // The state a case answers the popup's ask of every second with.
+  let pollAnswer;
   const node = (id) => {
     if (!nodes.has(id)) {
       const classes = new Set();
@@ -709,9 +712,11 @@ function makePopup({ tabUrl = 'https://www.youtube.com/watch?v=abc', answer = nu
     URL: require('node:url').URL,
     setTimeout: (fn) => { popupTimers.push(fn); return popupTimers.length; },
     clearTimeout() {},
+    setInterval: (fn) => { popupIntervals.push(fn); return popupIntervals.length; },
     requestAnimationFrame: (fn) => fn(),
     document: {
-      body: node('body'),
+      // The page ships hidden, as popup.html's body does.
+      body: (() => { const body = node('body'); body.classList.add('initializing'); return body; })(),
       documentElement: node('html'),
       getElementById: node,
       createElement: () => node(`made-${nodes.size}`),
@@ -731,6 +736,7 @@ function makePopup({ tabUrl = 'https://www.youtube.com/watch?v=abc', answer = nu
             throw new TypeError('Error in invocation of tabs.sendMessage: no matching signature');
           }
           asked.push(JSON.parse(JSON.stringify(message)));
+          if (pollAnswer !== undefined && message.type === 'getState') return JSON.parse(JSON.stringify(pollAnswer));
           if (answer) return answer(message);
           return simulateRuntimeMessage(message);
         }
@@ -769,10 +775,12 @@ function makePopup({ tabUrl = 'https://www.youtube.com/watch?v=abc', answer = nu
     },
     // For a case whose popup is not meant to draw a channel at all.
     async settled() { for (let turn = 0; turn < 6; turn++) await tick(); },
-    // The broadcast content.js sends whenever its state moves.
-    async broadcast() {
-      const state = await simulateRuntimeMessage({ type: 'getState' });
-      for (const fn of broadcastListeners) fn({ type: 'stateChanged', ...state }, { tab: { id: 9 } });
+    // The popup's ask of every second, answered by the tab or, where the case
+    // names a state, with that one (a watch page's unless it says).
+    async poll(state) {
+      pollAnswer = state === undefined ? undefined : { isWatchPage: true, ...state };
+      for (const fn of popupIntervals) await fn();
+      pollAnswer = undefined;
       await tick();
     },
     // A disabled control receives no event: the browser does not dispatch one,
@@ -1225,16 +1233,13 @@ async function runTests() {
   const g3 = ytcv.calcGainFromLoudness(-6);
   assert(Math.abs(g3 - Math.pow(10, 2/20)) < 0.001, 'loudnessDb=-6 → boost');
 
-  section('commitGain keeps state, audio, and popup projection synchronized');
+  section('commitGain keeps state, audio, and the state the popup asks for synchronized');
   const committedGain = 0.55;
-  const messagesBeforeCommit = mockSentMessages.length;
   ytcv.commitGain(committedGain);
   assert(ytcv.state.currentGain === committedGain, 'committed gain stored in canonical state');
   assert(ytcv.state.gainNode.gain.value === committedGain, 'committed gain applied to GainNode');
-  assert(mockSentMessages.length === messagesBeforeCommit + 1,
-    'committed gain publishes one popup state update');
-  assert(mockSentMessages.at(-1)?.gain === committedGain,
-    'popup state update contains the same committed gain');
+  assert(ytcv.getState().gain === committedGain,
+    'the state the popup asks for holds the same committed gain');
 
   // ── Per-channel automatic LUFS application ─────────────────────────
 
@@ -1272,15 +1277,13 @@ async function runTests() {
   ytcv._set('currentVideoType', 'video');
   await ytcv.applyPreferredGain();
 
-  section('Popup state: internal type detection does not emit a redundant update');
+  section('Popup state: internal type detection is not part of what the popup is answered');
   ytcv._set('currentVideoTypeDetected', false);
   ytcv._set('currentGain', 0.4321);
-  ytcv.notifyPopup();
-  const messagesBeforeDetectionOnlyChange = mockSentMessages.length;
+  const stateBeforeDetectionOnlyChange = JSON.stringify(ytcv.getState());
   ytcv._set('currentVideoTypeDetected', true);
-  ytcv.notifyPopup();
-  assert(mockSentMessages.length === messagesBeforeDetectionOnlyChange,
-    'internal detection transition is absent from popup state deduplication');
+  assert(JSON.stringify(ytcv.getState()) === stateBeforeDetectionOnlyChange,
+    'internal detection transition is absent from the state the popup asks for');
 
   section('Auto LUFS: Target LUFS change recalculates current video');
   simulateStorageChange({
@@ -1628,8 +1631,6 @@ async function runTests() {
   ytcv._set('currentLoudnessDb', null);
   ytcv._set('currentAutoApplyLoudnessLive', true);
   ytcv._set('currentGain', 0.4);
-  ytcv.notifyPopup();
-  const messagesBeforeGainSync = mockSentMessages.length;
   const syncedLiveEntry = {
     name: 'Shared Live Channel',
     gainLive: expectedAutoGain,
@@ -1646,9 +1647,8 @@ async function runTests() {
     'open live tab immediately applies the gain another tab learned');
   assert(Math.abs(ytcv.state.gainNode.gain.value - expectedAutoGain) < 0.001,
     'synchronized gain reaches live tab GainNode');
-  assert(mockSentMessages.length === messagesBeforeGainSync + 1 &&
-    Math.abs(mockSentMessages.at(-1).gain - expectedAutoGain) < 0.001,
-    'synchronized gain publishes matching popup state');
+  assert(Math.abs(ytcv.getState().gain - expectedAutoGain) < 0.001,
+    'synchronized gain is the one the popup is answered with');
 
   section('Auto LUFS: stale preference read cannot undo a cross-tab gain');
   ytcv._set('currentLoudnessDb', null);
@@ -2980,6 +2980,9 @@ async function runTests() {
   assert(ytcv.state.currentChannel.name === 'Fresh Channel', 'name replaced by author');
 
   section('Data: Auto toggle preserves authoritative bridge author');
+  // The apply the message above started settles first: until it has, the popup
+  // is answered with the state from before that message.
+  for (let turn = 0; turn < 10; turn++) await tick();
   mockStorage['channelVolumes'] = {
     'UCchannelB': { name: 'Channel B', gainVideo: 0.4 }
   };
@@ -3129,13 +3132,10 @@ async function runTests() {
   ytcv._set('currentChannel', { id: 'UCsync4', name: 'Sync Ch', url: '' });
   ytcv._set('currentVideoType', 'video');
   ytcv._set('currentGain', 0.4);
-  ytcv.notifyPopup();
-  const sentBefore = mockSentMessages.length;
   simulateStorageChange({
     channelVolumes: { newValue: { 'UCsync4': { name: 'Sync Ch', gainVideo: 0.4 } } }
   });
   assert(ytcv.state.currentGain === 0.4, 'gain unchanged (dedup)');
-  assert(mockSentMessages.length === sentBefore, 'no popup notify on dedup');
 
   section('Sync: onChanged applies legacy {gain} format');
   ytcv._set('currentChannel', { id: 'UClegacy', name: 'Legacy Ch', url: '' });
@@ -3166,7 +3166,7 @@ async function runTests() {
 
   // ── isLiveNow transition (waiting → live) ─────────────────────────
 
-  section('isLiveNow: bridge update from false to true triggers notifyPopup');
+  section('isLiveNow: a bridge update from false to true reaches the state the popup asks for');
   ytcv._set('currentChannel', { id: 'UCliveTransition', name: 'Live Ch', url: '' });
   ytcv._set('currentVideoType', 'live');
   simulateBridgeMessage({ loudnessDb: null, isLiveContent: true, isLiveNow: false, channelId: 'UCliveTransition', author: 'Live Ch' });
@@ -3178,13 +3178,7 @@ async function runTests() {
   assert(stateAfterLive.isLiveNow === true, 'getState.isLiveNow is true after transition');
   assert(stateAfterLive.videoType === 'live', 'videoType remains live');
 
-  section('isLiveNow: notifyPopup dedup key distinguishes isLiveNow change');
-  function buildNotifyKey(s) {
-    return s.loudnessDb + '|' + s.gain + '|' + s.channel.id + '|' + s.channel.name + '|' + s.videoType + '|' + s.isLiveNow;
-  }
-  const keyBefore = buildNotifyKey(stateBeforeLive);
-  const keyAfter = buildNotifyKey(stateAfterLive);
-  assert(keyBefore !== keyAfter, 'dedup key differs when isLiveNow changes');
+  assert(stateBeforeLive.isLiveNow === false, 'and was false in the state before it');
 
   // ── The bridge message: which video it is for, and who names the channel ──
 
@@ -4866,18 +4860,22 @@ async function runTests() {
       `and the target in hand is left as it was (${ytcv.state.targetLufs})`);
   }
 
-  section('Extension reload: the popup is not written to');
+  section('The page tells the popup nothing: the popup asks');
   {
+    // The popup asks for the state every second while it is open, so the
+    // page has nothing to send it, whatever moves.
     setURL('/watch', 'quietVid');
     ytcv._set('currentChannel', { id: 'UCquiet', name: 'Quiet Ch', url: '' });
     ytcv._set('currentGain', 1.23);
-    const idBefore = chrome.runtime.id;
-    chrome.runtime.id = undefined;
     mockSentMessages.length = 0;
-    ytcv.notifyPopup();
-    chrome.runtime.id = idBefore;
-    assert(mockSentMessages.length === 0,
-      `nothing is sent to a popup that cannot be there (${mockSentMessages.length})`);
+    simulateStorageChange({ [SETTINGS_KEY]: { newValue: { targetLufs: -14 } } });
+    await tick();
+    assert(ytcv.getState().targetLufs === -14,
+      `the state the popup asks for holds the new target (${ytcv.getState().targetLufs})`);
+    assert(!mockSentMessages.some((m) => m?.type === 'stateChanged') && !('notifyPopup' in ytcv),
+      `and nothing is sent to the popup (${JSON.stringify(mockSentMessages.map((m) => m?.type))})`);
+    simulateStorageChange({ [SETTINGS_KEY]: { newValue: { targetLufs: -18 } } });
+    await tick();
   }
 
   // The bridge posts into the page, and everything else on the page can post
@@ -5066,7 +5064,7 @@ async function runTests() {
       `the type being watched has nothing saved, so it plays at 1.0 (${ytcv.state.currentGain})`);
   }
 
-  section('Cross-tab: the other type moving is still worth telling the popup');
+  section('Cross-tab: the other type moving reaches the state the popup asks for');
   {
     mockStorage['channelVolumes'] = {};
     ytcv._set('currentChannel', { id: 'UCtell', name: 'Tell Ch', url: '' });
@@ -5075,8 +5073,6 @@ async function runTests() {
     ytcv._set('currentAutoApplyLoudnessVideo', false);
     ytcv._set('currentAutoApplyLoudnessLive', false);
     ytcv._set('currentGain', 1.0);
-    ytcv.notifyPopup();
-    mockSentMessages.length = 0;
     simulateStorageChange({
       channelVolumes: {
         oldValue: { UCtell: { name: 'Tell Ch', autoApplyLoudnessVideo: false } },
@@ -5084,20 +5080,8 @@ async function runTests() {
       }
     });
     await tick();
-    assert(mockSentMessages.some(m => m?.type === 'stateChanged'),
-      `the popup is told the other type moved (${JSON.stringify(mockSentMessages.map(m => m?.type))})`);
-
-    // And where nothing moved at all, it is not told anything.
-    mockSentMessages.length = 0;
-    simulateStorageChange({
-      channelVolumes: {
-        oldValue: { UCtell: { name: 'Tell Ch', autoApplyLoudnessVideo: true } },
-        newValue: { UCtell: { name: 'Tell Ch', autoApplyLoudnessVideo: true } }
-      }
-    });
-    await tick();
-    assert(!mockSentMessages.some(m => m?.type === 'stateChanged'),
-      `a notification carrying no change says nothing (${JSON.stringify(mockSentMessages.map(m => m?.type))})`);
+    assert(ytcv.getState().autoApplyLoudnessVideo === true && ytcv.getState().autoApplyLoudnessLive === false,
+      `the popup's next ask is answered with the other type moved (${JSON.stringify([ytcv.getState().autoApplyLoudnessVideo, ytcv.getState().autoApplyLoudnessLive])})`);
   }
 
   section('Cross-tab: which type was already on decides what moved');
@@ -5122,7 +5106,7 @@ async function runTests() {
       `the type being watched has nothing to apply, so it plays at 1.0 (${ytcv.state.currentGain})`);
   }
 
-  section('Cross-tab: the live slot moving is told to the popup as well');
+  section('Cross-tab: the live slot moving reaches the state the popup asks for as well');
   {
     mockStorage['channelVolumes'] = {};
     ytcv._set('currentChannel', { id: 'UClive', name: 'Live Ch', url: '' });
@@ -5131,8 +5115,6 @@ async function runTests() {
     ytcv._set('currentAutoApplyLoudnessVideo', false);
     ytcv._set('currentAutoApplyLoudnessLive', false);
     ytcv._set('currentGain', 1.0);
-    ytcv.notifyPopup();
-    mockSentMessages.length = 0;
     simulateStorageChange({
       channelVolumes: {
         oldValue: { UClive: { name: 'Live Ch', autoApplyLoudnessLive: false } },
@@ -5140,8 +5122,8 @@ async function runTests() {
       }
     });
     await tick();
-    assert(mockSentMessages.some(m => m?.type === 'stateChanged'),
-      `a move in the Live slot reaches the popup while a Video is watched (${JSON.stringify(mockSentMessages.map(m => m?.type))})`);
+    assert(ytcv.getState().autoApplyLoudnessLive === true,
+      `a move in the Live slot reaches the state the popup asks for while a Video is watched (${ytcv.getState().autoApplyLoudnessLive})`);
   }
 
   section('Cross-tab: the gain this tab is already playing is not applied again');
@@ -5755,7 +5737,7 @@ async function runTests() {
     await tick();
   }
 
-  section('Apply: the popup is told after the gain has been applied');
+  section('Apply: the popup is answered with the gain once it has been applied');
   {
     mockStorage['channelVolumes'] = { UCtold: { name: 'Told Ch', gainVideo: 0.35 } };
     mockSyncStorage['autoLoudnessSettings'] = { targetLufs: -18, displayUnit: '%' };
@@ -5772,13 +5754,9 @@ async function runTests() {
     ytcv._set('currentVideoType', 'video');
     ytcv._set('currentAutoApplyLoudnessVideo', false);
     ytcv._set('currentGain', 1.0);
-    ytcv.notifyPopup();
-    mockSentMessages.length = 0;
     await ytcv.applyVideoVolume();
-    const told = mockSentMessages.filter(m => m?.type === 'stateChanged');
-    assert(told.length > 0, `the popup is told (${told.length})`);
-    assert(told[0]?.gain === 0.35,
-      `and what it is told is the gain now playing (${JSON.stringify(told[0]?.gain)})`);
+    assert(ytcv.getState().gain === 0.35,
+      `the state the popup asks for holds the gain now playing (${JSON.stringify(ytcv.getState().gain)})`);
     await tick();
   }
 
@@ -6162,8 +6140,6 @@ async function runTests() {
     // the old shape and reading it under the current rule would take a manual
     // gain for one Auto is allowed to overwrite.
     ytcv._set('storageSettled', false);
-    ytcv.notifyPopup();
-    mockSentMessages.length = 0;
     simulateBridgeMessage({ loudnessDb: -6, isLiveContent: false, videoId: 'autoStopVid', channelId: 'UCstop' });
     assert(ytcv.state.currentGain === 1.0,
       `nothing is applied while the fold has not settled (${ytcv.state.currentGain})`);
@@ -6404,7 +6380,7 @@ async function runTests() {
       `and stored as the channel's gain (${mockStorage['channelVolumes']['UClate'].gainVideo})`);
   }
 
-  section('Apply: the popup is told the gain the late answer settled on');
+  section('Apply: the popup is answered with the gain the late answer settled on');
   {
     setURL('/watch', 'settleVid');
     mockStorage['channelVolumes'] = { UCsettle: { name: 'Settle Ch', gainVideo: 0.55 } };
@@ -6439,12 +6415,8 @@ async function runTests() {
     mockPostMessageHandler = null;
     assert(ytcv.state.currentGain === 0.8,
       `the gain the wait settled on is applied (${ytcv.state.currentGain})`);
-    const told = mockSentMessages.filter(m => m?.type === 'stateChanged');
-    assert(told.length > 0, `and the popup is told (${told.length})`);
-    assert(!told.some((m) => m?.gain === 0.55),
-      `and it is not told the gain from before the wait on the way (${JSON.stringify(told.map((m) => m?.gain))})`);
-    assert(told[told.length - 1]?.gain === 0.8,
-      `what it ends up with is the gain that settled (${told[told.length - 1]?.gain})`);
+    assert(ytcv.getState().gain === 0.8,
+      `and it is the gain the popup's next ask is answered with (${ytcv.getState().gain})`);
   }
 
   section('Observer: a video the page swapped under the extension');
@@ -6632,7 +6604,7 @@ async function runTests() {
       `and a save after it is taken (${JSON.stringify(off)} / ${JSON.stringify(after)})`);
   }
 
-  section('Popup: a video changing on its own is a new state to be told about');
+  section('Popup: a video changing on its own is a new state the popup is answered with');
   {
     setURL('/watch', 'tokenVidA');
     mockStorage['channelVolumes'] = { UCtoken: { name: 'Token Ch', gainVideo: 0.5 } };
@@ -6641,17 +6613,13 @@ async function runTests() {
     ytcv._set('currentLoudnessDb', -6);
     ytcv._set('currentLoudnessVideoId', 'tokenVidA');
     ytcv._set('currentGain', 0.5);
-    ytcv.notifyPopup();
-    mockSentMessages.length = 0;
+    const before = ytcv.getState().appliesTo;
     // Everything the popup shows is the same; only the video is another one.
     setURL('/watch', 'tokenVidB');
     ytcv._set('currentLoudnessVideoId', 'tokenVidB');
-    ytcv.notifyPopup();
-    const told = mockSentMessages.filter(m => m?.type === 'stateChanged');
-    assert(told.length === 1,
-      `the popup is told the state moved (${told.length})`);
-    assert(told[0]?.appliesTo !== undefined && told[0]?.appliesTo.includes('tokenVidB'),
-      `and what it is told names the video now playing (${told[0]?.appliesTo})`);
+    const after = ytcv.getState().appliesTo;
+    assert(before.includes('tokenVidA') && after !== before && after.includes('tokenVidB'),
+      `the state the popup asks for names the video now playing (${before} / ${after})`);
   }
 
   // ── Summary ────────────────────────────────────────────────────────
@@ -6925,7 +6893,7 @@ async function runTests() {
     assert(await followDisplayUnit(() => {}, quiet)() === '%', 'a storage with no change events reads the unit');
   }
 
-  section('Popup: a broadcast from its own tab only');
+  section('Popup: it asks its own tab every second, and draws no message sent to it');
   {
     // The tab has applied its video and holds the channel named for it.
     ytcv._set('currentChannel', { id: 'UCownTab', name: 'Own Tab', url: '' });
@@ -6934,20 +6902,18 @@ async function runTests() {
     const popup = makePopup();
     await popup.ready();
     const drawn = popup.node('channelName').textContent;
+    await popup.poll();
+    assert(popup.attempts.every((tabId) => tabId === 9) && popup.asked.filter((m) => m.type === 'getState').length === 1,
+      `the ask goes to the popup's own tab alone (${JSON.stringify(popup.attempts)})`);
+    // A message sent to the popup, of the kind the page used to send, is not
+    // drawn: the popup listens to none.
     await popup.deliver({
       type: 'stateChanged',
-      channel: { id: 'UCother', name: 'Another Tab', url: '' },
-      appliesTo: 'UCother|video|otherVid', gain: 1.0, targetLufs: -18
-    }, 10);
-    assert(popup.node('channelName').textContent === drawn,
-      `another tab's state is not drawn (${popup.node('channelName').textContent})`);
-    await popup.deliver({
-      type: 'somethingElse',
-      channel: { id: 'UCkind', name: 'Another Kind', url: '' },
+      channel: { id: 'UCkind', name: 'Sent Over', url: '' },
       appliesTo: 'UCkind|video|kindVid', gain: 1.0, targetLufs: -18
     });
     assert(popup.node('channelName').textContent === drawn,
-      `nor is a message of another kind (${popup.node('channelName').textContent})`);
+      `a message sent to the popup is not drawn (${popup.node('channelName').textContent})`);
   }
 
   section('Popup: the unit the settings name');
@@ -7094,7 +7060,7 @@ async function runTests() {
       `a gain the page takes is not read back (${JSON.stringify(taken.asked)})`);
   }
 
-  section('Popup: how long it goes on asking for a level');
+  section('Popup: it asks for the state every second while it is open');
   {
     const withLevel = (level) => ({
       isWatchPage: true,
@@ -7104,45 +7070,156 @@ async function runTests() {
       gain: 1.0, targetLufs: -18, videoType: 'video'
     });
 
-    let asks = 0;
-    const never = makePopup({ answer: async () => { asks += 1; return withLevel(null); } });
-    await never.ready();
-    for (let round = 0; round < 12; round++) await never.runTimers();
-    assert(asks === 9, `the forceDetect and eight retries, and no more (${asks})`);
+    // The first ask is the forceDetect; each tick of the poll is a getState,
+    // whether or not a level has come, for as long as the popup is open.
+    const kinds = [];
+    let level = null;
+    const popup = makePopup({ answer: async (message) => { kinds.push(message.type); return withLevel(level); } });
+    await popup.ready();
+    assert(JSON.stringify(kinds) === '["forceDetect"]', `the first ask is the forceDetect (${JSON.stringify(kinds)})`);
+    await popup.poll();
+    assert(popup.node('contentLufs').className.split(' ').includes('unknown'), 'a level that has not arrived is drawn as unknown');
+    level = -6;
+    await popup.poll();
+    assert(popup.node('contentLufs').textContent === (YT_REFERENCE_LUFS - 6).toFixed(1),
+      `and one that has is drawn at the next ask (${popup.node('contentLufs').textContent})`);
+    await popup.poll();
+    await popup.poll();
+    assert(JSON.stringify(kinds) === '["forceDetect","getState","getState","getState","getState"]',
+      `the asking goes on once the level is in hand (${JSON.stringify(kinds)})`);
 
-    let known = 0;
-    const atOnce = makePopup({ answer: async () => { known += 1; return withLevel(-6); } });
-    await atOnce.ready();
-    await atOnce.runTimers();
-    assert(known === 1, `a level answered at once is not asked for again (${known})`);
-
+    // An ask the page does not answer leaves the screen, and the next one is
+    // still made.
     let quiet = 0;
     const unanswered = makePopup({
       answer: async (message) => {
         quiet += 1;
-        return message.type === 'getState' ? undefined : withLevel(null);
+        return message.type === 'getState' && quiet === 2 ? undefined : withLevel(-6);
       }
     });
     await unanswered.ready();
-    for (let round = 0; round < 5; round++) await unanswered.runTimers();
-    assert(quiet === 2, `an ask that goes unanswered ends the waiting (${quiet})`);
+    await unanswered.poll();
+    assert(unanswered.node('statusLine').classList.contains('hidden') && !unanswered.node('main').classList.contains('hidden'),
+      `an ask answered with nothing leaves the screen (${unanswered.node('statusLine').textContent})`);
+    await unanswered.poll();
+    assert(quiet === 3, `and the next is made (${quiet})`);
 
-    let arrived = 0;
-    const byBroadcast = makePopup({ answer: async () => { arrived += 1; return withLevel(null); } });
-    await byBroadcast.ready();
-    await byBroadcast.deliver({ type: 'stateChanged', ...withLevel(-6) });
-    const before = arrived;
-    for (let round = 0; round < 3; round++) await byBroadcast.runTimers();
-    assert(arrived === before,
-      `a level that arrived another way is not asked for again (${arrived - before})`);
+    // An ask that fails says the page needs a reload, and one answered after
+    // it puts the screen back.
+    let failing = false;
+    const flaky = makePopup({ answer: async () => {
+      if (failing) throw new Error('Receiving end does not exist');
+      return withLevel(-6);
+    } });
+    await flaky.ready();
+    failing = true;
+    await flaky.poll();
+    assert(flaky.node('statusLine').textContent === 'reloadPageNeeded' && !flaky.node('statusLine').classList.contains('hidden')
+      && flaky.node('main').classList.contains('hidden'),
+      `an ask that fails asks for a reload (${flaky.node('statusLine').textContent})`);
+    failing = false;
+    await flaky.poll();
+    assert(flaky.node('statusLine').classList.contains('hidden') && !flaky.node('main').classList.contains('hidden'),
+      'and one answered after it puts the screen back');
+
+    // A page that is no longer a watch page says so at the next ask.
+    await flaky.poll({ isWatchPage: false });
+    assert(flaky.node('statusLine').textContent === 'openOnVideoPage' && flaky.node('main').classList.contains('hidden'),
+      `a page that is no longer a watch page gets its line (${flaky.node('statusLine').textContent})`);
+
+    // The page is shown once the first ask is answered, not before.
+    let answerFirst = null;
+    const slow = makePopup({ answer: (message) => (message.type === 'forceDetect'
+      ? new Promise((resolve) => { answerFirst = resolve; })
+      : Promise.resolve(undefined)) });
+    for (let turn = 0; turn < 20 && !answerFirst; turn++) await tick();
+    assert(slow.node('body').classList.contains('initializing'), 'the page waits for the first answer');
+    answerFirst(withLevel(-6));
+    await slow.ready();
+    assert(!slow.node('body').classList.contains('initializing'), 'and is shown with it');
+  }
+
+  section('Popup: an answer to an ask made before it drew a gain of its own is not drawn');
+  {
+    // The ask goes out at 100%; the viewer moves the gain before it is
+    // answered. The answer is what the tab held before that move.
+    const base = () => ({
+      isWatchPage: true, channel: { id: 'UCrace', name: 'Race Ch', url: '' }, appliesTo: 'UCrace|video|raceVid',
+      loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0, targetLufs: -18, videoType: 'video',
+      autoApplyLoudnessVideo: false, autoApplyLoudnessLive: false
+    });
+    for (const how of ['key', 'drag', 'preset']) {
+      let holding = false;
+      let release = null;
+      const popup = makePopup({ answer: async (m) => {
+        if (m.type === 'setGain' || m.type === 'setGainLive') return { ok: true };
+        const answer = base();
+        if (m.type === 'getState' && holding) return new Promise((resolve) => { release = () => resolve(answer); });
+        return answer;
+      } });
+      await popup.ready();
+      holding = true;
+      const polling = popup.poll();
+      for (let turn = 0; turn < 10 && !release; turn++) await Promise.resolve();
+      holding = false;
+      const slider = popup.node('volumeSlider');
+      if (how === 'key') {
+        await popup.fire('volumeSlider', 'keydown', { key: 'ArrowRight' });
+        slider.value = '105';
+        await popup.fire('volumeSlider', 'input');
+        release();
+        await polling;
+        await popup.fire('volumeSlider', 'keyup', { key: 'ArrowRight' });
+      } else if (how === 'drag') {
+        await popup.fire('volumeSlider', 'pointerdown');
+        slider.value = '200';
+        await popup.fire('volumeSlider', 'input');
+        release();
+        await polling;
+        await popup.fire('volumeSlider', 'pointerup');
+        await popup.fire('volumeSlider', 'change');
+      } else {
+        await popup.firePreset(2, 'click');
+        release();
+        await polling;
+      }
+      for (let turn = 0; turn < 6; turn++) await tick();
+      const want = how === 'key' ? 1.05 : 2;
+      const saves = popup.asked.filter((m) => m.type === 'setGain').map((m) => m.gain);
+      assert(JSON.stringify(saves) === JSON.stringify([want])
+        && popup.node('volumeValue').textContent === `${Math.round(want * 100)}%`,
+        `${how}: the gain the viewer moved to is drawn and saved, not the answer from before it (${JSON.stringify(saves)} / ${popup.node('volumeValue').textContent})`);
+    }
+
+    // The state read again after a save the tab refused is not drawn either
+    // when the viewer moved the gain while it was out.
+    let refuseNext = true;
+    let release = null;
+    const reread = makePopup({ answer: async (m) => {
+      if (m.type === 'setGain') {
+        const refused = refuseNext;
+        refuseNext = false;
+        return refused ? { ok: false, reason: 'state moved' } : { ok: true };
+      }
+      const answer = base();
+      if (m.type === 'getState') return new Promise((resolve) => { release = () => resolve(answer); });
+      return answer;
+    } });
+    await reread.ready();
+    await reread.firePreset(2, 'click');
+    for (let turn = 0; turn < 10 && !release; turn++) await tick();
+    await reread.firePreset(3, 'click');
+    release();
+    for (let turn = 0; turn < 6; turn++) await tick();
+    assert(reread.node('volumeValue').textContent === '400%',
+      `the gain moved while the re-read was out stays drawn (${reread.node('volumeValue').textContent})`);
   }
 
   section('Popup: a card with no unit, and a target it was not told');
   {
     const popup = makePopup();
     await popup.ready();
-    await popup.deliver({
-      type: 'stateChanged',
+    await popup.poll({
       channel: { id: 'UCunit', name: 'Unit Ch', url: '' },
       appliesTo: 'UCunit|video|unitVid',
       loudnessDb: null, contentLufs: null, gain: 1.0, targetLufs: -18, videoType: 'video'
@@ -7152,8 +7229,7 @@ async function runTests() {
     assert(popup.node('contentLufs').className.split(' ').includes('unknown'),
       `and says it is unknown (${popup.node('contentLufs').className})`);
 
-    await popup.deliver({
-      type: 'stateChanged',
+    await popup.poll({
       channel: { id: 'UCunit', name: 'Unit Ch', url: '' },
       appliesTo: 'UCunit|video|unitVid',
       loudnessDb: -9, contentLufs: YT_REFERENCE_LUFS - 9, gain: 1.0,
@@ -7162,8 +7238,7 @@ async function runTests() {
     const withTarget = popup.node('suggestedVol').textContent;
     assert(withTarget === String(gainToPercent(calcGain(-9, -12))),
       `the suggestion follows the target it was given (${withTarget})`);
-    await popup.deliver({
-      type: 'stateChanged',
+    await popup.poll({
       channel: { id: 'UCunit', name: 'Unit Ch', url: '' },
       appliesTo: 'UCunit|video|unitVid',
       loudnessDb: -9, contentLufs: YT_REFERENCE_LUFS - 9, gain: 1.0, videoType: 'video'
@@ -7325,8 +7400,7 @@ async function runTests() {
     await tick();
 
     // The tab moves to a live stream while the answer is out.
-    await popup.deliver({
-      type: 'stateChanged',
+    await popup.poll({
       channel: { id: 'UCswap', name: 'Swap Ch', url: '' },
       appliesTo: 'UCswap|live|liveVid',
       loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0,
@@ -7372,8 +7446,7 @@ async function runTests() {
     popup.node('autoApplyVideoToggle').checked = true;
     const gesture = popup.fire('autoApplyVideoToggle', 'change');
     await tick();
-    await popup.deliver({
-      type: 'stateChanged',
+    await popup.poll({
       channel: { id: 'UCgone', name: 'Gone Ch', url: '' },
       appliesTo: 'UCgone|live|goneLive',
       loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0,
@@ -7411,8 +7484,7 @@ async function runTests() {
     popup.node('volumeSlider').value = '140';
     await popup.fire('volumeSlider', 'pointerdown');
     await popup.fire('volumeSlider', 'input');
-    await popup.deliver({
-      type: 'stateChanged',
+    await popup.poll({
       channel: { id: 'UCsecond', name: 'Second Ch', url: '' },
       appliesTo: 'UCsecond|video|second',
       loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0,
@@ -7469,8 +7541,7 @@ async function runTests() {
 
     // The tab moves on, and the drag goes on. Every message it sends still
     // belongs to the video it began on, so the one now playing is untouched.
-    await popup.deliver({
-      type: 'stateChanged',
+    await popup.poll({
       channel: { id: 'UCheld', name: 'Held Ch', url: '' },
       appliesTo: 'UCheld|video|heldB',
       loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0,
@@ -7512,7 +7583,7 @@ async function runTests() {
     // the popup about it.
     setURL('/watch', 'popVidB');
     ytcv._set('_lastVideoId', 'popVidB');
-    await popup.broadcast();
+    await popup.poll();
     assert((await simulateRuntimeMessage({ type: 'getState' })).appliesTo !== drawnOn,
       'two videos of one channel are two states, not one');
 
@@ -7541,7 +7612,7 @@ async function runTests() {
     await popup.ready();
     popup.node('volumeSlider').value = '25';
     await popup.fire('volumeSlider', 'input');
-    await popup.broadcast();
+    await popup.poll();
     await popup.fire('volumeSlider', 'change');
     await tick();
     assert(Math.abs(mockStorage['channelVolumes']['UCkept']?.gainVideo - 0.25) < 1e-9,
@@ -7570,7 +7641,7 @@ async function runTests() {
     setURL('/watch', 'popVidE');
     ytcv._set('_lastVideoId', 'popVidE');
     ytcv._set('currentGain', 1.0);
-    await popup.broadcast();
+    await popup.poll();
 
     popup.node('volumeSlider').value = '60';
     await popup.fire('volumeSlider', 'input');
@@ -7665,10 +7736,10 @@ async function runTests() {
 
   section('The worker takes the writes and leaves the rest alone');
   {
-    // Every tab's saves and the popup's own broadcasts share one channel. The
-    // worker answers the saves; a message it does not own has to be left for
-    // whoever does, unclaimed and unanswered. Chrome keeps the port open where
-    // any one listener claims the message, so each listener is asked.
+    // Every tab's saves share one channel with the other runtime messages.
+    // The worker answers the saves; a message it does not own has to be left
+    // for whoever does, unclaimed and unanswered. Chrome keeps the port open
+    // where any one listener claims the message, so each listener is asked.
     const notMine = [
       { type: 'stateChanged', gain: 1 },
       { type: 'store:noSuchWrite' },
@@ -7831,12 +7902,10 @@ async function runTests() {
     ytcv._set('storageMigrated', true);
   }
 
-  section('Apply: the notify that follows the level carries the gain it applied');
+  section('Apply: the state after the level carries the gain it applied');
   {
     // The level arrives after the first draw, and the gain it resolves to is
-    // applied before the popup is told. Telling it first leaves the popup
-    // showing the gain from before the level, with nothing to correct it: the
-    // notify that would is the one that already went.
+    // the one the popup's next ask is answered with.
     const priorPath = mockLocation.pathname;
     const priorHref = mockLocation.href;
     const priorSearch = mockLocation.search;
@@ -7862,11 +7931,8 @@ async function runTests() {
     for (let turn = 0; turn < 10; turn++) await tick();
     mockPostMessageHandler = null;
 
-    const broadcasts = mockSentMessages.filter((m) => m.type === 'stateChanged');
-    const last = broadcasts[broadcasts.length - 1];
-    assert(broadcasts.length > 0, 'the popup is told something');
-    assert(Math.abs((last?.gain ?? 0) - 0.4) < 1e-9,
-      `and what it is told last is the gain in force (${last?.gain})`);
+    assert(Math.abs(ytcv.getState().gain - 0.4) < 1e-9,
+      `the state the popup asks for holds the gain in force (${ytcv.getState().gain})`);
     assert(Math.abs(ytcv.state.currentGain - 0.4) < 1e-9,
       `which is the gain the channel had saved (${ytcv.state.currentGain})`);
 
@@ -8029,16 +8095,16 @@ async function runTests() {
     assert(errors.length === 1 && /^\[YTCV\] store:clearChannels blocked by the stored state /.test(errors[0]),
       `and reported as such (${errors.join(' | ')})`);
 
-    // A message that names no write is left alone, and named unless it is the
-    // popup's.
+    // A message that names no write is left alone, and named.
     const warned = [];
     worker.console.warn = (...args) => warned.push(args.map(String).join(' '));
     const unanswered = () => { throw new Error('answered'); };
-    assert(listeners[0]({ type: 'stateChanged' }, {}, unanswered) === false && warned.length === 0,
-      `the popup's stateChanged is left alone unnamed (${warned.join(' | ')})`);
     assert(listeners[0]({ type: 'store:toString' }, {}, unanswered) === false &&
       warned.length === 1 && warned[0] === '[YTCV] unknown message type store:toString',
       `a write the worker does not have is left alone and named (${warned.join(' | ')})`);
+    assert(listeners[0]({ type: 'stateChanged' }, {}, unanswered) === false &&
+      warned.length === 2 && warned[1] === '[YTCV] unknown message type stateChanged',
+      `and so is a message of another kind, the page sending none to the popup (${warned.join(' | ')})`);
   }
 
   // ── options.js ────────────────────────────────────────────────────
@@ -8887,8 +8953,8 @@ async function runTests() {
   section('Apply: the popup is told a level and the gain that goes with it');
   {
     // The level arrives while the channel's own entry is still being read. The
-    // popup is drawn from what it is told, so a message pairing the new level
-    // with the gain from before it is a screen that never existed.
+    // popup is drawn from what its ask is answered with, so a state pairing the
+    // new level with the gain from before it is a screen that never existed.
     mockStorage['channelVolumes'] = {
       UCpair: { name: 'Pair Ch', gainVideo: 0.5, autoApplyLoudnessVideo: true }
     };
@@ -8906,21 +8972,109 @@ async function runTests() {
     ytcv._set('currentLoudnessVideoId', '');
     ytcv._set('currentVideoType', 'video');
     ytcv._set('currentGain', 0.5);
-    ytcv.notifyPopup();
-    mockSentMessages.length = 0;
-
+    // Every state the popup could be answered with on the way: one ask at
+    // each turn until the apply is done.
+    const answered = [];
     const applying = ytcv.applyVideoVolume();
+    let applied = false;
+    applying.then(() => { applied = true; });
     // The bridge answers while the apply is still out.
     simulateBridgeMessage({ loudnessDb: -6, isLiveContent: false, channelId: 'UCpair' });
+    const ask = () => simulateRuntimeMessage({ type: 'getState' });
+    answered.push(await ask());
+    for (let turn = 0; turn < 20 && !applied; turn++) answered.push(await ask());
     await applying;
     await tick();
+    answered.push(await ask());
 
-    const told = mockSentMessages.filter((m) => m?.type === 'stateChanged');
-    const stale = told.filter((m) => m.loudnessDb === -6 && m.gain === 0.5);
+    const stale = answered.filter((s) => s.loudnessDb === -6 && s.gain === 0.5);
     assert(stale.length === 0,
-      `no message carries the new level beside the gain from before it (${JSON.stringify(told.map((m) => [m.loudnessDb, m.gain]))})`);
-    assert(told.some((m) => m.loudnessDb === -6),
-      `and the level does reach the popup (${JSON.stringify(told.map((m) => [m.loudnessDb, m.gain]))})`);
+      `no state carries the new level beside the gain from before it (${JSON.stringify(answered.map((s) => [s.loudnessDb, s.gain]))})`);
+    assert(answered[answered.length - 1].loudnessDb === -6,
+      `and the level does reach the state the popup asks for (${JSON.stringify(answered.map((s) => [s.loudnessDb, s.gain]))})`);
+  }
+
+  section('Popup: a gain the slider plays while a level waits for its gain is the one it is answered with');
+  {
+    // The level's apply waits on the channel's stored gain; the viewer
+    // previews a gain meanwhile. The popup's ask is answered with that gain,
+    // not with the one from before the level.
+    mockStorage['channelVolumes'] = { UCheld: { name: 'Held Ch', gainVideo: 0.5 } };
+    setURL('/watch', 'heldVid');
+    mockVideoEl = { id: 'held-video' };
+    mockDOMElements['canonical'] = { href: 'https://www.youtube.com/channel/UCheld' };
+    ytcv._set('storageMigrated', true);
+    ytcv._set('storageSettled', true);
+    ytcv._set('_lastVideoId', 'heldVid');
+    ytcv._set('appliedVideoId', 'heldVid');
+    ytcv._set('currentChannel', { id: 'UCheld', name: 'Held Ch', url: '' });
+    ytcv._set('currentChannelVideoId', 'heldVid');
+    ytcv._set('currentLoudnessDb', null);
+    ytcv._set('currentLoudnessVideoId', 'heldVid');
+    ytcv._set('currentVideoType', 'video');
+    ytcv._set('currentAutoApplyLoudnessVideo', false);
+    ytcv._set('currentGain', 0.5);
+    const realGet = chrome.storage.local.get;
+    let releaseRead = null;
+    chrome.storage.local.get = (key) => (key === 'channelVolumes' && !releaseRead
+      ? new Promise((resolve) => { releaseRead = () => resolve(realGet(key)); })
+      : realGet(key));
+    simulateBridgeMessage({ loudnessDb: -6, isLiveContent: false, videoId: 'heldVid', channelId: 'UCheld' });
+    for (let turn = 0; turn < 10 && !releaseRead; turn++) await Promise.resolve();
+    const preview = await popupGesture({ type: 'setGainLive', gain: 2.0 });
+    const during = await simulateRuntimeMessage({ type: 'getState' });
+    chrome.storage.local.get = realGet;
+    if (releaseRead) releaseRead();
+    for (let turn = 0; turn < 6; turn++) await tick();
+    assert(releaseRead !== null && preview?.ok === true && during?.gain === 2.0,
+      `the ask during the wait is answered with the gain the preview plays (${JSON.stringify(preview)} / ${during?.gain})`);
+    await popupGesture({ type: 'setGain', gain: 2.0 });
+    await tick();
+    assert(mockStorage['channelVolumes'].UCheld.gainVideo === 2.0,
+      `and the release saves it (${mockStorage['channelVolumes'].UCheld.gainVideo})`);
+
+    // A wait that ends on the gain already playing lets the hold go as well:
+    // the ask after it is answered with the new level.
+    setURL('/watch', 'heldVid2');
+    ytcv._set('_lastVideoId', 'heldVid2');
+    ytcv._set('appliedVideoId', 'heldVid2');
+    ytcv._set('currentChannelVideoId', 'heldVid2');
+    ytcv._set('currentLoudnessDb', null);
+    ytcv._set('currentLoudnessVideoId', 'heldVid2');
+    ytcv._set('currentGain', 2.0);
+    let releaseSame = null;
+    chrome.storage.local.get = (key) => (key === 'channelVolumes' && !releaseSame
+      ? new Promise((resolve) => { releaseSame = () => resolve(realGet(key)); })
+      : realGet(key));
+    simulateBridgeMessage({ loudnessDb: -9, isLiveContent: false, videoId: 'heldVid2', channelId: 'UCheld' });
+    for (let turn = 0; turn < 10 && !releaseSame; turn++) await Promise.resolve();
+    const whileHeld = await simulateRuntimeMessage({ type: 'getState' });
+    chrome.storage.local.get = realGet;
+    if (releaseSame) releaseSame();
+    for (let turn = 0; turn < 6; turn++) await tick();
+    const afterHeld = await simulateRuntimeMessage({ type: 'getState' });
+    assert(releaseSame !== null && whileHeld?.loudnessDb === null && afterHeld?.loudnessDb === -9 && afterHeld?.gain === 2.0,
+      `the ask during the wait has the level from before, and the one after it the new level (${whileHeld?.loudnessDb} / ${afterHeld?.loudnessDb} / ${afterHeld?.gain})`);
+
+    // So does a wait whose read fails, which puts no gain in force.
+    setURL('/watch', 'heldVid3');
+    ytcv._set('_lastVideoId', 'heldVid3');
+    ytcv._set('appliedVideoId', 'heldVid3');
+    ytcv._set('currentChannelVideoId', 'heldVid3');
+    ytcv._set('currentLoudnessDb', null);
+    ytcv._set('currentLoudnessVideoId', 'heldVid3');
+    let failRead = null;
+    chrome.storage.local.get = (key) => (key === 'channelVolumes' && !failRead
+      ? new Promise((_, reject) => { failRead = () => reject(new Error('the read failed')); })
+      : realGet(key));
+    simulateBridgeMessage({ loudnessDb: -12, isLiveContent: false, videoId: 'heldVid3', channelId: 'UCheld' });
+    for (let turn = 0; turn < 10 && !failRead; turn++) await Promise.resolve();
+    chrome.storage.local.get = realGet;
+    if (failRead) failRead();
+    for (let turn = 0; turn < 6; turn++) await tick();
+    const afterFailed = await simulateRuntimeMessage({ type: 'getState' });
+    assert(failRead !== null && afterFailed?.loudnessDb === -12,
+      `and the ask after a failed read has the new level (${afterFailed?.loudnessDb})`);
   }
 
   // ── A live stream's own level, followed while it is on air ───────────
@@ -9507,18 +9661,17 @@ async function runTests() {
       assert(close(ytcv.state.currentGain, liveGain(-24.8)), `and the live gain stays (${ytcv.state.currentGain})`);
     }
 
-    section('Live level: the popup is shown it, and told when it moves');
+    section('Live level: the popup is shown it, and is answered with it when it moves');
     {
       onAir({ entry: { autoApplyLoudnessLive: true } });
       ytcv._set('targetLufs', -6);
       liveAnswer(-40);
       await settle();
-      mockSentMessages.length = 0;
       liveAnswer(-41);
       await settle();
-      const told = mockSentMessages.filter((m) => m?.type === 'stateChanged');
-      assert(ytcv.state.currentGain === 6 && told.some((m) => m.liveLkfs === -41 && m.contentLufs === -41),
-        `a level that moves under a gain held at its limit still reaches the popup (${JSON.stringify(told.map((m) => [m.liveLkfs, m.gain]))})`);
+      const answered = ytcv.getState();
+      assert(ytcv.state.currentGain === 6 && answered.liveLkfs === -41 && answered.contentLufs === -41,
+        `a level that moves under a gain held at its limit still reaches the state the popup asks for (${JSON.stringify([answered.liveLkfs, answered.gain])})`);
       ytcv._set('targetLufs', -18);
 
       const drawnIn = (popup, id) => popup.node(id).textContent
@@ -9773,7 +9926,6 @@ async function runTests() {
       liveAnswer(-24.8);
       await settle();
       const playing = ytcv.state.currentGain;
-      mockSentMessages.length = 0;
       const saves = liveSaves().length;
       liveRead(-20);
       await settle();
@@ -9781,8 +9933,8 @@ async function runTests() {
         `the level is taken, and nothing is applied or stored (${ytcv.state.readLiveLkfs} / ${ytcv.state.currentGain} / ${liveSaves().length - saves})`);
       assert(ytcv.state.currentLiveLkfs === -24.8,
         `Auto's level stays the one the full answer named (${ytcv.state.currentLiveLkfs})`);
-      assert(mockSentMessages.some((m) => m?.type === 'stateChanged' && m.liveLkfs === -20 && m.contentLufs === -20),
-        `and the popup is told (${JSON.stringify(mockSentMessages.map((m) => m?.liveLkfs))})`);
+      assert(ytcv.getState().liveLkfs === -20 && ytcv.getState().contentLufs === -20,
+        `and the popup's next ask is answered with it (${ytcv.getState().liveLkfs})`);
 
       for (const [what, read] of [
         ['another video\'s level', () => liveRead(-30, { videoId: 'someOtherVideo' })],
@@ -9917,7 +10069,7 @@ async function runTests() {
       assert(asks() === 1, `a second on, it is asked (${asks()})`);
 
       // A level that reaches the popup is drawn, and asking goes on once a second.
-      await popup.deliver({ type: 'stateChanged', ...stateWith({ liveLkfs: -20, contentLufs: -20 }) });
+      await popup.poll({ ...stateWith({ liveLkfs: -20, contentLufs: -20 }) });
       const drawnIn = (id) => popup.node(id).textContent + (popup.node(id).children[0] ? popup.node(id).children[0].textContent : '');
       assert(drawnIn('contentLufs') === '-20.0 LUFS'
         && drawnIn('suggestedVol') === String(gainToPercent(calcLiveGain(-20, -18))) + '%',
@@ -9926,7 +10078,7 @@ async function runTests() {
       assert(asks() === 2, `and asked once more a second on, not once per state drawn (${asks()})`);
 
       // A page that no longer shows a stream stops it.
-      await popup.deliver({ type: 'stateChanged', ...stateWith({ isLiveNow: false, liveLkfs: null, contentLufs: null }) });
+      await popup.poll({ ...stateWith({ isLiveNow: false, liveLkfs: null, contentLufs: null }) });
       await popup.runTimers();
       await popup.runTimers();
       assert(asks() === 2, `a page with no stream is not asked about (${asks()})`);
@@ -10331,7 +10483,6 @@ async function runTests() {
     section('Slider preview: a gain from elsewhere waits for the gesture to end');
     {
       await onVideo();
-      const told = () => mockSentMessages.filter((m) => m?.type === 'stateChanged').map((m) => m.gain);
       await popupGesture({ type: 'setGainLive', gain: 3.0 });
       assert(ytcv.state.currentGain === 3.0, 'the preview plays');
       // A rendition change re-applies the stored gain, another tab writes this
@@ -10347,8 +10498,8 @@ async function runTests() {
       await settle();
       assert(ytcv.state.currentGain === 3.0 && ytcv.state.gainNode.gain.value === 3.0,
         `the preview keeps playing over each of them (${ytcv.state.currentGain})`);
-      assert(told().every((gain) => gain === 3.0),
-        `and the popup is told the gain it is previewing (${JSON.stringify(told())})`);
+      assert(ytcv.getState().gain === 3.0,
+        `and the popup is answered with the gain it is previewing (${ytcv.getState().gain})`);
       const saved = await popupGesture({ type: 'setGain', gain: 3.0 });
       await settle();
       assert(saved?.ok === true && mockStorage.channelVolumes[TT_CH].gainVideo === 3.0 && ytcv.state.currentGain === 3.0,
@@ -10387,7 +10538,7 @@ async function runTests() {
       await settle();
       assert(ended === 1 && ytcv.state.currentGain === 0.5 && ytcv.state.gainNode.gain.value === 0.5,
         `the quiet gesture ends and the stored gain plays (${ended} / ${ytcv.state.currentGain})`);
-      assert(told().at(-1) === 0.5, `and the popup is told so (${JSON.stringify(told())})`);
+      assert(ytcv.getState().gain === 0.5, `and the popup is answered with it (${ytcv.getState().gain})`);
 
       // A save refused after a preview puts back what storage holds: here
       // another tab turned Auto on while the level was known.
@@ -10403,8 +10554,8 @@ async function runTests() {
       const refused = await popupGesture({ type: 'setGain', gain: 3.0 });
       await settle();
       const autoGain = calcGain(-6, -18);
-      assert(refused?.ok === false && ytcv.state.currentGain === autoGain && told().at(-1) === autoGain,
-        `the refused save plays and tells what storage now says (${JSON.stringify(refused)} / ${ytcv.state.currentGain})`);
+      assert(refused?.ok === false && ytcv.state.currentGain === autoGain && ytcv.getState().gain === autoGain,
+        `the refused save plays what storage now says, and the popup is answered with it (${JSON.stringify(refused)} / ${ytcv.state.currentGain})`);
       assert(heldPreviewEnds.length === 0, 'and nothing is left waiting to end it again');
 
       // A save refused with nothing previewed is answered at once, and nothing
@@ -10702,7 +10853,6 @@ async function runTests() {
       // The URL has moved on to a video of another channel, and something
       // redraws the popup before the tab has named that video's channel.
       setURL('/watch', 'otherChannelVid');
-      ytcv.notifyPopup();
       const drawn = await simulateRuntimeMessage({ type: 'getState' });
       for (const gesture of [
         { type: 'setGainLive', gain: 0 },
@@ -11071,12 +11221,12 @@ async function runTests() {
       // A state with no channel names no other one; the same channel after it
       // keeps the notice, and the other type of it takes it down.
       shown.channel = { id: '', name: '', url: '' };
-      await popup.deliver({ type: 'stateChanged', ...shown });
+      await popup.poll({ ...shown });
       shown.channel = { id: 'UCnotice', name: 'Notice Ch', url: '' };
-      await popup.deliver({ type: 'stateChanged', ...shown });
+      await popup.poll({ ...shown });
       assert(hint().textContent === 'gainSaveFailed',
         `the same channel after a page with none keeps it (${hint().textContent})`);
-      await popup.deliver({ type: 'stateChanged', ...shown, videoType: 'live' });
+      await popup.poll({ ...shown, videoType: 'live' });
       assert(hint().textContent !== 'gainSaveFailed' && !hint().classList.contains('error'),
         `the channel's other type takes it down (${hint().textContent})`);
     }
@@ -11113,7 +11263,7 @@ async function runTests() {
       for (let turn = 0; turn < 4; turn++) await tick();
       shown.channel = { id: 'UCother', name: 'Other Ch', url: '' };
       shown.appliesTo = 'UCother|video|otherVid';
-      await popup.deliver({ type: 'stateChanged', ...shown });
+      await popup.poll({ ...shown });
       assert(hint() !== 'gainSaveFailed', `another channel takes the notice down (${hint()})`);
       pending[0]({ ok: false, reason: 'request failed' });
       for (let turn = 0; turn < 4; turn++) await tick();
@@ -11141,7 +11291,7 @@ async function runTests() {
       await popup.fire('volumeSlider', 'input');
       shown.channel = { id: 'UCshown', name: 'Shown Ch', url: '' };
       shown.appliesTo = 'UCshown|video|shownVid';
-      await popup.deliver({ type: 'stateChanged', ...shown });
+      await popup.poll({ ...shown });
       popup.node('volumeSlider').value = '160';
       await popup.fire('volumeSlider', 'input');
       await end();
@@ -11184,7 +11334,7 @@ async function runTests() {
       assert(controls().every(Boolean) && popup.node('autoApplyVideoToggle').disabled,
         `while it is out, the slider, the presets, Apply and the toggle are out of use (${JSON.stringify(controls())})`);
       // A state that arrives meanwhile leaves the toggle where the viewer put it.
-      await popup.deliver({ type: 'stateChanged', ...shown });
+      await popup.poll({ ...shown });
       assert(popup.node('autoApplyVideoToggle').checked === true && popup.node('volumeSlider').disabled,
         `a state arriving meanwhile leaves the toggle and the lock (${popup.node('autoApplyVideoToggle').checked})`);
       release();
@@ -11231,14 +11381,14 @@ async function runTests() {
       const toggling = popup.fire('autoApplyVideoToggle', 'change');
       for (let turn = 0; turn < 10 && !release; turn++) await tick();
       Object.assign(shown, { channel: { id: 'UCautoB', name: 'Auto B', url: '' }, appliesTo: `UCautoB|${moveTo}|autoBVid`, videoType: moveTo });
-      await popup.deliver({ type: 'stateChanged', ...shown });
+      await popup.poll({ ...shown });
       release();
       await toggling;
       for (let turn = 0; turn < 6; turn++) await tick();
       assert(line() === 'none', `${moveTo}: a failure for the channel left is not said on the one shown (${line()})`);
       // A failure said for a channel, then another channel shown.
       Object.assign(shown, { channel: { id: 'UCautoA', name: 'Auto A', url: '' }, appliesTo: 'UCautoA|video|autoAVid', videoType: 'video' });
-      await popup.deliver({ type: 'stateChanged', ...shown });
+      await popup.poll({ ...shown });
       release = null;
       popup.node('autoApplyVideoToggle').checked = true;
       const again = popup.fire('autoApplyVideoToggle', 'change');
@@ -11248,7 +11398,7 @@ async function runTests() {
       for (let turn = 0; turn < 6; turn++) await tick();
       assert(line() === '', `${moveTo}: a failure for the channel shown is said (${line()})`);
       Object.assign(shown, { channel: { id: 'UCautoB', name: 'Auto B', url: '' }, appliesTo: `UCautoB|${moveTo}|autoBVid`, videoType: moveTo });
-      await popup.deliver({ type: 'stateChanged', ...shown });
+      await popup.poll({ ...shown });
       assert(line() === 'none', `${moveTo}: and another channel shown takes it down (${line()})`);
     }
 
@@ -11302,7 +11452,7 @@ async function runTests() {
       const toggling = popup.fire('autoApplyVideoToggle', 'change');
       for (let turn = 0; turn < 10 && !release; turn++) await tick();
       Object.assign(shown, { channel: { id: 'UCautoB', name: 'Auto B', url: '' }, appliesTo: 'UCautoB|video|autoBVid' });
-      await popup.deliver({ type: 'stateChanged', ...shown });
+      await popup.poll({ ...shown });
       stateFails = true;
       release();
       await toggling;
@@ -11340,7 +11490,7 @@ async function runTests() {
         channel: { id: 'UCautoB', name: 'Auto B', url: '' }, appliesTo: `UCautoB|${to}|autoBVid`, videoType: to,
         autoApplyLoudnessVideo: true, autoApplyLoudnessLive: true
       });
-      await popup.deliver({ type: 'stateChanged', ...shown });
+      await popup.poll({ ...shown });
       stateFails = true;
       release();
       await toggling;
@@ -11371,7 +11521,7 @@ async function runTests() {
       popup.node('autoApplyLiveToggle').checked = true;
       const toggling = popup.fire('autoApplyLiveToggle', 'change');
       for (let turn = 0; turn < 10 && !release; turn++) await tick();
-      await popup.deliver({ type: 'stateChanged', ...shown });
+      await popup.poll({ ...shown });
       assert(popup.node('autoApplyLiveToggle').disabled && popup.node('volumeSlider').disabled,
         `while its save is out, the Live toggle and the slider are out of use (${popup.node('autoApplyLiveToggle').disabled})`);
       // The handler stands behind the disabling: a change that reaches it

@@ -16,10 +16,9 @@ const settingsMoved = queueSettingsWrite(moveSettingsToSync)
 const CHANNEL_WRITE_PREFIX = 'store:';
 
 // A refusal is answered as invalid-mutation, a storage failure by the table it
-// came from. stateChanged on this channel is the popup's.
+// came from.
 chrome.runtime.onMessage.addListener(createWriteListener({
   prefix: '[YTCV]',
-  ignoredTypes: ['stateChanged'],
   route: (msg) => {
     const channelWrite = tableWrite(CHANNEL_WRITES, CHANNEL_WRITE_PREFIX, msg?.type);
     if (channelWrite) {

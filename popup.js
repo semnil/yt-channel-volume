@@ -50,6 +50,10 @@
   let currentContentLufs = null;
   let currentTargetLufs = DEFAULT_TARGET_LUFS;
   let lastGain = 1.0;
+  // Advanced each time the popup draws a gain of its own (a slider move, a
+  // preset): the answer to an ask made before it is from before that gain,
+  // and is not drawn.
+  let ownGainDrawn = 0;
   let displayUnit = '%';
   let currentVideoType = 'video';
   let autoApplyLoudnessVideo = false;
@@ -193,14 +197,16 @@
   }
 
   function readState() {
+    const drawnAt = ownGainDrawn;
     sendMsg({ type: 'getState' }).then(state => {
-      if (state) updateUI(state);
+      if (state && drawnAt === ownGainDrawn) updateUI(state);
     }).catch(() => {});
   }
 
   // While the page shows a stream on air or a live level, the live level is
   // asked for again every LIVE_LEVEL_ASK_MS for as long as the popup is open;
-  // content.js answers with stateChanged once the bridge has read it.
+  // content.js holds it in the state once the bridge has read it, and the
+  // popup draws it at its next ask.
   const LIVE_LEVEL_ASK_MS = 1000;
   let liveLevelWanted = false;
   let liveLevelAskSet = false;
@@ -323,6 +329,7 @@
       sliderOwner = ownerKey();
     },
     draw: (percent) => {
+      ownGainDrawn++;
       lastGain = percentToGain(percent);
       const f = fmtGain(lastGain);
       volumeValueEl.textContent = f.text + f.unit;
@@ -342,6 +349,7 @@
     btn.addEventListener('click', () => {
       const pct = Number(btn.dataset.vol);
       const gain = percentToGain(pct);
+      ownGainDrawn++;
       lastGain = gain;
       volumeSlider.value = pct;
       const f = fmtGain(gain);
@@ -355,12 +363,6 @@
         });
       }
     });
-  });
-
-  chrome.runtime.onMessage.addListener((msg, sender) => {
-    if (msg.type === 'stateChanged' && sender.tab?.id === activeTabId) {
-      updateUI(msg);
-    }
   });
 
   // The unit follows the settings in sync while the popup is open
@@ -395,32 +397,40 @@
 
       activeTabId = tab.id;
 
-      try {
-        const resp = await chrome.tabs.sendMessage(tab.id, { type: 'forceDetect' });
-        if (resp) {
-          if (!resp.isWatchPage) {
-            showPopupStatus(statusLineEl, mainEl, 'openOnVideoPage');
-            return;
-          }
-          updateUI(resp);
-          if (resp.contentLufs === null || resp.contentLufs === undefined) {
-            retryGetState(8, 500, {
-              done: () => hasLoudness,
-              ask: () => chrome.tabs.sendMessage(activeTabId, { type: 'getState' }),
-              take: updateUI
-            });
-          }
-        }
-      } catch (_) {
-        // sendMessage rejects when content.js is unreachable. The most common
-        // cause is runtime context invalidation: when this or another extension
-        // is reloaded, existing tabs' content scripts lose their chrome.runtime
-        // connection. The page must be reloaded for content.js to be re-injected.
-        showPopupStatus(statusLineEl, mainEl, 'reloadPageNeeded');
-      }
+      // forceDetect at open, then the state every second while the popup is
+      // open (pollTabState in core/common.js).
+      await pollTabState(() => askTab('getState'), () => askTab('forceDetect'));
     } finally {
       revealPage();
     }
+  }
+
+  // What the tab answered: a watch page's state drawn, or the line that says
+  // why there is nothing to act on. An answer of nothing draws nothing.
+  function showState(state) {
+    if (!state) return;
+    if (!state.isWatchPage) {
+      showPopupStatus(statusLineEl, mainEl, 'openOnVideoPage');
+      return;
+    }
+    hidePopupStatus(statusLineEl, mainEl);
+    updateUI(state);
+  }
+
+  async function askTab(type) {
+    const drawnAt = ownGainDrawn;
+    let state;
+    try {
+      state = await chrome.tabs.sendMessage(activeTabId, { type });
+    } catch (_) {
+      // sendMessage rejects when content.js is unreachable. The most common
+      // cause is runtime context invalidation: when this or another extension
+      // is reloaded, existing tabs' content scripts lose their chrome.runtime
+      // connection. The page must be reloaded for content.js to be re-injected.
+      showPopupStatus(statusLineEl, mainEl, 'reloadPageNeeded');
+      return;
+    }
+    if (drawnAt === ownGainDrawn) showState(state);
   }
 
   init();
