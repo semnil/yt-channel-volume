@@ -62,6 +62,9 @@
   "autoApplyLoudness": {
     "message": "Auto-apply LUFS"
   },
+  "autoSaveFailed": {
+    "message": "Could not save the Auto-apply LUFS setting. Please try again."
+  },
   "displayUnit": {
     "message": "Display unit"
   },

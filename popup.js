@@ -17,6 +17,7 @@
   const autoLiveControl = document.getElementById('autoLiveControl');
   const autoApplyVideoToggle = document.getElementById('autoApplyVideoToggle');
   const autoApplyLiveToggle = document.getElementById('autoApplyLiveToggle');
+  const autoErrorEl = document.getElementById('autoError');
   const volumeSlider = document.getElementById('volumeSlider');
   const presetButtons = document.querySelectorAll('.presets button');
   const volumeValueEl = document.getElementById('volumeValue');
@@ -60,6 +61,13 @@
   // channel or type.
   const saveNotice = createSaveNotice();
   const ownerKey = () => (currentChannel.id ? currentChannel.id + '|' + currentVideoType : '');
+  // An Auto toggle's save that is still out. Until it is answered, the toggles,
+  // the manual controls and Apply are out of use: a gain saved then would pin
+  // the Auto state from before the toggle.
+  let autoUpdatePending = false;
+  // The channel and type a toggle not saved was made for. The line saying so
+  // stands only while the popup shows that channel and type.
+  let autoErrorOwner = '';
 
   function fmtGain(gain) { return formatGain(gain, displayUnit); }
 
@@ -93,8 +101,8 @@
       : autoApplyLoudnessVideo;
     fallbackBadge.style.display = autoApplyCurrentType && !hasLoudness ? '' : 'none';
     const manualGainLocked = isManualGainLocked(autoApplyCurrentType, hasLoudness);
-    volumeSlider.disabled = manualGainLocked;
-    presetButtons.forEach(btn => { btn.disabled = manualGainLocked; });
+    volumeSlider.disabled = manualGainLocked || autoUpdatePending;
+    presetButtons.forEach(btn => { btn.disabled = manualGainLocked || autoUpdatePending; });
 
     volumeSlider.value = gainToPercent(lastGain);
     volumeValueEl.textContent = formatGainText(lastGain, displayUnit);
@@ -122,15 +130,16 @@
     lastGain = state.gain ?? 1.0;
     currentVideoType = state.videoType || 'video';
     saveNotice.showOwner(ownerKey());
+    if (autoErrorOwner && autoErrorOwner !== ownerKey()) {
+      autoErrorOwner = '';
+      autoErrorEl.style.display = 'none';
+    }
     autoApplyLoudnessVideo = !!state.autoApplyLoudnessVideo;
     autoApplyLoudnessLive = !!state.autoApplyLoudnessLive;
-    autoApplyVideoToggle.checked = autoApplyLoudnessVideo;
-    autoApplyLiveToggle.checked = autoApplyLoudnessLive;
     const isLive = currentVideoType === 'live';
     autoVideoControl.style.display = isLive ? 'none' : '';
     autoLiveControl.style.display = isLive ? '' : 'none';
-    autoApplyVideoToggle.disabled = !currentChannel.id || isLive;
-    autoApplyLiveToggle.disabled = !currentChannel.id || !isLive;
+    drawAutoToggles();
 
     if (state.targetLufs !== undefined) {
       currentTargetLufs = state.targetLufs;
@@ -176,6 +185,7 @@
     // The save failure is the viewer's own last action, so it takes the hint's
     // place.
     saveNotice.draw(applyHint);
+    if (autoUpdatePending) applyBtn.disabled = true;
   }
 
   // ── Send messages to content script ────────────────────────────────
@@ -233,7 +243,7 @@
 
   applyBtn.addEventListener('click', () => {
     const answered = saveNotice.send();
-    sendMsg({ type: 'applyLoudness', appliesTo: currentAppliesTo }).catch(() => null).then(resp => {
+    sendMsg({ type: 'applyLoudness', appliesTo: currentAppliesTo, targetLufs: currentTargetLufs }).catch(() => null).then(resp => {
       // Whether it went through or not, what is on screen came from before the
       // gesture and is read again; one that did not is said so.
       answered(resp);
@@ -242,42 +252,59 @@
     });
   });
 
-  function resyncFromContent(toggle, videoType) {
+  // Both Auto toggles, from the Auto state, channel and type the popup holds.
+  // While a toggle's save is out, they keep what was clicked and are out of use.
+  function drawAutoToggles() {
+    if (!autoUpdatePending) {
+      autoApplyVideoToggle.checked = autoApplyLoudnessVideo;
+      autoApplyLiveToggle.checked = autoApplyLoudnessLive;
+    }
+    const isLive = currentVideoType === 'live';
+    autoApplyVideoToggle.disabled = autoUpdatePending || !currentChannel.id || isLive;
+    autoApplyLiveToggle.disabled = autoUpdatePending || !currentChannel.id || !isLive;
+  }
+
+  function resyncFromContent() {
+    const putBack = () => {
+      drawAutoToggles();
+      refreshDisplay();
+    };
     sendMsg({ type: 'getState' }).then(state => {
       if (state) {
         updateUI(state);
         return;
       }
-      toggle.checked = videoType === 'live'
-        ? autoApplyLoudnessLive
-        : autoApplyLoudnessVideo;
-      toggle.disabled = !currentChannel.id || currentVideoType !== videoType;
-    }).catch(() => {
-      toggle.checked = videoType === 'live'
-        ? autoApplyLoudnessLive
-        : autoApplyLoudnessVideo;
-      toggle.disabled = !currentChannel.id || currentVideoType !== videoType;
-    });
+      putBack();
+    }).catch(putBack);
   }
 
   function handleAutoApplyChange(toggle, videoType) {
-    if (!currentChannel.id || videoType !== currentVideoType) return;
+    if (autoUpdatePending || !currentChannel.id || videoType !== currentVideoType) return;
     const enabled = toggle.checked;
+    const owner = ownerKey();
+    autoUpdatePending = true;
+    autoErrorOwner = '';
+    autoErrorEl.style.display = 'none';
     toggle.disabled = true;
+    refreshDisplay();
     sendMsg({
       type: 'setAutoApplyLoudness',
       appliesTo: currentAppliesTo,
       enabled
-    }).then(resp => {
+    }).catch(() => null).then(resp => {
+      autoUpdatePending = false;
       if (resp?.ok) {
         updateUI(resp);
-      } else {
-        // The write may have landed before the failure, so show what the page
-        // holds rather than assuming the toggle never moved.
-        resyncFromContent(toggle, videoType);
+        return;
       }
-    }).catch(() => {
-      resyncFromContent(toggle, videoType);
+      // The write may have landed before the failure, so show what the page
+      // holds rather than assuming the toggle never moved, and say it was not
+      // saved, while the popup still shows the channel and type it was for.
+      if (owner === ownerKey()) {
+        autoErrorOwner = owner;
+        autoErrorEl.style.display = '';
+      }
+      resyncFromContent();
     });
   }
 

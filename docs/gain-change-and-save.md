@@ -173,6 +173,8 @@ sequenceDiagram
     P->>C: setGainLive, appliesTo sliderAppliesTo, gain
     alt appliesTo differs, or no channel is named for the URL's video
       C-->>P: ok false, state moved
+    else an Auto toggle's write is out
+      C-->>P: ok false, auto update pending
     else Auto on for the type and a level is held
       C-->>P: ok false, auto apply controls current gain
     else accepted
@@ -218,11 +220,11 @@ sequenceDiagram
   alt appliesTo differs, or no channel is named for the URL's video
     C->>C: restoreGainAfterFailedSave() runs applyPreferredGain()
     C-->>P: ok false, state moved
-  else Auto on for the type and a level is held
+  else an Auto toggle's write is out, or Auto on for the type and a level is held
     opt a preview ran before this setGain
       C->>C: restoreGainAfterFailedSave() runs applyPreferredGain()
     end
-    C-->>P: ok false, auto apply controls current gain
+    C-->>P: ok false, auto update pending, or auto apply controls current gain
   else accepted
     C->>G: commitGain(gain)
     C->>W: store:saveChannelGain, currentGain divided by the rendition ratio, autoApply the Auto state now, heldAgainstPlain when baseLoudnessDb is known
@@ -260,9 +262,13 @@ sequenceDiagram
   participant G as GainNode
   participant W as background.js
   V->>P: click on applyBtn
-  P->>C: applyLoudness, appliesTo currentAppliesTo
+  P->>C: applyLoudness, appliesTo currentAppliesTo, targetLufs currentTargetLufs
   alt appliesTo differs, or no channel is named for the URL's video
     C-->>P: ok false, state moved
+  else targetLufs differs from the targetLufs content.js holds
+    C-->>P: ok false, target moved
+  else an Auto toggle's write is out
+    C-->>P: ok false, auto update pending
   else Auto on for the type
     C-->>P: ok false, auto apply enabled
   else no loudnessDb and no live level, or no channel id
@@ -292,6 +298,7 @@ sequenceDiagram
 - The button is enabled where Auto is off for the type, a Loudness is shown and a channel is detected. Its label is `applyToChannelWithValue` ("Apply $VALUE$ to channel") with the suggested gain, followed by the type label in parentheses.
 - `autoApply` is the Auto state at that moment, which is off because the handler has refused Auto on before this point. The channel's flag for the type is written as `false`, so the channel stops following the all-channel default for that type.
 - The live level in hand (`readLiveLkfs`) goes before `loudnessDb`. Its gain is stored as played, without the mark.
+- The popup sends the target it computed the button's value with (`currentTargetLufs`), and `content.js` refuses the Apply with `target moved` when that is not the `targetLufs` it holds: a target saved in the settings page after the popup drew the button. The state the popup reads again draws Suggested and the button with the target `content.js` holds.
 - Whatever the answer, the popup asks `getState` and redraws. An answer that is not `ok`, and a send that rejects, raise the notice that the gain is not saved, as for the slider's save (see the previous section).
 
 Drawn from: `popup.js` `updateApplyBtn`, the `applyBtn` `click` listener; `core/common.js` `createSaveNotice`; `content.js` `handleMessage` (`applyLoudness`), `calcGainFromLiveLevel`, `calcGainFromLoudness`, `calcStoredGainFromLoudness`, `saveLiveChannelGain`, `saveManualChannelGain`, `restoreGainAfterFailedSave`.
@@ -306,11 +313,14 @@ sequenceDiagram
   participant G as GainNode
   participant W as background.js
   V->>P: change on the Auto-apply LUFS toggle of the type being watched
-  Note over P: the toggle is disabled until the answer
+  Note over P: autoUpdatePending; the toggles, the slider, the presets and Apply are disabled until the answer
   P->>C: setAutoApplyLoudness, appliesTo, enabled
   alt appliesTo differs, or no channel is named for the URL's video
     C-->>P: ok false, state moved
+  else another toggle's write is out
+    C-->>P: ok false, auto update pending
   else accepted
+    Note over C: autoMutationPending until the popup is answered
     alt turned on and a live level is in hand
       Note over C: Auto's level takes the level in hand, with no rise (liveLevelRise null)
       C->>G: commitGain(calcLiveGain(liveLkfs)), as it stands
@@ -335,6 +345,7 @@ sequenceDiagram
     end
   end
   opt the answer is not ok, or sending failed
+    Note over P: autoSaveFailed under the label
     P->>C: getState
     C-->>P: state, drawn by updateUI
   end
@@ -345,8 +356,10 @@ sequenceDiagram
 - The handler does not set `currentAutoApplyLoudnessVideo` / `currentAutoApplyLoudnessLive` itself. `applyPreferredGain()` after the write and the `chrome.storage.onChanged` listener resolve them from the stored entry. When the write's change notification arrives while that `applyPreferredGain()` is reading, `storageRevision` has moved and that apply returns without applying; by then the listener has resolved Auto from the new entry and set the gain it computes (see "Other tabs: `chrome.storage.onChanged` in `content.js`").
 - After the live write, `liveSaveBaseline` makes the next `evaluateLiveSave` for the same video and type compare against this gain rather than store it again. The gain plays as it stands; the `applyPreferredGain()` that follows plays the level through `liveGainToPlay`, which sets `liveRaiseFrom`, so the follows after it are limited from there.
 - When `getState` also fails, the popup puts the toggle back from the state it last drew.
+- While the toggle's write is out (`autoMutationPending`, from the write's start until the popup is answered), `content.js` refuses `setGainLive`, `setGain`, `applyLoudness` and another `setAutoApplyLoudness` with `auto update pending`; a `setGain` after an accepted preview puts the stored gain back first (`restoreGainAfterFailedSave`). A manual save writes the Auto state the tab holds as the channel's flag, and made while the toggle's write is out it would write the state from before the toggle and land after it, turning Auto back. The popup keeps the toggles, the slider, the presets and Apply disabled for as long (`autoUpdatePending`), and a state that arrives meanwhile leaves the toggle where the viewer put it.
+- An answer that is not `ok`, or a send that rejects, shows `autoSaveFailed` ("Could not save the Auto-apply LUFS setting. Please try again.") under the label until the next toggle goes out.
 
-Drawn from: `popup.js` `handleAutoApplyChange`, `resyncFromContent`; `content.js` `handleMessage` (`setAutoApplyLoudness`), `saveLiveChannelGain`, `saveChannelGain`, `saveChannelAutoApply`, `applyPreferredGain`, `restoreGainAfterFailedSave`.
+Drawn from: `popup.js` `handleAutoApplyChange`, `resyncFromContent`, `refreshDisplay`, `updateApplyBtn`; `content.js` `handleMessage` (`setAutoApplyLoudness`), `saveLiveChannelGain`, `saveChannelGain`, `saveChannelAutoApply`, `applyPreferredGain`, `restoreGainAfterFailedSave`.
 
 ## Popup open: `forceDetect`
 
@@ -703,7 +716,7 @@ Drawn from: `options.js` `renderChannels` (the `.ch-del` click listener), the `c
 |---|---|---|---|
 | Popup slider `input` | Yes (preview) | No | `popup.js` `volumeSlider` `input` listener; `content.js` `handleMessage` (`setGainLive`), `commitGain` |
 | Popup slider `change` (`keyup` for a key), preset button | Yes | Yes: `saveChannelGain` with the Auto state as the channel's flag | `handleMessage` (`setGain`), `saveManualChannelGain` |
-| `setGain` refused as `state moved`, or after a preview as `auto apply controls current gain` | Back to what `applyPreferredGain` resolves | No | `restoreGainAfterFailedSave` |
+| `setGain` refused as `state moved`, or after a preview as `auto update pending` or `auto apply controls current gain` | Back to what `applyPreferredGain` resolves | No | `restoreGainAfterFailedSave` |
 | A gain from elsewhere while a slider preview holds | No, until the gesture ends | As the row of that event | `commitGainFromElsewhere` |
 | A preview that ends with no `setGain` | Back to what `applyPreferredGain` resolves | As the bridge answer rows | `endIdlePreview` |
 | "Apply to channel" with `loudnessDb` | Yes | Yes: `calcGain(baseLoudnessDb)`, flag `false`, mark when the base is known | `handleMessage` (`applyLoudness`), `saveManualChannelGain` |

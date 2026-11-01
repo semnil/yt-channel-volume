@@ -775,6 +775,12 @@
   const PREVIEW_IDLE_MS = 2000;
   let preview = null;
 
+  // An Auto toggle's write that is still out. Until it settles, the popup's
+  // gain gestures and another toggle are refused ('auto update pending'): a
+  // manual save writes the Auto state the tab holds, which the toggle has not
+  // changed yet, and lands after the toggle's write.
+  let autoMutationPending = false;
+
   function startPreview(appliesTo) {
     if (preview) clearTimeout(preview.timer);
     preview = { appliesTo, timer: setTimeout(endIdlePreview, PREVIEW_IDLE_MS) };
@@ -1216,6 +1222,16 @@
         sendResponse({ ok: false, reason: 'state moved' });
         return true;
       }
+      // The popup sends the target it computed the button's gain with. Where
+      // the tab holds another one, nothing is applied or saved.
+      if (msg.targetLufs !== targetLufs) {
+        sendResponse({ ok: false, reason: 'target moved' });
+        return true;
+      }
+      if (autoMutationPending) {
+        sendResponse({ ok: false, reason: 'auto update pending' });
+        return true;
+      }
       if (isCurrentAutoApplyEnabled()) {
         sendResponse({ ok: false, reason: 'auto apply enabled' });
         return true;
@@ -1253,6 +1269,10 @@
         sendResponse({ ok: false, reason: 'state moved' });
         return true;
       }
+      if (autoMutationPending) {
+        sendResponse({ ok: false, reason: 'auto update pending' });
+        return true;
+      }
       if (isCurrentManualGainLocked()) {
         sendResponse({ ok: false, reason: 'auto apply controls current gain' });
         return true;
@@ -1274,15 +1294,17 @@
           sendResponse({ ok: false, reason: 'state moved' }));
         return true;
       }
-      if (isCurrentManualGainLocked()) {
+      const refusal = autoMutationPending ? 'auto update pending'
+        : isCurrentManualGainLocked() ? 'auto apply controls current gain' : null;
+      if (refusal) {
         if (!previewed) {
-          sendResponse({ ok: false, reason: 'auto apply controls current gain' });
+          sendResponse({ ok: false, reason: refusal });
           return true;
         }
-        // A preview went ahead of the lock, so the level goes back to what
+        // A preview went ahead of the refusal, so the level goes back to what
         // storage has for the state in hand.
         restoreGainAfterFailedSave().then(() =>
-          sendResponse({ ok: false, reason: 'auto apply controls current gain' }));
+          sendResponse({ ok: false, reason: refusal }));
         return true;
       }
       const { gain } = msg;
@@ -1302,6 +1324,10 @@
     if (msg.type === 'setAutoApplyLoudness') {
       if (gestureStateMoved(msg)) {
         sendResponse({ ok: false, reason: 'state moved' });
+        return true;
+      }
+      if (autoMutationPending) {
+        sendResponse({ ok: false, reason: 'auto update pending' });
         return true;
       }
       const videoType = currentVideoType;
@@ -1337,20 +1363,29 @@
           currentChannel.url
         );
       }
+      // The popup is answered once the toggle has settled, so what it sends
+      // after the answer is taken.
+      autoMutationPending = true;
+      const settle = (answer) => {
+        autoMutationPending = false;
+        sendResponse(answer);
+      };
       written.then(async () => {
         await applyPreferredGain();
         notifyPopup();
-        sendResponse({ ok: true, ...getState() });
+        settle({ ok: true, ...getState() });
       }).catch(err => {
         reportFailure('setAutoApplyLoudness failed', err);
         if (!storesGain) {
-          sendResponse({ ok: false, reason: 'request failed' });
+          settle({ ok: false, reason: 'request failed' });
           return;
         }
         // The gain played went ahead of the write, so the level goes back to
         // what storage holds before the popup is answered.
-        restoreGainAfterFailedSave().then(() =>
-          sendResponse({ ok: false, reason: 'request failed' }));
+        return restoreGainAfterFailedSave().then(() =>
+          settle({ ok: false, reason: 'request failed' }));
+      }).finally(() => {
+        autoMutationPending = false;
       });
       return true;
     }

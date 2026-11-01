@@ -62,6 +62,9 @@
   "autoApplyLoudness": {
     "message": "LUFS 自動適用"
   },
+  "autoSaveFailed": {
+    "message": "LUFS 自動適用の設定を保存できませんでした。もう一度お試しください"
+  },
   "displayUnit": {
     "message": "表示単位"
   },
