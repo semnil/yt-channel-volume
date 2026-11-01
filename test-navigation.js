@@ -10895,6 +10895,16 @@ async function runTests() {
       assert(writes().length === 1 && writes()[0].value === -26,
         `a repeat that moves nothing keeps the hold's write (${JSON.stringify(writes())})`);
 
+      // A press of the pointer during the hold keeps the hold and what the key
+      // moved to, and the key's release writes it.
+      options.sent.length = 0;
+      await hold([-30]);
+      await options.fire('targetSlider', 'pointerdown');
+      await options.fire('targetSlider', 'pointerup');
+      await options.fire('targetSlider', 'keyup', { key: 'ArrowRight' });
+      assert(writes().length === 1 && writes()[0].value === -30,
+        `a press of the pointer during a key hold leaves the key's value to its release (${JSON.stringify(writes())})`);
+
       // The key already down, pressed again without a repeat, stays in the
       // hold, and the release writes what the hold moved to.
       options.sent.length = 0;

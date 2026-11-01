@@ -77,7 +77,7 @@
     defaultAutoVideoToggle.checked = defaultAutoApplyVideo;
     defaultAutoLiveToggle.checked = defaultAutoApplyLive;
     overlayToggle.checked = !!s.showGainOverlay;
-    if (!targetKeyHeld && !targetPointerHeld) drawTarget();
+    if (!targetHeld()) drawTarget();
     updateUnitButtons();
   }
 
@@ -220,86 +220,16 @@
 
   // ── Events ─────────────────────────────────────────────────────────
 
-  // A key held on the slider changes the label alone, and the target is
-  // written once, when the last key that moves the value is let go, or where
-  // the slider loses focus first; a key that moves no value (Tab, a modifier)
-  // leaves the hold as it is. A drag ends where the slider or the page's
-  // window loses focus during it: Chrome fires `change` at that blur, ahead
-  // of the blur itself, and that change writes. After a blur that ends a drag
-  // or a key hold, input and change belong to no gesture until the next press
-  // (a pointerdown, or a keydown that is not a repeat), and the change puts
-  // the slider back to the target.
-  let targetKeyHeld = false;
-  let targetKeyMoved = false;
-  let targetPointerHeld = false;
-  let targetPointerStart = null;
-  let targetGestureEnded = false;
-  const targetKeys = createSliderKeys();
-
-  // Only the primary button drags the slider; another button moves no value,
-  // and its release goes to the window, so it begins no gesture.
-  targetSlider.addEventListener('pointerdown', (event) => {
-    if (event.button !== 0) return;
-    targetPointerHeld = true;
-    targetPointerStart = Number(targetSlider.value);
-    targetGestureEnded = false;
-  });
-  // A release on the value the press began on fires no change after it, and
-  // draws the target, which a settings change during the press may have moved.
-  const releaseTargetPointer = () => {
-    if (targetPointerHeld && Number(targetSlider.value) === targetPointerStart) drawTarget();
-    targetPointerHeld = false;
-  };
-  targetSlider.addEventListener('pointerup', releaseTargetPointer);
-  targetSlider.addEventListener('pointercancel', releaseTargetPointer);
-
-  targetSlider.addEventListener('keydown', (e) => {
-    if (!targetKeys.press(e)) return;
-    targetKeyHeld = true;
-    targetKeyMoved = false;
-    targetGestureEnded = false;
-  });
-
-  targetSlider.addEventListener('input', () => {
-    if (targetGestureEnded) return;
-    targetValueEl.textContent = targetSlider.value + ' LUFS';
-    if (targetKeyHeld) targetKeyMoved = true;
-  });
-
-  function saveTarget() {
-    targetLufs = Number(targetSlider.value);
-    saveSettingOrRestore('targetLufs', targetLufs);
-  }
-
-  targetSlider.addEventListener('change', () => {
-    if (targetGestureEnded) {
-      targetSlider.value = targetLufs;
-      return;
+  // One write per gesture on the Target LUFS slider (holdSettingsSlider in
+  // core/common.js), against the target the page holds.
+  const targetHeld = holdSettingsSlider(targetSlider, {
+    current: () => targetLufs,
+    drawLabel: (value) => { targetValueEl.textContent = value + ' LUFS'; },
+    save: (value) => {
+      targetLufs = value;
+      saveSettingOrRestore('targetLufs', value);
     }
-    if (targetKeyHeld) return;
-    saveTarget();
   });
-
-  function endTargetKeyHold() {
-    targetKeys.clear();
-    if (!targetKeyHeld) return;
-    targetKeyHeld = false;
-    if (targetKeyMoved) saveTarget();
-    else drawTarget();
-  }
-  targetSlider.addEventListener('keyup', (e) => {
-    if (targetKeys.release(e)) endTargetKeyHold();
-  });
-
-  function endTargetGestureOnBlur() {
-    if (!targetPointerHeld && !targetKeyHeld) return;
-    endTargetKeyHold();
-    drawTarget();
-    targetPointerHeld = false;
-    targetGestureEnded = true;
-  }
-  targetSlider.addEventListener('blur', endTargetGestureOnBlur);
-  window.addEventListener('blur', endTargetGestureOnBlur);
 
   // A default is taken out of use while its save is out, and the table follows
   // it once the save lands. A save that does not land puts the toggle back to
