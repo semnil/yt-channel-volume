@@ -767,7 +767,8 @@ function makePopup({ tabUrl = 'https://www.youtube.com/watch?v=abc', answer = nu
     // so what protects a gesture is the disabling, not a guard in the handler.
     async fire(id, type, event = {}) {
       if (node(id).disabled) { await tick(); return; }
-      for (const fn of node(id).listeners[type] || []) await fn({ target: node(id), ...event });
+      // A pointer event carries the primary button unless the case names another.
+      for (const fn of node(id).listeners[type] || []) await fn({ target: node(id), button: 0, ...event });
       await tick();
     },
     // The popup's own window losing focus.
@@ -8107,7 +8108,8 @@ async function runTests() {
         await settle();
       },
       async fire(id, type, event = {}) {
-        for (const fn of node(id).listeners[type] || []) await fn({ target: node(id), ...event });
+        // A pointer event carries the primary button unless the case names another.
+        for (const fn of node(id).listeners[type] || []) await fn({ target: node(id), button: 0, ...event });
         await settle();
       },
       async clickUnit(unit) {
@@ -10828,6 +10830,32 @@ async function runTests() {
       await popup.fire('volumeSlider', 'pointerup');
       assert(popup.asked.filter((m) => m.type === 'setGain' && m.gain === 2.0).length === 1,
         `a drag after it saves at its release (${JSON.stringify(popup.asked)})`);
+    }
+
+    section('Sliders: a gesture begins on the primary button alone');
+    for (const button of [1, 2]) {
+      // Another button moves no value and its release goes to the window, so
+      // the press holds nothing.
+      const options = makeOptions({ settings: { targetLufs: -18 } });
+      await options.settle();
+      await options.fire('targetSlider', 'pointerdown', { button });
+      await options.fireStorage({ [SETTINGS_KEY]: { newValue: { targetLufs: -24 } } }, 'sync');
+      assert(options.node('targetValue').textContent === '-24 LUFS',
+        `a press with button ${button} on Target LUFS leaves it to a change from elsewhere (${options.node('targetValue').textContent})`);
+
+      const popup = makePopup({ answer: async (m) => (m.type === 'setGain' || m.type === 'setGainLive' ? { ok: true } : {
+        isWatchPage: true, channel: { id: 'UCbtn', name: 'Button Ch', url: '' }, appliesTo: 'UCbtn|video|btnVid',
+        loudnessDb: -6, contentLufs: YT_REFERENCE_LUFS - 6, gain: 1.0, targetLufs: -18, videoType: 'video',
+        autoApplyLoudnessVideo: false, autoApplyLoudnessLive: false
+      }) });
+      await popup.ready();
+      await popup.fire('volumeSlider', 'pointerdown', { button });
+      await popup.blurWindow();
+      popup.node('volumeSlider').value = '160';
+      await popup.fire('volumeSlider', 'input');
+      await popup.fire('volumeSlider', 'change');
+      assert(popup.asked.some((m) => m.type === 'setGain'),
+        `a press with button ${button} on the popup's slider leaves it answering after a blur (${JSON.stringify(popup.asked.map((m) => m.type))})`);
     }
 
     section('Settings page: a key held on Target LUFS writes once');

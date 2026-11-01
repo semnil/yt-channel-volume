@@ -236,7 +236,10 @@
   let targetGestureEnded = false;
   const targetKeys = createSliderKeys();
 
-  targetSlider.addEventListener('pointerdown', () => {
+  // Only the primary button drags the slider; another button moves no value,
+  // and its release goes to the window, so it begins no gesture.
+  targetSlider.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0) return;
     targetPointerHeld = true;
     targetPointerStart = Number(targetSlider.value);
     targetGestureEnded = false;

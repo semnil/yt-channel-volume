@@ -287,7 +287,10 @@
   let sliderKeyHeld = false;
   let sliderKeyMoved = false;
   const sliderKeys = createSliderKeys();
-  volumeSlider.addEventListener('pointerdown', () => {
+  // Only the primary button drags the slider; another button moves no value,
+  // and its release goes to the window, so it begins no gesture.
+  volumeSlider.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0) return;
     sliderPointerHeld = true;
     sliderKeyHeld = false;
     sliderKeys.clear();
