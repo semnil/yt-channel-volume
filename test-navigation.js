@@ -11340,6 +11340,36 @@ async function runTests() {
       await popup.fire('volumeSlider', 'change');
       assert(saves().length === 0 && JSON.stringify(previews()) === '[3]',
         `and nothing is sent again or saved after it (${JSON.stringify(popup.asked.map((m) => m.type))})`);
+
+      // A key held through a press of the pointer saves at its release, and
+      // the pointer's release after it saves nothing more.
+      popup.asked.length = 0;
+      await popup.fire('volumeSlider', 'keydown', { key: 'ArrowRight' });
+      await popup.fire('volumeSlider', 'pointerdown');
+      popup.node('volumeSlider').value = '195';
+      await popup.fire('volumeSlider', 'input');
+      await popup.fire('volumeSlider', 'keyup', { key: 'ArrowRight' });
+      await popup.fire('volumeSlider', 'pointerup');
+      await popup.fire('volumeSlider', 'change');
+      assert(JSON.stringify(saves()) === '[1.95]', `the key's release saves once, and the pointer's adds nothing (${JSON.stringify(saves())})`);
+
+      // A cancel with no press held ends nothing, and one during a key hold
+      // leaves the hold to the key; a change with no gesture before it saves.
+      popup.asked.length = 0;
+      await popup.fire('volumeSlider', 'pointercancel');
+      popup.node('volumeSlider').value = '205';
+      await popup.fire('volumeSlider', 'input');
+      await popup.fire('volumeSlider', 'change');
+      await popup.fire('volumeSlider', 'keydown', { key: 'ArrowRight' });
+      await popup.fire('volumeSlider', 'pointerdown');
+      await popup.fire('volumeSlider', 'pointercancel');
+      popup.node('volumeSlider').value = '210';
+      await popup.fire('volumeSlider', 'input');
+      await popup.fire('volumeSlider', 'keyup', { key: 'ArrowRight' });
+      popup.node('volumeSlider').value = '215';
+      await popup.fire('volumeSlider', 'change');
+      assert(JSON.stringify(saves()) === '[2.05,2.1,2.15]',
+        `a cancel with nothing pressed, or during a key hold, ends nothing, and a change alone saves (${JSON.stringify(saves())})`);
     }
 
     section('Sliders: a gesture begins on the primary button alone');
