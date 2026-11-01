@@ -453,8 +453,9 @@
 
   // `fromMessage` is an apply a bridge message starts, which stores only once
   // `appliedVideoId` names the URL's video. `stores: false` applies the gain
-  // and makes neither Auto's own save nor the live save.
-  async function applyPreferredGain(source = 'apply', { fromMessage = false, stores = true } = {}) {
+  // and makes neither Auto's own save nor the live save. `waitsForSave: false`
+  // ends the apply once the gain is in force, without waiting for either save.
+  async function applyPreferredGain(source = 'apply', { fromMessage = false, stores = true, waitsForSave = true } = {}) {
     await storageReady;
     const requestedVideoId = getUrlVideoId();
     const requestedChannelId = currentChannel.id;
@@ -474,7 +475,9 @@
     syncLiveFollow();
     if (autoEnabled && currentLiveLkfs !== null) {
       commitLiveGain();
-      await evaluateLiveSave(source, { fromMessage, stores });
+      const liveSave = evaluateLiveSave(source, { fromMessage, stores });
+      if (waitsForSave) await liveSave;
+      else liveSave.catch(err => reportFailure('apply failed', err));
       return;
     }
     const hasLoudness = currentLoudnessDb !== null;
@@ -487,10 +490,11 @@
         (!fromMessage || appliedVideoId === requestedVideoId)) {
       // The gain is already playing. A failed write must not abort the caller —
       // `forceDetect` answers the popup from this path.
-      await nameUnaskedWrite('auto gain not stored', saveChannelGain(
+      const autoSave = nameUnaskedWrite('auto gain not stored', saveChannelGain(
         requestedChannelId, currentChannel.name, calcStoredGainFromLoudness(),
         requestedVideoType, currentChannel.url
       ));
+      if (waitsForSave) await autoSave;
     }
   }
 
@@ -813,8 +817,10 @@
     await loadSettings();
     // Use the latest bridge state if it arrived before or during the settings
     // read. This avoids replacing an already calculated archive gain with the
-    // navigation-time fallback.
-    await applyPreferredGain();
+    // navigation-time fallback. The apply holds `_applyRunning` until the gain
+    // is in force, and not while a save it starts is out, so a navigation
+    // meanwhile runs an apply of its own.
+    await applyPreferredGain('apply', { waitsForSave: false });
     appliedVideoId = _lastVideoId;
 
     // Fetch loudness + videoType + channelId. Auto mode applies the calculated
@@ -953,10 +959,29 @@
     return storageReady;
   }
 
+  // Whether each video was muted when it was last seen to play or to change
+  // its volume. The videos on the page when the script starts are seen then.
+  const mutedSeen = new WeakMap();
+  for (const video of document.querySelectorAll('video')) mutedSeen.set(video, !!video.muted);
+
   // The page's video starting to play is applied again, and Auto's own save
   // is made then.
   document.addEventListener('play', (event) => {
     if (!isWatchPage() || event.target !== document.querySelector('video.html5-main-video, video')) return;
+    mutedSeen.set(event.target, !!event.target.muted);
+    applyPreferredGain('play')
+      .catch(err => reportFailure('apply failed', err));
+  }, true);
+
+  // The page's video unmuted while it plays is applied again as a start of
+  // play is, and Auto's own save is made then. Any other change of its volume
+  // applies nothing.
+  document.addEventListener('volumechange', (event) => {
+    const video = event.target;
+    if (!isWatchPage() || video !== document.querySelector('video.html5-main-video, video')) return;
+    const wasMuted = mutedSeen.get(video) === true;
+    mutedSeen.set(video, !!video.muted);
+    if (!wasMuted || !isVideoPlaying()) return;
     applyPreferredGain('play')
       .catch(err => reportFailure('apply failed', err));
   }, true);

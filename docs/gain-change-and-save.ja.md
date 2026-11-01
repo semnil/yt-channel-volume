@@ -133,12 +133,13 @@ sequenceDiagram
     C->>C: setCurrentAutoApplyFromEntry(entry)、syncLiveFollow()
     alt その種別の Auto が ON で、ライブのレベルを持っている
       C->>G: commitLiveGain()、commitGain(calcGainFromLiveLevel())
-      C->>C: await evaluateLiveSave(source)
+      C->>C: evaluateLiveSave(source)、waitsForSave が false でなければ待つ
     else その種別の Auto が ON で、loudnessDb を持っている
       C->>G: commitGain(calcGain(loudnessDb))
       opt storageMigrated で、動画が再生中で、ブリッジのメッセージが始めた適用なら URL の最初の適用が終わっている
         C->>W: store:saveChannelGain、calcGain(baseLoudnessDb)、autoApply なし (頼まれていない書き込み)
         W-->>C: 返事、失敗は nameUnaskedWrite へ
+        Note over C: waitsForSave が false でなければ待つ
       end
     else その種別のゲインが保存されている
       C->>G: commitGain(保存ゲイン、印があれば版の比率を掛ける)
@@ -151,6 +152,7 @@ sequenceDiagram
 - 読み込みのもとになった状態が動いたら、その読み込みの結果は捨てる。動く例: 別の動画への移動、チャンネルや種別を変えたブリッジの返事、保存内容が変わったという知らせ (`storageRevision` は `channelVolumes` か `autoLoudnessSettings` が変わったという知らせのたびに増え、他の場所の `unifiedGains` を取り入れたときにも増える)。
 - Auto 自身の保存は `autoApply` を送らないので、チャンネルは全チャンネル共通の既定値に従い続ける。`baseLoudnessDb` が分かっていれば `heldAgainstPlain: true` を送る。表が変わらない保存は、service worker が `set` しない (「チャンネル書き込みの共通の流れ」を参照)。
 - 旧形式の取り込みが成功するまで (`storageMigrated` が false の間) は保存しない。`<video>` が止まっているかミュートのタブも保存しない (`isVideoPlaying()`。音量 0 やゲイン 0 は再生中に数える)。ブリッジのメッセージが始めた適用 (`fromMessage`) は、URL が変わったあとの最初の適用が URL の動画について終わるまで (`appliedVideoId`) も保存しない。ゲインの適用はする。
+- `waitsForSave: false` を渡すと、ゲインを入れたところで適用を終え、Auto 自身の保存もライブの保存も待たない。保存は同じ条件で行われ、失敗は `nameUnaskedWrite` で名前を付けて記録する。`applyVideoVolume` がこれを渡す (「SPA 内の移動と、その他の適用のきっかけ」を参照)。ほかの呼び出し元はどれも保存を待つ。
 - スライダーの試し聞きが続いている間 (「ポップアップ: スライダーを動かしている間 (`input`)」を参照) は、図のゲインを入れずに取っておき、残りは動かす。
 - 項目の読み出しが reject したとき、または音声のつなぎを作れないときは、適用はそこで止まる。この関数を待たずに動かす呼び出し元 (ブリッジのメッセージ、移動の後の再試行、`autoLoudnessSettings` と `unifiedGains` が変わったという知らせ) は、その失敗を `reportFailure('apply failed')` で記録する。移動そのものの適用を `triggerApply` が記録するのと同じ。
 
@@ -543,19 +545,19 @@ sequenceDiagram
     Note over C: ブリッジがこの動画に返事済みでなければ、loudnessDb、baseLoudnessDb、2 つのライブのレベル、isLiveNow を消し、videoType を video にする
     C->>C: ドキュメントの最初の動画のときだけ、canonical のリンク、投稿者のリンク、meta itemprop channelId から detectChannel()、ブリッジがこの動画のチャンネルを示し済みでなければそれを使う
     C->>S: readSettings() (loadSettings)、読んでいる間に設定の変更が届いていなければ取り入れる
-    C->>C: await applyPreferredGain()
+    C->>C: await applyPreferredGain('apply', { waitsForSave: false })、保存を待たずにゲインを入れる
     C->>B: requestLoudnessWithRetry(10, 500)
     B-->>C: ブリッジの返事、ブリッジの節のとおりに処理
     C->>C: もう一度 applyPreferredGain()
   end
 ```
 
-- きっかけ: `document` の `yt-navigate-finish`。`window` の `popstate`。ドキュメントを見張る `MutationObserver` は、再生ページで、ページの `<video>` 要素が前に処理したものと別になったとき、または URL の動画 ID が `_lastVideoId` と違うときに `triggerApply()` を呼ぶ。`visibilitychange` は、まだどの動画も処理していない再生ページでタブが表示されたときに `triggerApply()` を呼ぶ。最初の読み込みは次の節で説明する。これらとは別に、ページの `<video>` の `play` は `applyPreferredGain('play')` だけを動かすので、適用のあとで再生が始まったタブは、そのときに Auto 自身の保存かライブの保存をする。
-- `triggerApply()` は `_applyRunning` を鍵にする。適用が動いている間に来た呼び出しはすぐに戻り、列に並ばない。debounce は無い。拡張機能とのつながりが切れていると、見張りを止める。
+- きっかけ: `document` の `yt-navigate-finish`。`window` の `popstate`。ドキュメントを見張る `MutationObserver` は、再生ページで、ページの `<video>` 要素が前に処理したものと別になったとき、または URL の動画 ID が `_lastVideoId` と違うときに `triggerApply()` を呼ぶ。`visibilitychange` は、まだどの動画も処理していない再生ページでタブが表示されたときに `triggerApply()` を呼ぶ。最初の読み込みは次の節で説明する。これらとは別に、ページの `<video>` の `play` は `applyPreferredGain('play')` だけを動かすので、適用のあとで再生が始まったタブは、そのときに Auto 自身の保存かライブの保存をする。再生中のページの `<video>` のミュートを解除する `volumechange` も同じ。動画のミュートの状態は、最後の `play` か `volumechange` から、スクリプトが動き始めたときにページにあった動画はそのときから覚えておく。ミュートのままの音量の変化、一時停止中の変化、ミュート解除でない変化、ほかの要素の変化は何も動かさない。
+- `triggerApply()` は `_applyRunning` を鍵にする。適用が動いている間に来た呼び出しはすぐに戻り、列に並ばない。鍵を持つのは最初の `applyPreferredGain()` がゲインを入れるまでで、それが始めた保存が出ている間は持たない。そのため、Auto 自身の保存やライブの保存の最中の移動は、自分の適用を行う。debounce は無い。拡張機能とのつながりが切れていると、見張りを止める。
 - `detectChannel()` は UC の ID だけを返し、ドキュメントの最初の動画 (適用を始めたときに `_lastVideoId` が空) のときだけ聞く。移動のあとはページが離れた動画のチャンネルをまだ示していることがあるので、ブリッジがその動画のチャンネルを名乗るまでチャンネルは空のまま。ページに UC の ID が無いときも同じ。チャンネル ID が無いとき、`applyPreferredGain()` は保存内容を読まない。全チャンネル共通の既定値で Auto が ON でレベルを持っていれば Auto のゲインを、それ以外は 1.0 を鳴らし、何も保存しない。
 - 移動でブリッジ由来の状態を消したときは、ブリッジが `isLiveContent` を送るまで videoType は `'video'` なので、ライブ配信でも最初は動画用の保存ゲインが適用される。
 - `requestLoudnessWithRetry(10, 500)` は次のブリッジのメッセージが来たら終わる。来ないまま 500 ms たつと、レベルを持っていれば終わり、持っていなければもう一度聞く。最大 10 回。ブリッジの返事はそれ自身で適用され (ブリッジの節を参照)、そのあとで `applyPreferredGain()` がもう一度動く。
-- この流れでの保存は、`applyPreferredGain()` の中の Auto 自身の保存とライブの保存。`applyVideoVolume` の最初の `applyPreferredGain()` が終わると、その動画を `appliedVideoId` に入れる。それまでは、ブリッジのメッセージは URL の動画についてどちらの保存もしないので、その適用より前に届いたメッセージは、離れたページのチャンネルを持ったままでも、何も保存しない。設定の変更とポップアップを開いたときの適用は、これまでどおり保存する。
+- この流れでの保存は、`applyPreferredGain()` の中の Auto 自身の保存とライブの保存。`applyVideoVolume` の最初の `applyPreferredGain()` がゲインを入れると、その動画を `appliedVideoId` に入れる。それまでは、ブリッジのメッセージは URL の動画についてどちらの保存もしないので、その適用より前に届いたメッセージは、離れたページのチャンネルを持ったままでも、何も保存しない。設定の変更とポップアップを開いたときの適用は、これまでどおり保存する。
 - `applyVideoVolume` の失敗は `reportFailure('apply failed')` が記録する。
 
 図のもと: `content.js` の `yt-navigate-finish` / `popstate` / `visibilitychange` の受け取り側、`MutationObserver` の処理、`triggerApply`、`applyVideoVolume`、`detectChannel`、`loadSettings`、`requestLoudnessWithRetry`、`applyPreferredGain`。
@@ -732,6 +734,7 @@ sequenceDiagram
 | ライブの追従タイマー (1 秒) | ブリッジの返事の行と同じ | ブリッジの返事の行と同じ | `syncLiveFollow`、`followLive` |
 | SPA 内の移動、見張り、`visibilitychange` | 変わる | 取り込み後に Auto が ON でレベルがあれば、Auto 自身の保存かライブの保存 | `triggerApply`、`applyVideoVolume`、`applyPreferredGain` |
 | ページの `<video>` の `play` | `applyPreferredGain` による | Auto が ON でレベルがあり、ミュートでないタブでは、Auto 自身の保存かライブの保存 | `play` の受け取り側、`applyPreferredGain` |
+| 再生中のページの `<video>` のミュートを解除する `volumechange` | `applyPreferredGain` による | `play` の行と同じ | `volumechange` の受け取り側、`applyPreferredGain` |
 | ポップアップを開く | `applyPreferredGain` による | SPA 内の移動と同じ | `handleMessage` (`forceDetect`) |
 | 起動時、設定画面を開いたとき | 変わらない | 目印が無ければ `channelVolumes` と `unifiedGains` | `foldLegacyGains`、`migrateLegacyAutoGains` |
 | service worker の起動 | 変わらない | local に残っている設定を sync へ移す | `moveSettingsToSync` |
