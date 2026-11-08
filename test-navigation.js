@@ -9843,6 +9843,70 @@ async function runTests() {
       assert(close(ytcv.state.currentGain, liveGain(-18)), `10.9 dB up as well (${ytcv.state.currentGain})`);
     }
 
+    section('Live level: a level at or below -45.6 LUFS is no level, as with none named');
+    {
+      const liveRead = (liveLkfs) => {
+        for (const fn of mockEventListeners['message'] || []) {
+          fn({ source: globalThis.window, data: { type: '__yt_channel_volume_live__', videoId: LIVE_VID, liveLkfs } });
+        }
+      };
+      onAir({ entry: { autoApplyLoudnessLive: true } });
+      liveAnswer(-24.8);
+      await settle();
+      assert(ytcv.state.currentLiveLkfs === -24.8, `a level in range is held (${ytcv.state.currentLiveLkfs})`);
+      liveAnswer(-10000);
+      await settle();
+      const silent = ytcv.getState();
+      assert(ytcv.state.currentLiveLkfs === null && ytcv.state.readLiveLkfs === null
+        && silent.liveLkfs === null && silent.contentLufs === null,
+        `a full answer naming -10000 takes the level away, so the popup shows none (${ytcv.state.currentLiveLkfs} / ${silent.liveLkfs} / ${silent.contentLufs})`);
+      liveAnswer(-45.6);
+      await settle();
+      assert(ytcv.state.currentLiveLkfs === null, `the floor itself is no level (${ytcv.state.currentLiveLkfs})`);
+      liveAnswer(-45.5);
+      await settle();
+      assert(ytcv.state.currentLiveLkfs === -45.5, `just above it is taken (${ytcv.state.currentLiveLkfs})`);
+      liveRead(-20);
+      await settle();
+      assert(ytcv.state.readLiveLkfs === -20, `a level read for the popup is taken (${ytcv.state.readLiveLkfs})`);
+      liveRead(-10000);
+      await settle();
+      assert(ytcv.state.readLiveLkfs === null && ytcv.getState().contentLufs === null,
+        `a read naming -10000 takes the level in hand away (${ytcv.state.readLiveLkfs} / ${ytcv.getState().contentLufs})`);
+      assert(ytcv.state.currentLiveLkfs === null,
+        `and takes Auto's level away, as a full answer naming it would (${ytcv.state.currentLiveLkfs})`);
+    }
+
+    section('Live level: after a read naming no level, a gesture plays the saved gain and not the level that was there');
+    {
+      const liveRead = (liveLkfs) => {
+        for (const fn of mockEventListeners['message'] || []) {
+          fn({ source: globalThis.window, data: { type: '__yt_channel_volume_live__', videoId: LIVE_VID, liveLkfs } });
+        }
+      };
+      // Auto off, a gain stored; a level is named, then silence is read, then Auto is turned on.
+      onAir({ autoLive: false, entry: { gainLive: 0.5 } });
+      liveAnswer(-24.8);
+      await settle();
+      liveRead(-10000);
+      await settle();
+      const on = await popupGesture({ type: 'setAutoApplyLoudness', enabled: true });
+      await settle();
+      assert(on?.ok === true && close(ytcv.state.currentGain, 0.5) && close(entryNow().gainLive, 0.5),
+        `Auto turned on over silence keeps the saved gain (${JSON.stringify(on)} / ${ytcv.state.currentGain} / ${entryNow().gainLive})`);
+
+      // Auto on, silence read, a manual gain saved: it is the gain that plays after the save is announced.
+      onAir({ autoLive: true, entry: { autoApplyLoudnessLive: true } });
+      liveAnswer(-24.8);
+      await settle();
+      liveRead(-10000);
+      await settle();
+      const manual = await popupGesture({ type: 'setGain', gain: 0.8 });
+      await settle();
+      assert(manual?.ok === true && close(ytcv.state.currentGain, 0.8) && close(entryNow().gainLive, 0.8),
+        `a manual gain saved over silence plays and is stored (${JSON.stringify(manual)} / ${ytcv.state.currentGain} / ${entryNow().gainLive})`);
+    }
+
     section('Live level: read alone for the popup, it becomes the level in hand, and Auto\'s is left as it is');
     {
       const liveRead = (liveLkfs, { videoId = LIVE_VID, source = globalThis.window, type = '__yt_channel_volume_live__' } = {}) => {

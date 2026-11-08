@@ -46,7 +46,7 @@
 - **LUFS / LKFS**: Loudness Units relative to Full Scale / Loudness, K-weighted, relative to Full Scale。どちらも同じ音の大きさ (ラウドネス) の目盛り。
 - **loudnessDb**: 再生中の音声の版のレベル。YouTube の目標ラウドネスに対する dB (デシベル) の値。**baseLoudnessDb**: 応答データの `audioConfig` が表す、素の音声の版のレベル。
 - **DRC**: Dynamic Range Compression (音の大小の差を縮める処理)。プレイヤーの Stable Volume 設定は、専用の音声の版 (`isDrc` が付いた adaptive format) を鳴らす。
-- **ライブのレベル** (`liveLkfs`): 配信中のライブで、プレイヤーの音量の行が示す `live.` のレベル。LKFS の絶対値。`content.js` は 2 つ持つ: Auto のレベル (`currentLiveLkfs`) はブリッジの完全な返事だけが入れ、Auto が鳴らして保存する。手元のレベル (`readLiveLkfs`) は、完全な返事とポップアップの 1 秒ごとの読み取りが入れる。ポップアップ、手動操作の鍵、「チャンネルに適用」、Auto を ON にする操作は、手元のレベルを使う。
+- **ライブのレベル** (`liveLkfs`): 配信中のライブで、プレイヤーの音量の行が示す `live.` のレベル。LKFS の絶対値。`content.js` は 2 つ持つ: Auto のレベル (`currentLiveLkfs`) はブリッジの完全な返事だけが入れ、Auto が鳴らして保存する。手元のレベル (`readLiveLkfs`) は、完全な返事とポップアップの 1 秒ごとの読み取りが入れる。ポップアップ、手動操作の鍵、「チャンネルに適用」、Auto を ON にする操作は、手元のレベルを使う。-45.6 LUFS 以下 (`LEVEL_FLOOR_LKFS`) のレベルは「無い」ものとして扱う: 音の無い配信では音量の行が `live.-10000.0dB` を示すので、そのときは Loudness を表示せず、保存済みのゲインが鳴る。読み取りがそのレベルを名指したときは、手元のレベルと Auto のレベルを取り下げる (完全な返事が名指したときと同じ)。
 - **ライブで鳴らすゲイン** (`calcGainFromLiveLevel()`): Auto がライブのレベルに対して鳴らすゲインで、レベルの求めるゲイン `calcLiveGain(currentLiveLkfs, targetLufs)`。`currentGain` より大きくても小さくても、すぐに鳴らす。
 - **Target LUFS**: `autoLoudnessSettings` の `targetLufs`。初期値は -18。
 - **Auto**: 「LUFS 自動適用」の設定。`resolveAutoApplySetting` が種別ごとに次の順で決める: チャンネル個別のフラグ、古い形式のフラグ、(旧形式の取り込みが終わる前は)「フラグの無い保存ゲインがあれば OFF」、全チャンネル共通の既定値。
@@ -461,7 +461,7 @@ sequenceDiagram
 `content.js` はメッセージを次のように受け取る:
 
 - 別の動画のメッセージは、何かを変える前に捨てる (`isBridgeMessageForCurrentVideo`)。
-- 各項目は、ブリッジが送る型のときだけ受け取る: `loudnessDb` と `liveLkfs` は有限の数、`baseLoudnessDb` は数、`isLiveContent` は真偽値、`author` は文字列、`channelId` は UC 形式。
+- 各項目は、ブリッジが送る型のときだけ受け取る: `loudnessDb` は有限の数、`liveLkfs` は -45.6 LUFS より大きい有限の数、`baseLoudnessDb` は数、`isLiveContent` は真偽値、`author` は文字列、`channelId` は UC 形式。
 - 新しい動画 ID なら、`loudnessDb` と `baseLoudnessDb` をメッセージから入れる (無ければ `null`)。同じ動画なら、メッセージに有限の `loudnessDb` があるときだけ置き換える。`liveLkfs` はメッセージのたびに置き換えるので、それが無いメッセージはライブのレベルを消す。手元のレベル (`readLiveLkfs`) にも同じ値を入れる。
 - チャンネルは、メッセージに有限の `loudnessDb` か真偽値の `isLiveContent` があり、UC の `channelId` があるときに受け取る。ID が変わると、`applyPreferredGain()` が保存内容から決め直すまで、両方の種別の Auto を OFF にしておく。名前は `author`、無ければページ、それも無ければ ID から取る。
 - 旧形式の取り込みが終わっていない間 (`storageSettled` が false) は `applyAutomaticLoudnessGain` が false を返し、メッセージは `applyPreferredGain()` に回る。こちらは取り込みが終わるのを待つ。
