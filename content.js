@@ -227,7 +227,7 @@
     }
     // Every message says what the player names now, so one without a live
     // level takes the last one away.
-    currentLiveLkfs = Number.isFinite(event.data.liveLkfs) ? event.data.liveLkfs : null;
+    currentLiveLkfs = levelAboveFloor(event.data.liveLkfs);
     readLiveLkfs = currentLiveLkfs;
     const hasLiveContent = typeof event.data.isLiveContent === 'boolean';
     if (hasLiveContent) {
@@ -307,14 +307,15 @@
   // (readLiveLkfs), and the popup is shown it. Auto's level is left as it is:
   // Auto takes a level only from the bridge's full answer, so nothing that
   // re-applies Auto's gain in between — a change in storage, a settings write —
-  // plays or stores this one. An answer naming no level leaves the one in hand.
+  // plays or stores this one. An answer naming no level leaves the one in hand;
+  // one naming a level at or below LEVEL_FLOOR_LKFS takes it away.
   window.addEventListener('message', (event) => {
     if (event.source !== window) return;
     if (event.data?.type !== '__yt_channel_volume_live__') return;
     const videoId = typeof event.data.videoId === 'string' ? event.data.videoId : '';
     if (!isBridgeMessageForCurrentVideo(videoId)) return;
     if (!Number.isFinite(event.data.liveLkfs)) return;
-    readLiveLkfs = event.data.liveLkfs;
+    readLiveLkfs = levelAboveFloor(event.data.liveLkfs);
   });
 
   function requestLoudnessWithRetry(maxAttempts, intervalMs) {
