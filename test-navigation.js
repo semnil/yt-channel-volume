@@ -9873,8 +9873,38 @@ async function runTests() {
       await settle();
       assert(ytcv.state.readLiveLkfs === null && ytcv.getState().contentLufs === null,
         `a read naming -10000 takes the level in hand away (${ytcv.state.readLiveLkfs} / ${ytcv.getState().contentLufs})`);
-      assert(ytcv.state.currentLiveLkfs === -45.5,
-        `and leaves Auto's level as the full answer set it (${ytcv.state.currentLiveLkfs})`);
+      assert(ytcv.state.currentLiveLkfs === null,
+        `and takes Auto's level away, as a full answer naming it would (${ytcv.state.currentLiveLkfs})`);
+    }
+
+    section('Live level: after a read naming no level, a gesture plays the saved gain and not the level that was there');
+    {
+      const liveRead = (liveLkfs) => {
+        for (const fn of mockEventListeners['message'] || []) {
+          fn({ source: globalThis.window, data: { type: '__yt_channel_volume_live__', videoId: LIVE_VID, liveLkfs } });
+        }
+      };
+      // Auto off, a gain stored; a level is named, then silence is read, then Auto is turned on.
+      onAir({ autoLive: false, entry: { gainLive: 0.5 } });
+      liveAnswer(-24.8);
+      await settle();
+      liveRead(-10000);
+      await settle();
+      const on = await popupGesture({ type: 'setAutoApplyLoudness', enabled: true });
+      await settle();
+      assert(on?.ok === true && close(ytcv.state.currentGain, 0.5) && close(entryNow().gainLive, 0.5),
+        `Auto turned on over silence keeps the saved gain (${JSON.stringify(on)} / ${ytcv.state.currentGain} / ${entryNow().gainLive})`);
+
+      // Auto on, silence read, a manual gain saved: it is the gain that plays after the save is announced.
+      onAir({ autoLive: true, entry: { autoApplyLoudnessLive: true } });
+      liveAnswer(-24.8);
+      await settle();
+      liveRead(-10000);
+      await settle();
+      const manual = await popupGesture({ type: 'setGain', gain: 0.8 });
+      await settle();
+      assert(manual?.ok === true && close(ytcv.state.currentGain, 0.8) && close(entryNow().gainLive, 0.8),
+        `a manual gain saved over silence plays and is stored (${JSON.stringify(manual)} / ${ytcv.state.currentGain} / ${entryNow().gainLive})`);
     }
 
     section('Live level: read alone for the popup, it becomes the level in hand, and Auto\'s is left as it is');

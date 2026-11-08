@@ -308,7 +308,8 @@
   // Auto takes a level only from the bridge's full answer, so nothing that
   // re-applies Auto's gain in between — a change in storage, a settings write —
   // plays or stores this one. An answer naming no level leaves the one in hand;
-  // one naming a level at or below LEVEL_FLOOR_LKFS takes it away.
+  // one naming a level at or below LEVEL_FLOOR_LKFS takes it away, and Auto's
+  // with it, as a full answer naming it would.
   window.addEventListener('message', (event) => {
     if (event.source !== window) return;
     if (event.data?.type !== '__yt_channel_volume_live__') return;
@@ -316,6 +317,7 @@
     if (!isBridgeMessageForCurrentVideo(videoId)) return;
     if (!Number.isFinite(event.data.liveLkfs)) return;
     readLiveLkfs = levelAboveFloor(event.data.liveLkfs);
+    if (readLiveLkfs === null) currentLiveLkfs = null;
   });
 
   function requestLoudnessWithRetry(maxAttempts, intervalMs) {
