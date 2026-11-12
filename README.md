@@ -58,7 +58,7 @@ Open the settings page from the gear icon in the popup:
 - **Target LUFS**: Reference level for the gain computed from Loudness (default: -18 LUFS)
 - **Auto-apply LUFS for all channels**: The Video / Live starting value for channels with no individual setting (default: off)
 - **Display unit**: % or dB
-- **Gain overlay**: Overlays the gain value on the player (default: off)
+- **Gain overlay**: Overlays the gain value on the player (default: on)
 - **Saved Channels**: Manage the list of saved channels
 
 Everything above but the saved channels belongs to no channel. When you have turned on Chrome sync, it is shared by every computer where you are signed in to Chrome with the same account and have the extension installed; with Chrome sync off, it stays on this computer. The saved channels stay on each computer.
