@@ -1051,9 +1051,9 @@ async function runTests() {
   ytcv._set('currentGain', 1.0);
   ytcv._set('currentVideoType', 'video');
   ytcv._set('currentLoudnessDb', null);
-  mockLocation.pathname = '/live/j0nen00qp2o';
+  mockLocation.pathname = '/live/arch1234567';
   mockLocation.search = '';
-  mockLocation.href = 'https://www.youtube.com/live/j0nen00qp2o';
+  mockLocation.href = 'https://www.youtube.com/live/arch1234567';
   await ytcv.triggerApply();
   assert(ytcv.state.currentVideoType === 'video', 'initial videoType=video (before loudness)');
   assert(ytcv.state.currentGain === 1.0, 'initial gain=1.0 (no gainVideo saved)');
