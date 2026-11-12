@@ -40,6 +40,9 @@ YELLOW = (249, 202, 36)
 WHITE = (255, 255, 255)
 GRAY = (136, 136, 136)
 DIM = (85, 85, 85)
+# The pages' muted text, #999: the gear, the descriptions, the table's headings,
+# the row's delete mark and the unit button not picked.
+MUTED = (153, 153, 153)
 BORDER = (42, 42, 74)
 
 # The one face these mockups are drawn with, committed under tools/fonts so that
@@ -243,7 +246,7 @@ def screenshot_popup(lang):
 
     # Header
     draw.text((px+16, py+12), s['name'], fill=TEAL, font=FONT_TITLE)
-    gear(draw, px+pw-24, py+22, 8, GRAY)
+    gear(draw, px+pw-24, py+22, 8, MUTED)
     draw.line([(px, py+38), (px+pw, py+38)], fill=BORDER)
 
     # Info section
@@ -349,7 +352,7 @@ def screenshot_settings(lang):
     def paint_buttons(y, names):
         for name, left, right, text_x, picked in names:
             rr(draw, [left, y, right, y+20], 6, TEAL if picked else SECTION_BG)
-            draw.text((text_x, y+3), name, fill=CARD_BG if picked else GRAY, font=FONT_BOLD)
+            draw.text((text_x, y+3), name, fill=CARD_BG if picked else MUTED, font=FONT_BOLD)
 
     # The control a row declares is the control it draws: the name picks the
     # painter, so a row declaring one the drawing has not got stops the run
@@ -359,7 +362,7 @@ def screenshot_settings(lang):
     ry = sy + FIRST_ROW
     for label, desc, control, params in SETTING_ROWS:
         draw.text((50, ry), s[label], fill=(204, 204, 204), font=FONT)
-        draw.text((50, ry+17), s[desc], fill=DIM, font=FONT_SM)
+        draw.text((50, ry+17), s[desc], fill=MUTED, font=FONT_SM)
         paint = painters.get(control)
         if paint is None:
             raise SystemExit(f'no way to draw a {control} on the {label} row')
@@ -377,9 +380,9 @@ def screenshot_settings(lang):
     draw.text((590-clear_w-10, cy+11), s['clear_all'], fill=GRAY, font=FONT_SM)
 
     hy = cy + 34
-    draw.text((50, hy), 'CHANNEL', fill=DIM, font=FONT_SM)
-    draw.text((380, hy), 'VIDEO', fill=DIM, font=FONT_SM)
-    draw.text((470, hy), 'LIVE', fill=DIM, font=FONT_SM)
+    draw.text((50, hy), 'CHANNEL', fill=MUTED, font=FONT_SM)
+    draw.text((380, hy), 'VIDEO', fill=MUTED, font=FONT_SM)
+    draw.text((470, hy), 'LIVE', fill=MUTED, font=FONT_SM)
     draw.line([(50, hy+16), (590, hy+16)], fill=BORDER)
 
     ry = hy + 24
@@ -387,7 +390,7 @@ def screenshot_settings(lang):
         draw.text((50, ry), name, fill=TEAL, font=FONT)
         draw.text((380, ry), video, fill=PINK, font=FONT_BOLD)
         draw.text((470, ry), live, fill=PINK if live != '\u2014' else DIM, font=FONT_BOLD)
-        draw.text((570, ry-4), '\u00d7', fill=DIM, font=FONT_LG)
+        draw.text((570, ry-4), '\u00d7', fill=MUTED, font=FONT_LG)
         ry += 26
 
     return img
