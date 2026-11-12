@@ -7,9 +7,9 @@
 ## ライブのアーカイブに出る loudness は、YouTube が計算した値
 
 - **決定** (2026-10-24): 「処理が終わっていないように見えるライブ配信やアーカイブで、loudness の値が出るようになった」という報告があった。何も変えずに閉じた。そこで拡張機能が表示する値は、YouTube がその音声について計算した値で、暫定の値でも紛れ込んだ値でもない。表示することは不具合ではない。
-- **理由**: 拡張機能がプレーヤーの音量の行から値を取るのは、その行に `cont.` があるときだけ。配信中の配信の行には `cont.` が無いので、保存済みのゲインで再生する。この決定は、プレーヤーが `cont.` を出すのは YouTube が loudness を計算し終えた音声だけで、そのとき応答に `loudnessDb` がある、という前提に頼っている。
+- **理由**: 拡張機能がプレーヤーの音量の行から値を取るのは、その行に `cont.` があるときだけ。配信中の配信の行には `cont.` が無いので、保存済みのゲインで再生する。この決定は、プレーヤーが `cont.` を出すのは YouTube が loudness を計算し終えた音声だけで、そのとき応答に `loudnessDb` か、その代わりになる `perceptualLoudnessDb` と `loudnessTargetLkfs` (`CLAUDE.md` の「Key design decisions」) がある、という前提に頼っている。
 - **却下した案**: `isLiveContent` が true のときは一律に、`playing` の答えや popup の Loudness を止める案。処理が済んだアーカイブも `isLiveContent=true` なので、正しい Loudness と、それに基づく Auto のゲインと保存まで止めてしまう。
-- **覆す条件**: 音量の行に `cont.` があるのに、応答に `loudnessDb` が無い状態が見つかったとき。動きを変えるなら、条件にするのは `isLiveContent` ではなくその状態になる。ライブ配信やアーカイブの loudness を不具合として扱う前に、まずその状態を探す。popup を開いたときの診断 (`CLAUDE.md` の「Development notes」) に、音量の行 (`playerVolume`) と各応答の `loudnessDb` が出る。
+- **覆す条件**: 音量の行に `cont.` があるのに、応答に `loudnessDb` も、その代わりになる `perceptualLoudnessDb` と `loudnessTargetLkfs` も無い状態が見つかったとき。動きを変えるなら、条件にするのは `isLiveContent` ではなくその状態になる。ライブ配信やアーカイブの loudness を不具合として扱う前に、まずその状態を探す。popup を開いたときの診断 (`CLAUDE.md` の「Development notes」) に、音量の行 (`playerVolume`) と各応答の `loudnessDb` が出る。`perceptualLoudnessDb` と `loudnessTargetLkfs` は、同じ項目にあるとおり、ページのコンソールで読む。
 
 ## ライブの追従が今の形になるまで
 
