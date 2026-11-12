@@ -286,7 +286,7 @@ python3 pack.py
 - `PRIVACY_POLICY.md` keeps its name because the Chrome Web Store listing links to it by path. `PRIVACY_POLICY_JA.md` keeps its name because the README pair and the English policy point at it
 - `CLAUDE.md` is English only and has no Japanese counterpart
 - Commit messages follow Conventional Commits
-- Closed decisions, with their reasons and what would reopen them, are in `docs/decisions/<subject>.md`, each with a `<subject>.ja.md`. What is decided for every extension that takes the shared files is recorded in [channel-volume-core](https://github.com/semnil/channel-volume-core) (its `CLAUDE.md` and `docs/decisions/`) and not repeated here
+- Closed decisions, with their reasons and what would reopen them, are in `docs/decisions/<subject>.md`, each with a `<subject>.ja.md` that keeps the English headings. What is decided for every extension that takes the shared files is recorded in [channel-volume-core](https://github.com/semnil/channel-volume-core) (its `CLAUDE.md` and `docs/decisions/`) and not repeated here
 
 ## Development notes
 
