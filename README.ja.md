@@ -154,7 +154,7 @@ yt-channel-volume/
 
 ## 既知の制限
 
-- **createMediaElementSource**: `<video>` 要素あたり 1 回のみ呼び出し可能。Volume Master 等の他の音量拡張と競合する場合がある
+- **createMediaElementSource**: `<video>` 要素あたり 1 回のみ呼び出し可能。他の音量拡張と競合する場合がある
 - **Shorts**: `/shorts/` パスの動画は対象外
 - **ライブ配信の Content Loudness**: 配信中のライブには Content Loudness データがない。代わりにプレーヤーの詳細統計情報から loudness を読むが、そこに表示されない場合は LUFS 自動適用も「チャンネルに適用」も使えない (アーカイブの Loudness から設定するか、手動ボリュームで設定)
 

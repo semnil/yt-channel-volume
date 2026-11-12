@@ -154,7 +154,7 @@ yt-channel-volume/
 
 ## Known limitations
 
-- **createMediaElementSource**: Callable once per `<video>` element. It can conflict with other volume extensions such as Volume Master
+- **createMediaElementSource**: Callable once per `<video>` element. It can conflict with other volume extensions
 - **Shorts**: Videos on the `/shorts/` path are not handled
 - **Content Loudness on live streams**: A stream that is on air carries no Content Loudness data. Its loudness is read from the player's stats for nerds instead, and where the player does not show one, LUFS auto-apply and **Apply to channel** have nothing to work from (set it from the archive's Loudness, or with the manual volume)
 
