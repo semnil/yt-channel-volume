@@ -1,10 +1,10 @@
-# 拡張機能のコンテキストの決定
+# Extension context decisions
 
 > English: [extension-context.md](extension-context.md)
 
 拡張機能の再読み込みで `chrome.runtime` から切り離された content script (ページに差し込まれて動くスクリプト) について閉じた判断。今有効な規則は `CLAUDE.md` の「Showing an invalidated context」にある。
 
-## 切り離されたコンテキストは、検知せずに表示で伝える
+## An invalidated context is shown, not detected
 
 - **決定** (2026-05-06): popup からタブへのメッセージが拒否されたとき、popup は「チャンネル未検出」の代わりに `reloadPageNeeded` (「拡張機能と接続できません。ページを再読み込みしてください (F5)」) を表示する。`content.js` は、`chrome.*` を使う直前にコンテキストを確かめる (`isContextValid()`) だけで、自分が切り離されたことをタイマーで調べにいかない ([`2c913be`](https://github.com/semnil/yt-channel-volume/commit/2c913be))。
 - **却下した案**: `content.js` が `setInterval` で定期的に調べて、切り離されたことに自分で気付く案。Chrome は content script にそのためのイベントを渡さないので、気付くには定期的に調べるしかなく、その負荷は負わないことにした。

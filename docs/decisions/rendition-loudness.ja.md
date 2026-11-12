@@ -1,10 +1,10 @@
-# 再生中の音声の loudness の決定
+# Rendition loudness decisions
 
 > English: [rendition-loudness.md](rendition-loudness.md)
 
 どの音声 (rendition。1 本の動画が持つ、音の大きさの違う複数の音声のそれぞれ) の値を Loudness として取るかと、保存したゲインの基準について閉じた判断。今有効な規則は `CLAUDE.md` の「The level of the rendition the player plays」と「A stored gain is held against the base rendition」にある。各段階で何を変えたかは [#52](https://github.com/semnil/yt-channel-volume/pull/52) にある。
 
-## 値は再生中の音声から取る
+## The level comes from the rendition playing
 
 - **決定** (2026-09-27、[#52](https://github.com/semnil/yt-channel-volume/pull/52)): 次の 6 点。この PR のレビューの中で決まった。
   1. Loudness は、プレーヤーの詳細統計情報の音量の行にある `cont.` の値を使う。行が読めないときは応答の値に戻り、一定音量 (DRC) は、プレーヤーの設定、プレーヤーが localStorage に持つ値の順に読み、どちらも答えないときは ON として扱う。
