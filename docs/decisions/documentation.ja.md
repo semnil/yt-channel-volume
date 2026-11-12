@@ -1,10 +1,10 @@
-# 文書の決定
+# Documentation decisions
 
 > English: [documentation.md](documentation.md)
 
 このリポジトリの文書の言語と名前について閉じた判断。今有効な規則は `CLAUDE.md` の「Conventions」にある。
 
-## 英語を基本にしたときに、そのまま残したもの
+## What the move to English left as it is
 
 - **決定** (2026-10-20): 文書を英語基本にして日本語を別のファイルに分けたとき、次の 2 つはそのまま残した。文書の言語を見直すレビューで、もう一度挙げない。
   - `CLAUDE.md` の「Showing an invalidated context」は、`reloadPageNeeded` の日本語の文言を引用している (`(ja: 「…」)`)。この引用を英語の文言に置き換えない。
