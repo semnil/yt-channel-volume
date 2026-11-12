@@ -1,0 +1,11 @@
+# Extension context decisions
+
+> 日本語版: [extension-context.ja.md](extension-context.ja.md)
+
+Closed decisions about a content script that an extension reload has cut off from `chrome.runtime`. The rule in force is in `CLAUDE.md`, "Showing an invalidated context".
+
+## An invalidated context is shown, not detected
+
+- **Decision** (2026-05-06): where the popup's message to the tab is rejected, the popup shows `reloadPageNeeded` ("Can't reach the extension. Please reload this page (F5).") in place of "Channel not detected". `content.js` looks at its context (`isContextValid()`) where it is about to use `chrome.*`, and does nothing on a timer to find out that it has been cut off ([`2c913be`](https://github.com/semnil/yt-channel-volume/commit/2c913be)).
+- **Rejected**: a poll in `content.js` (`setInterval`) that notices the invalidation by itself. Chrome gives a content script no event for it, so noticing it takes a poll, and the poll's cost was not taken on.
+- **Harm record** (2026-05-06): a viewer reported "Channel not detected". The tab was in this state: the gain overlay beside the player's volume bar was still shown; the popup said "Channel not detected"; `chrome.runtime?.id` read in the page's DevTools console was `undefined`; and opening the popup printed no `[YTCV][popup-open]` line. `content.js` had been cut off from `chrome.runtime` by an extension reload, and its `chrome.runtime.onMessage` listener stayed registered without ever being called. The audio chain and the overlay do not depend on `chrome.*`, so the gain applied before the reload went on playing and showing, which read as "the channel is not detected and yet the gain works". The popup's catch clause of that time showed `channelNotDetected` whenever `chrome.tabs.sendMessage` was rejected, and so hid the cause, the lost connection. The record does not say which context the console was reading in. In the page's own context `chrome.runtime?.id` is `undefined` whether or not the content script is cut off, so the reading tells the two apart only in the content script's context, which is how `CLAUDE.md` now words the check.
