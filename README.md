@@ -125,7 +125,7 @@ yt-channel-volume/
 ├── options.html/js       # settings page
 ├── _locales/             # i18n (ja, en)
 ├── icons/                # extension icons (16/48/128 px)
-├── docs/*.md             # every path that changes the gain, and which of them save channel settings (en, ja)
+├── docs/*.md             # what each script and file does, the design decisions, and every path that changes the gain with which of them save channel settings (en, ja)
 ├── docs/screenshots/     # screenshots for the README and the store listing (ja, en)
 ├── tools/*.sh            # what the release workflows run: the tag a merged version bump asks for, the tag check and the version check; and the check of the shared files against channel-volume-core
 ├── tools/fonts/          # M PLUS 1p (OFL), the face the screenshots are drawn in

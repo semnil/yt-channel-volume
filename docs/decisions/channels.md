@@ -2,7 +2,7 @@
 
 > 日本語版: [channels.ja.md](channels.ja.md)
 
-Closed decisions about what a saved channel is, how a channel is identified and how a video's type is decided. The rules in force are in `AGENTS.md`, "Key design decisions".
+Closed decisions about what a saved channel is, how a channel is identified and how a video's type is decided. The rules in force are in [design.md](../design.md), "Key design decisions".
 
 ## A deleted channel is an unconfigured channel
 
@@ -12,10 +12,10 @@ Closed decisions about what a saved channel is, how a channel is identified and 
 
 ## The channel is identified by its UC id alone
 
-- **Decision** (2026-04-19): `detectChannel()` returns an id in the UC form or nothing, and a `/@handle` link on the page is not taken as an identifier. The migration that moved an `@handle` entry to a UC entry on the shape of the ids alone was taken out; what is left is the adoption of an orphan `@handle` entry whose name matches the bridge's `author` ([`e439b5b`](https://github.com/semnil/yt-channel-volume/commit/e439b5b)). The rules in force are in `AGENTS.md`, "One channel ID form", "Channel ID formats" and "Storage migration".
+- **Decision** (2026-04-19): `detectChannel()` returns an id in the UC form or nothing, and a `/@handle` link on the page is not taken as an identifier. The migration that moved an `@handle` entry to a UC entry on the shape of the ids alone was taken out; what is left is the adoption of an orphan `@handle` entry whose name matches the bridge's `author` ([`e439b5b`](https://github.com/semnil/yt-channel-volume/commit/e439b5b)). The rules in force are in [design.md](../design.md), "One channel ID form", "Channel ID formats" and "Storage migration".
 - **Harm record** (2026-04-19): after an SPA navigation from a video of channel A to a video of channel B, the page's `/@handle` link still named channel A. The code of that time read that handle as the channel, and when the bridge then answered with channel B's UC id, it took the pair for one channel whose `@handle` entry was to be moved to its UC id, and ran the migration: the gain stored for channel A was written into channel B's entry.
 
 ## The video type comes from isLiveContent alone
 
-- **Decision** (2026-04-19): the type is `isLiveContent ? 'live' : 'video'`, and whether the response carries a `loudnessDb` takes no part in it ([`6fe4e55`](https://github.com/semnil/yt-channel-volume/commit/6fe4e55)). The rule in force is in `AGENTS.md`, "Saved per channel × type".
+- **Decision** (2026-04-19): the type is `isLiveContent ? 'live' : 'video'`, and whether the response carries a `loudnessDb` takes no part in it ([`6fe4e55`](https://github.com/semnil/yt-channel-volume/commit/6fe4e55)). The rule in force is in [design.md](../design.md), "Saved per channel × type".
 - **History**: the day before, [`2fdf75f`](https://github.com/semnil/yt-channel-volume/commit/2fdf75f) had made a video live only where `isLiveContent` was true and no `loudnessDb` was there, to keep a premiere a video. A live archive carries a `loudnessDb` as well, so an archive that carries one was taken as a video. A premiere is `isLiveContent=false`, so `isLiveContent` alone tells the two apart, and `6fe4e55` took the `loudnessDb` condition out again.
