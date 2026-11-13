@@ -138,6 +138,13 @@
 
   // ── Channel list ───────────────────────────────────────────────────
 
+  // The class of a gain cell: an Auto cell is marked as one, and a cell with no
+  // gain to show — the one that reads `—` — is drawn as muted text.
+  function gainCellClass(auto, gain) {
+    if (auto) return 'ch-vol auto';
+    return gain !== null ? 'ch-vol' : 'ch-vol empty';
+  }
+
   // Draws the list the page holds, and nothing else. A read of its own would be
   // a second read racing the one that is already out, and it would land without
   // anything to weigh it against; a page that holds no list yet draws none.
@@ -182,8 +189,8 @@
         : esc(name);
       tr.innerHTML = `
         <td class="ch-name">${nameHtml}</td>
-        <td class="ch-vol${autoVideo ? ' auto' : ''}">${esc(videoText)}</td>
-        <td class="ch-vol${autoLive ? ' auto' : ''}">${esc(liveText)}</td>
+        <td class="${gainCellClass(autoVideo, gainVideo)}">${esc(videoText)}</td>
+        <td class="${gainCellClass(autoLive, gainLive)}">${esc(liveText)}</td>
         <td style="text-align:right"><button class="ch-del" data-id="${esc(id)}"${settingsLoaded ? '' : ' disabled'} title="${esc(msg('delete'))}">×</button></td>
       `;
       tbody.appendChild(tr);

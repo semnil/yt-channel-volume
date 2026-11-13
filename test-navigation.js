@@ -8993,6 +8993,26 @@ async function runTests() {
   }
 
   {
+    // A type with no gain set reads — and is marked empty, which is what draws
+    // it as muted text; a cell holding a value and an Auto cell are not.
+    const options = makeOptions({
+      channels: {
+        UC1: { name: 'Alpha', gainVideo: 2 },
+        UC2: { name: 'Beta', autoApplyLoudnessVideo: true, gainLive: 0.5 }
+      }
+    });
+    await options.settle();
+    const cells = options.listMarkup().match(/<td class="ch-vol[^"]*">[^<]*</g) || [];
+
+    assert(cells.length === 4, `two rows, a cell for each type (${cells.length})`);
+    assert(cells[0] === '<td class="ch-vol">200%<', `a gain that is set is a plain cell (${cells[0]})`);
+    assert(cells[1] === '<td class="ch-vol empty">—<', `a gain that is not set is an empty one (${cells[1]})`);
+    assert(cells[2].startsWith('<td class="ch-vol auto">') && cells[2].includes('—'),
+      `an Auto cell with no gain yet stays an Auto cell (${cells[2]})`);
+    assert(cells[3] === '<td class="ch-vol">50%<', `and the set gain beside it is plain (${cells[3]})`);
+  }
+
+  {
     // The gain the page shows is the one it saved. A save that did not happen
     // leaves the toggle where the stored value stands, not where the click did.
     const options = makeOptions({ failStorageSet: true, channels: { UC1: { name: 'Alpha', gainVideo: 2 } } });

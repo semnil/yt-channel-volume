@@ -952,6 +952,82 @@ assert(!packaged.includes('.DS_Store'),
     + ` — drawn ${JSON.stringify(declared)}, laid out ${JSON.stringify(laidOut)}`);
 }
 
+// The pages' muted text is #999 (channel-volume-core's docs/decisions/ui.md,
+// "Muted text is `#999`"), which reaches 4.5:1 on both panels it sits on, and
+// the screenshots draw those places in the colour the pages declare.
+{
+  const MUTED_TEXT = '#999';
+  const declarations = [
+    ['popup.html', '.settings-link', '#1a1a2e'],
+    ['popup.html', '.channel-name.empty', '#16213e'],
+    ['popup.html', '.loudness-card .value.unknown', '#1a1a2e'],
+    ['popup.html', '.apply-hint', '#1a1a2e'],
+    ['popup.html', '.status-msg', '#1a1a2e'],
+    ['options.html', '.setting-row .setting-desc', '#1a1a2e'],
+    ['options.html', '.toggle-group button', '#16213e'],
+    ['options.html', '.channel-table th', '#1a1a2e'],
+    ['options.html', '.ch-vol.empty', '#1a1a2e'],
+    ['options.html', '.ch-del', '#1a1a2e'],
+    ['options.html', '.empty-msg', '#1a1a2e'],
+  ];
+  const channels = (hex) => {
+    const digits = hex.slice(1);
+    const full = digits.length === 3 ? digits.replace(/./g, '$&$&') : digits;
+    return [0, 2, 4].map(at => parseInt(full.slice(at, at + 2), 16));
+  };
+  const luminance = (hex) => {
+    const [r, g, b] = channels(hex).map((value) => {
+      const part = value / 255;
+      return part <= 0.04045 ? part / 12.92 : ((part + 0.055) / 1.055) ** 2.4;
+    });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const contrast = (a, b) => {
+    const [dark, light] = [luminance(a), luminance(b)].sort((x, y) => x - y);
+    return (light + 0.05) / (dark + 0.05);
+  };
+  const escaped = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  for (const [page, selector, background] of declarations) {
+    const html = fs.readFileSync('./' + page, 'utf8');
+    const rule = html.match(new RegExp(`^${escaped(selector)} \\{([^}]*)\\}`, 'm'));
+    const color = rule && (rule[1].match(/(?:^|[\s;])color:\s*(#[0-9a-fA-F]+)/) || [])[1];
+    assert(color === MUTED_TEXT,
+      `${page} declares ${selector} in the muted colour — it declares ${color}`);
+    assert(html.includes(`background: ${background};`),
+      `${page} has the ${background} panel ${selector} is held against`);
+    assert(contrast(MUTED_TEXT, background) >= 4.5,
+      `${selector} reaches 4.5:1 on ${background} — ${contrast(MUTED_TEXT, background).toFixed(2)}`);
+  }
+  const source = fs.readFileSync('./gen_screenshots.py', 'utf8');
+  const drawn = (source.match(/^MUTED = \((\d+), (\d+), (\d+)\)$/m) || []).slice(1).map(Number);
+  assert(JSON.stringify(drawn) === JSON.stringify(channels(MUTED_TEXT)),
+    `gen_screenshots.py draws muted text in ${MUTED_TEXT} — it holds ${JSON.stringify(drawn)}`);
+  for (const [what, site] of [
+    ['the gear', /gear\(draw, px\+pw-24, py\+22, 8, MUTED\)/],
+    ['a description', /s\[desc\], fill=MUTED/],
+    ['the unit button not picked', /if picked else MUTED/],
+    ['the CHANNEL heading', /'CHANNEL', fill=MUTED/],
+    ['the VIDEO heading', /'VIDEO', fill=MUTED/],
+    ['the LIVE heading', /'LIVE', fill=MUTED/],
+    ['the delete mark', /'\\u00d7', fill=MUTED/],
+    ['a gain not set', /fill=PINK if live != '\\u2014' else MUTED/],
+  ]) {
+    assert(site.test(source), `gen_screenshots.py draws ${what} in the muted colour`);
+  }
+  // The cell that reads `—` is the one options.js marks `empty`: the text and
+  // the class are decided by the same two values, for each type's column.
+  const page = fs.readFileSync('./options.js', 'utf8');
+  assert(/if \(auto\) return 'ch-vol auto';\n\s*return gain !== null \? 'ch-vol' : 'ch-vol empty';/.test(page),
+    'options.js marks a gain cell empty where it is not Auto and holds no gain');
+  for (const type of ['Video', 'Live']) {
+    const text = type.toLowerCase() + 'Text';
+    assert(page.includes(`: (gain${type} !== null ? fmtGain(gain${type}) : '—');`),
+      `options.js writes — in the ${type} column where no gain is set`);
+    assert(page.includes(`<td class="\${gainCellClass(auto${type}, gain${type})}">\${esc(${text})}</td>`),
+      `options.js takes the ${type} cell's class from the values its text comes from`);
+  }
+}
+
 // The screenshots are what the store shows, and the wording in them is the
 // extension's. Written out in the generator it was a third copy beside the
 // pages and the catalog, and nothing compared the three: changing a message
