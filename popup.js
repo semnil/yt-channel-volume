@@ -422,8 +422,8 @@
       state = await chrome.tabs.sendMessage(activeTabId, { type });
     } catch (_) {
       // sendMessage rejects when content.js is unreachable. The most common
-      // cause is runtime context invalidation: when this or another extension
-      // is reloaded, existing tabs' content scripts lose their chrome.runtime
+      // cause is runtime context invalidation: when this extension is
+      // reloaded, existing tabs' content scripts lose their chrome.runtime
       // connection. The page must be reloaded for content.js to be re-injected.
       showPopupStatus(statusLineEl, mainEl, 'reloadPageNeeded');
       return;
