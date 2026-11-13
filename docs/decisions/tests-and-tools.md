@@ -8,7 +8,7 @@ Where the decisions about this repository's test tooling are written down. Both 
 
 - [#79](https://github.com/semnil/yt-channel-volume/pull/79): what `tools/mutation/bail.mjs` does when a signal reaches it, including one that arrives while it still waits for its own output to drain ("A signal while the run still waits on output").
 - [#80](https://github.com/semnil/yt-channel-volume/pull/80): the long-running suites its test starts end when the suite that started them is gone.
-- `bail.mjs` has since become a shared file. It is changed, with its tests, in [channel-volume-core](https://github.com/semnil/channel-volume-core) (`CLAUDE.md`, "Shared files").
+- `bail.mjs` has since become a shared file. It is changed, with its tests, in [channel-volume-core](https://github.com/semnil/channel-volume-core) (`AGENTS.md`, "Shared files").
 
 ## The screenshot check
 
