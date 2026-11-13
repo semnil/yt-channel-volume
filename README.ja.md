@@ -125,7 +125,7 @@ yt-channel-volume/
 ├── options.html/js       # 設定画面
 ├── _locales/             # i18n (ja, en)
 ├── icons/                # 拡張アイコン (16/48/128 px)
-├── docs/*.md             # ゲインが変わる全経路と、そのうちチャンネル設定を保存する経路 (en, ja)
+├── docs/*.md             # 各スクリプトとファイルの役割、設計の決定、ゲインが変わる全経路と、そのうちチャンネル設定を保存する経路 (en, ja)
 ├── docs/screenshots/     # README・ストア掲載用スクリーンショット (ja, en)
 ├── tools/*.sh            # リリースワークフローが実行する、版上げのマージが求めるタグの決定・タグ検査・バージョン検査と、共有ファイルの channel-volume-core との照合
 ├── tools/fonts/          # スクリーンショット描画用フォント M PLUS 1p (OFL)
