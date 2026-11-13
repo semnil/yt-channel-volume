@@ -39,9 +39,8 @@ PINK = (255, 107, 157)
 YELLOW = (249, 202, 36)
 WHITE = (255, 255, 255)
 GRAY = (136, 136, 136)
-DIM = (85, 85, 85)
 # The pages' muted text, #999: the gear, the descriptions, the table's headings,
-# the row's delete mark and the unit button not picked.
+# the row's delete mark, a gain not set and the unit button not picked.
 MUTED = (153, 153, 153)
 BORDER = (42, 42, 74)
 
@@ -389,7 +388,7 @@ def screenshot_settings(lang):
     for name, video, live in s['channels']:
         draw.text((50, ry), name, fill=TEAL, font=FONT)
         draw.text((380, ry), video, fill=PINK, font=FONT_BOLD)
-        draw.text((470, ry), live, fill=PINK if live != '\u2014' else DIM, font=FONT_BOLD)
+        draw.text((470, ry), live, fill=PINK if live != '\u2014' else MUTED, font=FONT_BOLD)
         draw.text((570, ry-4), '\u00d7', fill=MUTED, font=FONT_LG)
         ry += 26
 

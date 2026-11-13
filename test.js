@@ -966,6 +966,7 @@ assert(!packaged.includes('.DS_Store'),
     ['options.html', '.setting-row .setting-desc', '#1a1a2e'],
     ['options.html', '.toggle-group button', '#16213e'],
     ['options.html', '.channel-table th', '#1a1a2e'],
+    ['options.html', '.ch-vol.empty', '#1a1a2e'],
     ['options.html', '.ch-del', '#1a1a2e'],
     ['options.html', '.empty-msg', '#1a1a2e'],
   ];
@@ -1009,8 +1010,21 @@ assert(!packaged.includes('.DS_Store'),
     ['the VIDEO heading', /'VIDEO', fill=MUTED/],
     ['the LIVE heading', /'LIVE', fill=MUTED/],
     ['the delete mark', /'\\u00d7', fill=MUTED/],
+    ['a gain not set', /fill=PINK if live != '\\u2014' else MUTED/],
   ]) {
     assert(site.test(source), `gen_screenshots.py draws ${what} in the muted colour`);
+  }
+  // The cell that reads `—` is the one options.js marks `empty`: the text and
+  // the class are decided by the same two values, for each type's column.
+  const page = fs.readFileSync('./options.js', 'utf8');
+  assert(/if \(auto\) return 'ch-vol auto';\n\s*return gain !== null \? 'ch-vol' : 'ch-vol empty';/.test(page),
+    'options.js marks a gain cell empty where it is not Auto and holds no gain');
+  for (const type of ['Video', 'Live']) {
+    const text = type.toLowerCase() + 'Text';
+    assert(page.includes(`: (gain${type} !== null ? fmtGain(gain${type}) : '—');`),
+      `options.js writes — in the ${type} column where no gain is set`);
+    assert(page.includes(`<td class="\${gainCellClass(auto${type}, gain${type})}">\${esc(${text})}</td>`),
+      `options.js takes the ${type} cell's class from the values its text comes from`);
   }
 }
 
