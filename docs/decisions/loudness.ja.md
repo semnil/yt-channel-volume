@@ -2,12 +2,12 @@
 
 > English: [loudness.md](loudness.md)
 
-ライブ配信とそのアーカイブで拡張機能が表示する loudness (音の大きさの値) と、配信中の配信への Auto の追従について閉じた判断。今有効な規則は `AGENTS.md` の「The level of the rendition the player plays」と「A live stream's own level」にある。どの音声 (rendition) の値を取るかと、保存したゲインの基準の決定は、[rendition-loudness.ja.md](rendition-loudness.ja.md) にある。
+ライブ配信とそのアーカイブで拡張機能が表示する loudness (音の大きさの値) と、配信中の配信への Auto の追従について閉じた判断。今有効な規則は [design.ja.md](../design.ja.md) の「The level of the rendition the player plays」と「A live stream's own level」にある。どの音声 (rendition) の値を取るかと、保存したゲインの基準の決定は、[rendition-loudness.ja.md](rendition-loudness.ja.md) にある。
 
 ## A loudness shown for a live archive is the value YouTube computed
 
 - **決定** (2026-10-24): 「処理が終わっていないように見えるライブ配信やアーカイブで、loudness の値が出るようになった」という報告があった。何も変えずに閉じた。そこで拡張機能が表示する値は、YouTube がその音声について計算した値で、暫定の値でも紛れ込んだ値でもない。表示することは不具合ではない。
-- **理由**: 拡張機能がプレーヤーの音量の行から値を取るのは、その行に `cont.` があるときだけ。配信中の配信の行には `cont.` が無いので、保存済みのゲインで再生する。この決定は、プレーヤーが `cont.` を出すのは YouTube が loudness を計算し終えた音声だけで、そのとき応答に `loudnessDb` か、その代わりになる `perceptualLoudnessDb` と `loudnessTargetLkfs` (`AGENTS.md` の「Key design decisions」) がある、という前提に頼っている。
+- **理由**: 拡張機能がプレーヤーの音量の行から値を取るのは、その行に `cont.` があるときだけ。配信中の配信の行には `cont.` が無いので、保存済みのゲインで再生する。この決定は、プレーヤーが `cont.` を出すのは YouTube が loudness を計算し終えた音声だけで、そのとき応答に `loudnessDb` か、その代わりになる `perceptualLoudnessDb` と `loudnessTargetLkfs` ([design.ja.md](../design.ja.md) の「`perceptualLoudnessDb` is read as an absolute level」) がある、という前提に頼っている。
 - **却下した案**: `isLiveContent` が true のときは一律に、`playing` の答えや popup の Loudness を止める案。処理が済んだアーカイブも `isLiveContent=true` なので、正しい Loudness と、それに基づく Auto のゲインと保存まで止めてしまう。
 - **覆す条件**: 音量の行に `cont.` があるのに、応答に `loudnessDb` も、その代わりになる `perceptualLoudnessDb` と `loudnessTargetLkfs` も無い状態が見つかったとき。動きを変えるなら、条件にするのは `isLiveContent` ではなくその状態になる。ライブ配信やアーカイブの loudness を不具合として扱う前に、まずその状態を探す。popup を開いたときの診断 (`AGENTS.md` の「Development notes」) に、音量の行 (`playerVolume`) と各応答の `loudnessDb` が出る。`perceptualLoudnessDb` と `loudnessTargetLkfs` は、同じ項目にあるとおり、ページのコンソールで読む。
 
