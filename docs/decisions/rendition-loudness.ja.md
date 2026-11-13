@@ -2,7 +2,7 @@
 
 > English: [rendition-loudness.md](rendition-loudness.md)
 
-どの音声 (rendition。1 本の動画が持つ、音の大きさの違う複数の音声のそれぞれ) の値を Loudness として取るかと、保存したゲインの基準について閉じた判断。今有効な規則は `CLAUDE.md` の「The level of the rendition the player plays」と「A stored gain is held against the base rendition」にある。各段階で何を変えたかは [#52](https://github.com/semnil/yt-channel-volume/pull/52) にある。
+どの音声 (rendition。1 本の動画が持つ、音の大きさの違う複数の音声のそれぞれ) の値を Loudness として取るかと、保存したゲインの基準について閉じた判断。今有効な規則は `AGENTS.md` の「The level of the rendition the player plays」と「A stored gain is held against the base rendition」にある。各段階で何を変えたかは [#52](https://github.com/semnil/yt-channel-volume/pull/52) にある。
 
 ## The level comes from the rendition playing
 

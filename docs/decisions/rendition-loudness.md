@@ -2,7 +2,7 @@
 
 > 日本語版: [rendition-loudness.ja.md](rendition-loudness.ja.md)
 
-Closed decisions about which audio rendition's level the extension takes as the Loudness, and what a stored gain is held against. The rules in force are in `CLAUDE.md`, "The level of the rendition the player plays" and "A stored gain is held against the base rendition". What each step changed is in [#52](https://github.com/semnil/yt-channel-volume/pull/52).
+Closed decisions about which audio rendition's level the extension takes as the Loudness, and what a stored gain is held against. The rules in force are in `AGENTS.md`, "The level of the rendition the player plays" and "A stored gain is held against the base rendition". What each step changed is in [#52](https://github.com/semnil/yt-channel-volume/pull/52).
 
 ## The level comes from the rendition playing
 

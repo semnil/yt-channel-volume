@@ -1165,7 +1165,7 @@ section('documentation pairs');
 for (const file of ['PRIVACY_POLICY.md', 'PRIVACY_POLICY_JA.md']) {
   assert(fs.existsSync('./' + file), `${file} keeps its name`);
 }
-assert(!fs.existsSync('./CLAUDE.ja.md'), 'CLAUDE.md has no Japanese counterpart');
+assert(!fs.existsSync('./AGENTS.ja.md'), 'AGENTS.md has no Japanese counterpart');
 
 const headingLevels = text => {
   const levels = [];
